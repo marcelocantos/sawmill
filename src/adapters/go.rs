@@ -4,23 +4,23 @@
 use super::LanguageAdapter;
 use tree_sitter::Language;
 
-pub struct RustAdapter;
+pub struct GoAdapter;
 
-impl LanguageAdapter for RustAdapter {
+impl LanguageAdapter for GoAdapter {
     fn language(&self) -> Language {
-        tree_sitter_rust::LANGUAGE.into()
+        tree_sitter_go::LANGUAGE.into()
     }
 
     fn extensions(&self) -> &[&str] {
-        &["rs"]
+        &["go"]
     }
 
     fn function_def_query(&self) -> &str {
-        "(function_item name: (identifier) @name) @func"
+        "(function_declaration name: (identifier) @name) @func"
     }
 
     fn identifier_query(&self) -> &str {
-        "[(identifier) (type_identifier)] @name"
+        "[(identifier) (type_identifier) (field_identifier) (package_identifier)] @name"
     }
 
     fn call_expr_query(&self) -> &str {
@@ -28,10 +28,10 @@ impl LanguageAdapter for RustAdapter {
     }
 
     fn type_def_query(&self) -> &str {
-        "[(struct_item name: (type_identifier) @name) (enum_item name: (type_identifier) @name) (trait_item name: (type_identifier) @name)] @type_def"
+        "(type_declaration (type_spec name: (type_identifier) @name)) @type_def"
     }
 
     fn import_query(&self) -> &str {
-        "(use_declaration argument: (_) @name) @import"
+        "(import_spec path: (interpreted_string_literal) @name) @import"
     }
 }

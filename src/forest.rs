@@ -10,6 +10,7 @@ use tree_sitter::{Parser, Tree};
 
 use crate::adapters::{self, LanguageAdapter};
 use crate::rewrite;
+use crate::transform;
 
 /// A single parsed source file.
 pub struct ParsedFile {
@@ -118,6 +119,55 @@ impl Forest {
         let changes = self.rename(from, to)?;
         Ok(changes.iter().map(|c| c.diff()).collect())
     }
+
+    /// Apply a match/act transform across the forest.
+    /// Returns a list of pending file changes.
+    pub fn transform(
+        &self,
+        match_spec: &transform::Match,
+        action: &transform::Action,
+    ) -> Result<Vec<FileChange>> {
+        let mut changes = Vec::new();
+
+        for file in &self.files {
+            let new_source = transform::transform_file(file, match_spec, action)?;
+            if new_source != file.original_source {
+                changes.push(FileChange {
+                    path: file.path.clone(),
+                    original: file.original_source.clone(),
+                    new_source,
+                });
+            }
+        }
+
+        Ok(changes)
+    }
+
+    /// Query the forest for nodes matching a pattern.
+    /// Returns a list of (file_path, line, column, node_kind, node_text) tuples.
+    pub fn query(
+        &self,
+        match_spec: &transform::Match,
+    ) -> Result<Vec<QueryResult>> {
+        let mut results = Vec::new();
+
+        for file in &self.files {
+            let matches = transform::query_file(file, match_spec)?;
+            results.extend(matches);
+        }
+
+        Ok(results)
+    }
+}
+
+/// A single query match result.
+pub struct QueryResult {
+    pub path: PathBuf,
+    pub start_line: usize,
+    pub start_col: usize,
+    pub kind: String,
+    pub name: Option<String>,
+    pub text: String,
 }
 
 impl fmt::Display for Forest {

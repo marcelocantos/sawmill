@@ -22,4 +22,16 @@ impl LanguageAdapter for PythonAdapter {
     fn identifier_query(&self) -> &str {
         "(identifier) @name"
     }
+
+    fn call_expr_query(&self) -> &str {
+        "(call function: (identifier) @name) @call"
+    }
+
+    fn type_def_query(&self) -> &str {
+        "(class_definition name: (identifier) @name) @type_def"
+    }
+
+    fn import_query(&self) -> &str {
+        "(import_statement name: (dotted_name) @name) @import"
+    }
 }

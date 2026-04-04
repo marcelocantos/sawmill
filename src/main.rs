@@ -5,6 +5,7 @@ mod adapters;
 mod forest;
 mod mcp;
 mod rewrite;
+mod transform;
 
 use clap::{Parser, Subcommand};
 use std::path::PathBuf;
