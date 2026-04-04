@@ -100,19 +100,19 @@ globalThis.__makeNode = function(props) {
     };
 
     // --- Semantic mutations ---
-    n.addField = function(name, type) {
-        var code = __genField(n._langId || "", name, type);
+    // addField(name, type) or addField(name, type, doc)
+    n.addField = function(name, type, doc) {
+        var code = __genField(n._langId || "", name, type, doc || undefined);
         if (n.bodyEndByte !== null && n.bodyEndByte !== undefined) {
-            // Insert before the end of the body.
             __editFile(n.file, n.bodyEndByte, n.bodyEndByte, code);
         } else if (n.endByte) {
-            // Insert before the end of the node.
             __editFile(n.file, n.endByte - 1, n.endByte - 1, code);
         }
         return n;
     };
-    n.addMethod = function(name, params, returnType, body) {
-        var code = __genMethod(n._langId || "", name, params, returnType, body);
+    // addMethod(name, params, returnType, body) or addMethod(name, params, returnType, body, doc)
+    n.addMethod = function(name, params, returnType, body, doc) {
+        var code = __genMethod(n._langId || "", name, params, returnType, body, doc || undefined);
         if (n.bodyEndByte !== null && n.bodyEndByte !== undefined) {
             __editFile(n.file, n.bodyEndByte, n.bodyEndByte, "\n" + code);
         } else if (n.endByte) {
@@ -169,14 +169,16 @@ pub fn run_codegen(
         // Register code generation callbacks.
         // These dispatch to the appropriate language adapter.
         ctx.globals().set("__genField", Function::new(ctx.clone(),
-            |lang_id: String, name: String, type_name: String| -> String {
-                gen_for_lang(&lang_id, |a| a.gen_field(&name, &type_name))
+            |lang_id: String, name: String, type_name: String, doc: Option<String>| -> String {
+                let doc = doc.unwrap_or_default();
+                gen_for_lang(&lang_id, |a| a.gen_field_with_doc(&name, &type_name, &doc))
             },
         ).context("creating __genField")?).context("setting __genField")?;
 
         ctx.globals().set("__genMethod", Function::new(ctx.clone(),
-            |lang_id: String, name: String, params: String, return_type: String, body: String| -> String {
-                gen_for_lang(&lang_id, |a| a.gen_method(&name, &params, &return_type, &body))
+            |lang_id: String, name: String, params: String, return_type: String, body: String, doc: Option<String>| -> String {
+                let doc = doc.unwrap_or_default();
+                gen_for_lang(&lang_id, |a| a.gen_method_with_doc(&name, &params, &return_type, &body, &doc))
             },
         ).context("creating __genMethod")?).context("setting __genMethod")?;
 
@@ -429,6 +431,43 @@ struct NodeInfo {
     params_text: Option<String>,
 }
 
+/// Extract a doc comment from the preceding sibling of a node.
+/// Returns the comment text with prefixes stripped, or None.
+fn extract_preceding_comment(node: tree_sitter::Node, source: &[u8]) -> Option<String> {
+    let mut prev = node.prev_sibling()?;
+
+    // Collect consecutive comment lines going backwards.
+    let mut comment_lines = Vec::new();
+    loop {
+        let kind = prev.kind();
+        if kind == "comment" || kind == "line_comment" || kind == "block_comment" {
+            let text = std::str::from_utf8(&source[prev.start_byte()..prev.end_byte()])
+                .unwrap_or("");
+            // Strip common prefixes.
+            let stripped = text
+                .trim_start_matches("///")
+                .trim_start_matches("//!")
+                .trim_start_matches("//")
+                .trim_start_matches('#')
+                .trim_start();
+            comment_lines.push(stripped.to_string());
+            match prev.prev_sibling() {
+                Some(p) => prev = p,
+                None => break,
+            }
+        } else {
+            break;
+        }
+    }
+
+    if comment_lines.is_empty() {
+        return None;
+    }
+
+    comment_lines.reverse();
+    Some(comment_lines.join("\n"))
+}
+
 /// Extract fields from a type node using the adapter's field query.
 fn extract_fields(file: &ParsedFile, node_start: usize, node_end: usize) -> Vec<serde_json::Value> {
     let field_query_str = file.adapter.field_query();
@@ -466,10 +505,21 @@ fn extract_fields(file: &ParsedFile, node_start: usize, node_end: usize) -> Vec<
         );
 
         if let Some(name) = name {
-            fields.push(serde_json::json!({
+            // Look for a doc comment on the preceding sibling.
+            let field_idx = query.capture_index_for_name("field");
+            let field_node = field_idx.and_then(|idx|
+                m.captures.iter().find(|c| c.index == idx).map(|c| c.node)
+            );
+            let doc = field_node.and_then(|n| extract_preceding_comment(n, &file.original_source));
+
+            let mut entry = serde_json::json!({
                 "name": name,
                 "type": type_text.unwrap_or(""),
-            }));
+            });
+            if let Some(doc) = doc {
+                entry["doc"] = serde_json::json!(doc);
+            }
+            fields.push(entry);
         }
     }
 
@@ -764,6 +814,50 @@ mod tests {
         assert_eq!(changes.len(), 1);
         let result = String::from_utf8_lossy(&changes[0].new_source);
         assert!(result.contains("use std::collections::HashMap;"), "should contain import: {result}");
+    }
+
+    #[test]
+    fn codegen_add_field_with_doc() {
+        let forest = make_rust_forest(vec![
+            ("lib.rs", "struct User {\n    /// The user's name.\n    name: String,\n}\n"),
+        ]);
+
+        let changes = run_codegen(&forest, r#"
+            var types = ctx.findType("User");
+            if (types.length > 0) {
+                types[0].addField("email", "String", "The user's email address.");
+            }
+        "#).unwrap();
+
+        assert_eq!(changes.len(), 1);
+        let result = String::from_utf8_lossy(&changes[0].new_source);
+        assert!(result.contains("/// The user's email address."), "should contain doc comment: {result}");
+        assert!(result.contains("email: String"), "should contain field: {result}");
+    }
+
+    #[test]
+    fn codegen_read_field_docs() {
+        let forest = make_rust_forest(vec![
+            ("lib.rs", "struct User {\n    /// The user's name.\n    name: String,\n    age: u32,\n}\n"),
+        ]);
+
+        let changes = run_codegen(&forest, r#"
+            var types = ctx.findType("User");
+            if (types.length > 0) {
+                var fields = types[0].fields();
+                var docs = [];
+                for (var i = 0; i < fields.length; i++) {
+                    docs.push(fields[i].name + ":" + (fields[i].doc || "none"));
+                }
+                ctx.addFile("fields.txt", docs.join("\n") + "\n");
+            }
+        "#).unwrap();
+
+        let fields_file = changes.iter().find(|c| c.path == PathBuf::from("fields.txt"));
+        assert!(fields_file.is_some(), "fields.txt should be created");
+        let content = String::from_utf8_lossy(&fields_file.unwrap().new_source);
+        assert!(content.contains("name:The user's name."), "should have name doc: {content}");
+        assert!(content.contains("age:none"), "age should have no doc: {content}");
     }
 
     #[test]
