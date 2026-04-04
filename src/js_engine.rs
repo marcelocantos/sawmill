@@ -213,8 +213,8 @@ pub fn run_js_transform(
 
     let runtime = JsRuntime::new()
         .context("creating QuickJS runtime")?;
-    runtime.set_memory_limit(64 * 1024 * 1024); // 64MB
-    runtime.set_max_stack_size(1024 * 1024); // 1MB stack
+    runtime.set_memory_limit(2 * 1024 * 1024 * 1024); // 2GB
+    runtime.set_max_stack_size(8 * 1024 * 1024); // 8MB stack
 
     let context = JsContext::full(&runtime)
         .context("creating QuickJS context")?;
