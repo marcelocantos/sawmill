@@ -46,4 +46,32 @@ impl LanguageAdapter for RustAdapter {
     fn lsp_language_id(&self) -> &str {
         "rust"
     }
+
+    fn field_query(&self) -> &str {
+        "(field_declaration name: (field_identifier) @name type: (_) @type) @field"
+    }
+
+    fn method_query(&self) -> &str {
+        "(function_item name: (identifier) @name) @method"
+    }
+
+    fn decorator_query(&self) -> &str {
+        "(attribute_item) @decorator"
+    }
+
+    fn gen_field(&self, name: &str, type_name: &str) -> String {
+        format!("    {name}: {type_name},\n")
+    }
+
+    fn gen_method(&self, name: &str, params: &str, return_type: &str, body: &str) -> String {
+        if return_type.is_empty() {
+            format!("    fn {name}({params}) {{\n        {body}\n    }}\n")
+        } else {
+            format!("    fn {name}({params}) -> {return_type} {{\n        {body}\n    }}\n")
+        }
+    }
+
+    fn gen_import(&self, path: &str) -> String {
+        format!("use {path};\n")
+    }
 }

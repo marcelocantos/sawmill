@@ -46,4 +46,28 @@ impl LanguageAdapter for TypeScriptAdapter {
     fn lsp_language_id(&self) -> &str {
         "typescript"
     }
+
+    fn field_query(&self) -> &str {
+        "(property_signature name: (property_identifier) @name) @field"
+    }
+
+    fn method_query(&self) -> &str {
+        "(method_definition name: (property_identifier) @name) @method"
+    }
+
+    fn decorator_query(&self) -> &str {
+        "(decorator) @decorator"
+    }
+
+    fn gen_field(&self, name: &str, type_name: &str) -> String {
+        format!("  {name}: {type_name};\n")
+    }
+
+    fn gen_method(&self, name: &str, params: &str, return_type: &str, body: &str) -> String {
+        format!("  {name}({params}): {return_type} {{\n    {body}\n  }}\n")
+    }
+
+    fn gen_import(&self, path: &str) -> String {
+        format!("import {{ {path} }};\n")
+    }
 }

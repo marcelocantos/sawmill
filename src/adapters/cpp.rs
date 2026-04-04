@@ -46,4 +46,30 @@ impl LanguageAdapter for CppAdapter {
     fn lsp_language_id(&self) -> &str {
         "cpp"
     }
+
+    fn field_query(&self) -> &str {
+        "(field_declaration declarator: (field_identifier) @name type: (_) @type) @field"
+    }
+
+    fn method_query(&self) -> &str {
+        "(function_definition declarator: (function_declarator declarator: (_) @name)) @method"
+    }
+
+    fn decorator_query(&self) -> &str {
+        // C++ doesn't have decorators in the Tree-sitter grammar.
+        ""
+    }
+
+    fn gen_field(&self, name: &str, type_name: &str) -> String {
+        // C++ puts type before name.
+        format!("  {type_name} {name};\n")
+    }
+
+    fn gen_method(&self, name: &str, params: &str, return_type: &str, body: &str) -> String {
+        format!("  {return_type} {name}({params}) {{\n    {body}\n  }}\n")
+    }
+
+    fn gen_import(&self, path: &str) -> String {
+        format!("#include \"{path}\"\n")
+    }
 }

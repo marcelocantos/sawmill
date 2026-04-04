@@ -46,4 +46,30 @@ impl LanguageAdapter for GoAdapter {
     fn lsp_language_id(&self) -> &str {
         "go"
     }
+
+    fn field_query(&self) -> &str {
+        "(field_declaration name: (field_identifier) @name type: (_) @type) @field"
+    }
+
+    fn method_query(&self) -> &str {
+        "(method_declaration name: (field_identifier) @name) @method"
+    }
+
+    fn decorator_query(&self) -> &str {
+        // Go doesn't have decorators.
+        ""
+    }
+
+    fn gen_field(&self, name: &str, type_name: &str) -> String {
+        // Go puts type after name.
+        format!("    {name} {type_name}\n")
+    }
+
+    fn gen_method(&self, name: &str, params: &str, return_type: &str, body: &str) -> String {
+        format!("func {name}({params}) {return_type} {{\n    {body}\n}}\n")
+    }
+
+    fn gen_import(&self, path: &str) -> String {
+        format!("import \"{path}\"\n")
+    }
 }

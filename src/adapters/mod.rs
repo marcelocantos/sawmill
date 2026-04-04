@@ -52,6 +52,41 @@ pub trait LanguageAdapter: Send + Sync {
     fn lsp_language_id(&self) -> &str {
         ""
     }
+
+    // --- Structural navigation queries ---
+
+    /// Tree-sitter query for fields/attributes within a struct/class.
+    /// Must capture `@name` for the field name, `@type` for the type (if typed),
+    /// and `@field` for the whole field node.
+    fn field_query(&self) -> &str { "" }
+
+    /// Tree-sitter query for methods within a class/impl block.
+    /// Must capture `@name` and `@method` for the whole node.
+    fn method_query(&self) -> &str { "" }
+
+    /// Tree-sitter query for decorators/attributes on a node.
+    /// Must capture `@decorator` for the whole decorator node.
+    fn decorator_query(&self) -> &str { "" }
+
+    // --- Code generation templates ---
+
+    /// Generate a field/attribute declaration.
+    /// Returns the text to insert (e.g., "    email: String,\n" for Rust).
+    fn gen_field(&self, name: &str, type_name: &str) -> String {
+        format!("{name}: {type_name}")
+    }
+
+    /// Generate a method stub.
+    fn gen_method(&self, name: &str, params: &str, return_type: &str, body: &str) -> String {
+        let _ = (name, params, return_type, body);
+        String::new()
+    }
+
+    /// Generate an import statement.
+    fn gen_import(&self, path: &str) -> String {
+        let _ = path;
+        String::new()
+    }
 }
 
 /// Select the appropriate adapter for a file extension.

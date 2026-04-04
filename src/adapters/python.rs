@@ -46,4 +46,29 @@ impl LanguageAdapter for PythonAdapter {
     fn lsp_language_id(&self) -> &str {
         "python"
     }
+
+    fn field_query(&self) -> &str {
+        // Python doesn't have typed struct fields in the grammar; skip.
+        ""
+    }
+
+    fn method_query(&self) -> &str {
+        "(function_definition name: (identifier) @name) @method"
+    }
+
+    fn decorator_query(&self) -> &str {
+        "(decorator) @decorator"
+    }
+
+    fn gen_field(&self, name: &str, _type_name: &str) -> String {
+        format!("    {name} = None\n")
+    }
+
+    fn gen_method(&self, name: &str, params: &str, _return_type: &str, body: &str) -> String {
+        format!("    def {name}({params}):\n        {body}\n")
+    }
+
+    fn gen_import(&self, path: &str) -> String {
+        format!("import {path}\n")
+    }
 }
