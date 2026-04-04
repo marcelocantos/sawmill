@@ -50,3 +50,6 @@ blake3 = "1"
 
 # Embedded JS
 rquickjs = { version = "0.11", features = ["bindgen", "classes", "properties"] }
+
+# LSP client
+lsp-types = "0.97"

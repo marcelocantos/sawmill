@@ -38,4 +38,12 @@ impl LanguageAdapter for PythonAdapter {
     fn formatter_command(&self) -> Option<&[&str]> {
         Some(&["ruff", "format", "-"])
     }
+
+    fn lsp_command(&self) -> Option<&[&str]> {
+        Some(&["pyright-langserver", "--stdio"])
+    }
+
+    fn lsp_language_id(&self) -> &str {
+        "python"
+    }
 }

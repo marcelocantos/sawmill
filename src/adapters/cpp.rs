@@ -38,4 +38,12 @@ impl LanguageAdapter for CppAdapter {
     fn formatter_command(&self) -> Option<&[&str]> {
         Some(&["clang-format"])
     }
+
+    fn lsp_command(&self) -> Option<&[&str]> {
+        Some(&["clangd"])
+    }
+
+    fn lsp_language_id(&self) -> &str {
+        "cpp"
+    }
 }

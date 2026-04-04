@@ -17,6 +17,7 @@ use anyhow::{Context, Result};
 use crate::adapters;
 use crate::forest::{Forest, ParsedFile};
 use crate::index;
+use crate::lsp::LspManager;
 use crate::store::{Store, SymbolRecord};
 use crate::watcher::{FileEvent, FileWatcher};
 
@@ -32,6 +33,8 @@ pub struct CodebaseModel {
     _watcher: Option<FileWatcher>,
     /// Channel for receiving file events.
     events_rx: Option<mpsc::Receiver<FileEvent>>,
+    /// LSP connections (optional — None for ephemeral models).
+    pub lsp: Option<LspManager>,
 }
 
 impl CodebaseModel {
@@ -59,8 +62,27 @@ impl CodebaseModel {
         // Start file watcher.
         let (watcher, events_rx) = match FileWatcher::watch(&root) {
             Ok((w, rx)) => (Some(w), Some(rx)),
-            Err(_) => (None, None), // Watching failed; degrade gracefully.
+            Err(_) => (None, None),
         };
+
+        // Start LSP servers.
+        let adapters: Vec<&'static dyn crate::adapters::LanguageAdapter> = vec![
+            &crate::adapters::python::PythonAdapter,
+            &crate::adapters::rust::RustAdapter,
+            &crate::adapters::typescript::TypeScriptAdapter,
+            &crate::adapters::cpp::CppAdapter,
+            &crate::adapters::go::GoAdapter,
+        ];
+        let mut lsp = LspManager::new(&root, &adapters);
+
+        // Open all parsed files with their LSP servers.
+        for file in &forest.files {
+            let lang_id = file.adapter.lsp_language_id();
+            if !lang_id.is_empty() {
+                let text = String::from_utf8_lossy(&file.original_source);
+                let _ = lsp.did_open(&file.path, lang_id, &text);
+            }
+        }
 
         Ok(CodebaseModel {
             root,
@@ -68,6 +90,7 @@ impl CodebaseModel {
             store,
             _watcher: watcher,
             events_rx,
+            lsp: Some(lsp),
         })
     }
 
@@ -91,6 +114,7 @@ impl CodebaseModel {
             store,
             _watcher: None,
             events_rx: None,
+            lsp: None,
         })
     }
 

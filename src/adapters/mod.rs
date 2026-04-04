@@ -42,6 +42,16 @@ pub trait LanguageAdapter: Send + Sync {
     fn formatter_command(&self) -> Option<&[&str]> {
         None
     }
+
+    /// LSP server command and arguments. Returns None if no LSP is configured.
+    fn lsp_command(&self) -> Option<&[&str]> {
+        None
+    }
+
+    /// LSP language ID (e.g. "rust", "python", "typescript").
+    fn lsp_language_id(&self) -> &str {
+        ""
+    }
 }
 
 /// Select the appropriate adapter for a file extension.

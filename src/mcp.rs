@@ -87,6 +87,45 @@ struct FindReferencesParams {
 }
 
 #[derive(serde::Deserialize, schemars::JsonSchema)]
+struct HoverParams {
+    /// File path containing the symbol.
+    file: String,
+    /// Line number (1-based).
+    line: u32,
+    /// Column number (1-based).
+    column: u32,
+}
+
+#[derive(serde::Deserialize, schemars::JsonSchema)]
+struct DefinitionParams {
+    /// File path containing the symbol.
+    file: String,
+    /// Line number (1-based).
+    line: u32,
+    /// Column number (1-based).
+    column: u32,
+}
+
+#[derive(serde::Deserialize, schemars::JsonSchema)]
+struct LspReferencesParams {
+    /// File path containing the symbol.
+    file: String,
+    /// Line number (1-based).
+    line: u32,
+    /// Column number (1-based).
+    column: u32,
+}
+
+#[derive(serde::Deserialize, schemars::JsonSchema)]
+struct DiagnosticsParams {
+    /// File path to check.
+    file: String,
+    /// Optional modified content to check (if omitted, checks the file on disk).
+    #[serde(default)]
+    content: Option<String>,
+}
+
+#[derive(serde::Deserialize, schemars::JsonSchema)]
 struct TransformParams {
     /// Path scope (file or directory). Defaults to current directory.
     #[serde(default = "default_path")]
@@ -848,6 +887,148 @@ impl PolyRefactorServer {
             }
         } else {
             "Error: call `parse` first to load the codebase model.".to_string()
+        }
+    }
+
+    #[tool(
+        name = "hover",
+        description = "Get type information for a symbol at a specific position using the language's LSP server. Returns type signature, documentation, etc. Requires `parse` to be called first."
+    )]
+    fn hover(&self, Parameters(params): Parameters<HoverParams>) -> String {
+        let mut model_lock = self.model.lock().unwrap();
+        let model = match &mut *model_lock {
+            Some(m) => m,
+            None => return "Error: call `parse` first.".to_string(),
+        };
+
+        let lsp = match &mut model.lsp {
+            Some(l) => l,
+            None => return "No LSP servers available.".to_string(),
+        };
+
+        let path = PathBuf::from(&params.file);
+        let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("");
+        let lang_id = crate::adapters::adapter_for_extension(ext)
+            .map(|a| a.lsp_language_id())
+            .unwrap_or("");
+
+        match lsp.hover(&path, lang_id, params.line - 1, params.column - 1) {
+            Ok(Some(info)) => info,
+            Ok(None) => "No hover information available at this position.".to_string(),
+            Err(e) => format!("LSP error: {e}"),
+        }
+    }
+
+    #[tool(
+        name = "definition",
+        description = "Go to the definition of a symbol at a specific position using the language's LSP server. Returns file path and position. Requires `parse` to be called first."
+    )]
+    fn definition(&self, Parameters(params): Parameters<DefinitionParams>) -> String {
+        let mut model_lock = self.model.lock().unwrap();
+        let model = match &mut *model_lock {
+            Some(m) => m,
+            None => return "Error: call `parse` first.".to_string(),
+        };
+
+        let lsp = match &mut model.lsp {
+            Some(l) => l,
+            None => return "No LSP servers available.".to_string(),
+        };
+
+        let path = PathBuf::from(&params.file);
+        let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("");
+        let lang_id = crate::adapters::adapter_for_extension(ext)
+            .map(|a| a.lsp_language_id())
+            .unwrap_or("");
+
+        match lsp.definition(&path, lang_id, params.line - 1, params.column - 1) {
+            Ok(locs) if locs.is_empty() => "No definition found.".to_string(),
+            Ok(locs) => {
+                let mut output = format!("{} definition(s):\n", locs.len());
+                for loc in &locs {
+                    output.push_str(&format!("  {loc}\n"));
+                }
+                output
+            }
+            Err(e) => format!("LSP error: {e}"),
+        }
+    }
+
+    #[tool(
+        name = "lsp_references",
+        description = "Find all references to a symbol at a specific position using the language's LSP server. More accurate than syntactic search — includes aliased imports, trait methods, etc. Requires `parse` to be called first."
+    )]
+    fn lsp_references(&self, Parameters(params): Parameters<LspReferencesParams>) -> String {
+        let mut model_lock = self.model.lock().unwrap();
+        let model = match &mut *model_lock {
+            Some(m) => m,
+            None => return "Error: call `parse` first.".to_string(),
+        };
+
+        let lsp = match &mut model.lsp {
+            Some(l) => l,
+            None => return "No LSP servers available.".to_string(),
+        };
+
+        let path = PathBuf::from(&params.file);
+        let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("");
+        let lang_id = crate::adapters::adapter_for_extension(ext)
+            .map(|a| a.lsp_language_id())
+            .unwrap_or("");
+
+        match lsp.references(&path, lang_id, params.line - 1, params.column - 1) {
+            Ok(locs) if locs.is_empty() => "No references found.".to_string(),
+            Ok(locs) => {
+                let mut output = format!("{} reference(s):\n", locs.len());
+                for loc in &locs {
+                    output.push_str(&format!("  {loc}\n"));
+                }
+                output
+            }
+            Err(e) => format!("LSP error: {e}"),
+        }
+    }
+
+    #[tool(
+        name = "diagnostics",
+        description = "Get compile diagnostics (errors/warnings) for a file from the language's LSP server. Optionally provide modified content to check before writing to disk. Requires `parse` to be called first."
+    )]
+    fn diagnostics(&self, Parameters(params): Parameters<DiagnosticsParams>) -> String {
+        let mut model_lock = self.model.lock().unwrap();
+        let model = match &mut *model_lock {
+            Some(m) => m,
+            None => return "Error: call `parse` first.".to_string(),
+        };
+
+        let lsp = match &mut model.lsp {
+            Some(l) => l,
+            None => return "No LSP servers available.".to_string(),
+        };
+
+        let path = PathBuf::from(&params.file);
+        let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("");
+        let lang_id = crate::adapters::adapter_for_extension(ext)
+            .map(|a| a.lsp_language_id())
+            .unwrap_or("");
+
+        let text = match &params.content {
+            Some(c) => c.clone(),
+            None => match std::fs::read_to_string(&path) {
+                Ok(t) => t,
+                Err(e) => return format!("Error reading file: {e}"),
+            },
+        };
+
+        match lsp.get_diagnostics(&path, lang_id, &text) {
+            Ok(diags) if diags.is_empty() => "No errors or warnings.".to_string(),
+            Ok(diags) => {
+                let mut output = format!("{} diagnostic(s):\n", diags.len());
+                for d in &diags {
+                    output.push_str(&format!("  {d}\n"));
+                }
+                output
+            }
+            Err(e) => format!("LSP error: {e}"),
         }
     }
 

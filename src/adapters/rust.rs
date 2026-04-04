@@ -38,4 +38,12 @@ impl LanguageAdapter for RustAdapter {
     fn formatter_command(&self) -> Option<&[&str]> {
         Some(&["rustfmt"])
     }
+
+    fn lsp_command(&self) -> Option<&[&str]> {
+        Some(&["rust-analyzer"])
+    }
+
+    fn lsp_language_id(&self) -> &str {
+        "rust"
+    }
 }

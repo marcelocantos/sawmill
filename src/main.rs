@@ -6,6 +6,7 @@ mod codegen;
 mod forest;
 mod index;
 mod js_engine;
+mod lsp;
 mod mcp;
 mod model;
 mod rewrite;

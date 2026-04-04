@@ -38,4 +38,12 @@ impl LanguageAdapter for GoAdapter {
     fn formatter_command(&self) -> Option<&[&str]> {
         Some(&["gofmt"])
     }
+
+    fn lsp_command(&self) -> Option<&[&str]> {
+        Some(&["gopls"])
+    }
+
+    fn lsp_language_id(&self) -> &str {
+        "go"
+    }
 }

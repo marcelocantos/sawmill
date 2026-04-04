@@ -38,4 +38,12 @@ impl LanguageAdapter for TypeScriptAdapter {
     fn formatter_command(&self) -> Option<&[&str]> {
         Some(&["prettier", "--parser", "typescript"])
     }
+
+    fn lsp_command(&self) -> Option<&[&str]> {
+        Some(&["typescript-language-server", "--stdio"])
+    }
+
+    fn lsp_language_id(&self) -> &str {
+        "typescript"
+    }
 }
