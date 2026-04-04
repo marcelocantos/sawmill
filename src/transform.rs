@@ -107,6 +107,19 @@ fn resolve_abstract_query(
     }
 }
 
+/// Convert a Match spec into a Tree-sitter query string for a given adapter.
+pub fn resolve_query_str(
+    adapter: &dyn LanguageAdapter,
+    match_spec: &Match,
+) -> Result<String> {
+    match match_spec {
+        Match::Abstract { kind, name, .. } => {
+            resolve_abstract_query(adapter, kind, name)
+        }
+        Match::Raw { raw_query, .. } => Ok(raw_query.clone()),
+    }
+}
+
 /// Find all matching nodes in a file and return edits for the given action.
 pub fn transform_file(
     file: &ParsedFile,
@@ -289,6 +302,11 @@ fn make_edit(
             }
         }
     }
+}
+
+/// Apply a sorted list of non-overlapping edits to source bytes (public for js_engine).
+pub fn apply_edits_pub(source: &[u8], edits: &[Edit]) -> Result<Vec<u8>> {
+    apply_edits(source, edits)
 }
 
 /// Apply a sorted list of non-overlapping edits to source bytes.

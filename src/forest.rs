@@ -9,6 +9,7 @@ use ignore::WalkBuilder;
 use tree_sitter::{Parser, Tree};
 
 use crate::adapters::{self, LanguageAdapter};
+use crate::js_engine;
 use crate::rewrite;
 use crate::transform;
 
@@ -135,6 +136,40 @@ impl Forest {
 
         for file in &self.files {
             let mut new_source = transform::transform_file(file, match_spec, action)?;
+            if new_source != file.original_source {
+                if format {
+                    new_source = rewrite::format_source(&new_source, file.adapter);
+                }
+                changes.push(FileChange {
+                    path: file.path.clone(),
+                    original: file.original_source.clone(),
+                    new_source,
+                });
+            }
+        }
+
+        Ok(changes)
+    }
+
+    /// Apply a JS transform function across the forest.
+    pub fn transform_js(
+        &self,
+        match_spec: &transform::Match,
+        transform_fn: &str,
+        format: bool,
+    ) -> Result<Vec<FileChange>> {
+        let mut changes = Vec::new();
+
+        for file in &self.files {
+            let query_str = transform::resolve_query_str(file.adapter, match_spec)?;
+            let mut new_source = js_engine::run_js_transform(
+                &file.original_source,
+                &file.tree,
+                &query_str,
+                transform_fn,
+                &file.path.to_string_lossy(),
+                file.adapter,
+            )?;
             if new_source != file.original_source {
                 if format {
                     new_source = rewrite::format_source(&new_source, file.adapter);

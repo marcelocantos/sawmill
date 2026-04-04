@@ -3,6 +3,7 @@
 
 mod adapters;
 mod forest;
+mod js_engine;
 mod mcp;
 mod rewrite;
 mod transform;

@@ -39,5 +39,5 @@ serde_json = "1"
 # Error handling
 anyhow = "1"
 
-# Embedded JS (Phase 3 — uncomment when needed)
-# rquickjs = { version = "0.11", features = ["bindgen"] }
+# Embedded JS
+rquickjs = { version = "0.11", features = ["bindgen", "classes", "properties"] }
