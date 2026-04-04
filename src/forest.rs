@@ -19,6 +19,24 @@ pub struct ParsedFile {
     pub adapter: &'static dyn LanguageAdapter,
 }
 
+/// A pending file change (original + new content).
+pub struct FileChange {
+    pub path: PathBuf,
+    pub original: Vec<u8>,
+    pub new_source: Vec<u8>,
+}
+
+impl FileChange {
+    pub fn diff(&self) -> String {
+        rewrite::unified_diff(&self.path, &self.original, &self.new_source)
+    }
+
+    pub fn apply(&self) -> Result<()> {
+        std::fs::write(&self.path, &self.new_source)
+            .with_context(|| format!("writing {}", self.path.display()))
+    }
+}
+
 /// A collection of parsed source files.
 pub struct Forest {
     pub files: Vec<ParsedFile>,
@@ -77,23 +95,28 @@ impl Forest {
     }
 
     /// Rename all occurrences of `from` to `to` across the forest.
-    /// Returns a unified diff string.
-    pub fn rename(&mut self, from: &str, to: &str) -> Result<String> {
-        let mut all_diffs = String::new();
+    /// Returns a list of pending file changes.
+    pub fn rename(&self, from: &str, to: &str) -> Result<Vec<FileChange>> {
+        let mut changes = Vec::new();
 
         for file in &self.files {
             let new_source = rewrite::rename_in_file(file, from, to)?;
             if new_source != file.original_source {
-                let diff = rewrite::unified_diff(
-                    &file.path,
-                    &file.original_source,
-                    &new_source,
-                );
-                all_diffs.push_str(&diff);
+                changes.push(FileChange {
+                    path: file.path.clone(),
+                    original: file.original_source.clone(),
+                    new_source,
+                });
             }
         }
 
-        Ok(all_diffs)
+        Ok(changes)
+    }
+
+    /// Convenience: rename and return unified diff string.
+    pub fn rename_diff(&self, from: &str, to: &str) -> Result<String> {
+        let changes = self.rename(from, to)?;
+        Ok(changes.iter().map(|c| c.diff()).collect())
     }
 }
 

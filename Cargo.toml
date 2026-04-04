@@ -15,6 +15,11 @@ streaming-iterator = "0.1"
 # CLI
 clap = { version = "4", features = ["derive"] }
 
+# MCP server
+rmcp = { version = "1", features = ["server", "transport-io"] }
+tokio = { version = "1", features = ["full"] }
+schemars = "0.8"
+
 # Diffing
 similar = "3"
 

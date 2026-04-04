@@ -3,6 +3,7 @@
 
 mod adapters;
 mod forest;
+mod mcp;
 mod rewrite;
 
 use clap::{Parser, Subcommand};
@@ -34,6 +35,9 @@ enum Command {
         #[arg(long, default_value = ".")]
         path: PathBuf,
     },
+
+    /// Run as an MCP server over stdio.
+    Serve,
 }
 
 fn main() -> anyhow::Result<()> {
@@ -45,9 +49,15 @@ fn main() -> anyhow::Result<()> {
             println!("{forest}");
         }
         Command::Rename { from, to, path } => {
-            let mut forest = forest::Forest::from_path(&path)?;
-            let diff = forest.rename(&from, &to)?;
+            let forest = forest::Forest::from_path(&path)?;
+            let diff = forest.rename_diff(&from, &to)?;
             print!("{diff}");
+        }
+        Command::Serve => {
+            tokio::runtime::Builder::new_multi_thread()
+                .enable_all()
+                .build()?
+                .block_on(mcp::serve())?;
         }
     }
 
