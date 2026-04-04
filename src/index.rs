@@ -25,6 +25,9 @@ pub struct Symbol {
     pub end_col: usize,
     pub start_byte: usize,
     pub end_byte: usize,
+    /// Byte range of the name/identifier node.
+    pub name_start_byte: usize,
+    pub name_end_byte: usize,
 }
 
 /// Extract all symbols from a parsed file.
@@ -112,6 +115,8 @@ fn extract_with_query(
                     end_col: whole_n.end_position().column + 1,
                     start_byte: whole_n.start_byte(),
                     end_byte: whole_n.end_byte(),
+                    name_start_byte: name_n.start_byte(),
+                    name_end_byte: name_n.end_byte(),
                 });
             }
         }

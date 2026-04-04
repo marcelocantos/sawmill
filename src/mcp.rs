@@ -12,6 +12,7 @@ use rmcp::{schemars, tool, tool_handler, tool_router, ServerHandler, ServiceExt}
 use tree_sitter::{Parser, Query, QueryCursor};
 use streaming_iterator::StreamingIterator;
 
+use crate::codegen;
 use crate::forest::{FileChange, Forest, ParsedFile};
 use crate::model::CodebaseModel;
 use crate::rewrite;
@@ -140,10 +141,39 @@ struct TransformParams {
 }
 
 #[derive(serde::Deserialize, schemars::JsonSchema)]
+struct CodegenParams {
+    /// Path scope (file or directory). Defaults to current directory.
+    #[serde(default = "default_path")]
+    path: String,
+
+    /// JavaScript program to execute against the codebase model.
+    /// Receives a global `ctx` object with methods:
+    /// - ctx.findFunction(name) → array of nodes
+    /// - ctx.findType(name) → array of nodes
+    /// - ctx.query({kind, name, file}) → array of nodes (name supports * glob)
+    /// - ctx.references(name) → array of call-site nodes
+    /// - ctx.readFile(path) → file content string or null
+    /// - ctx.addFile(path, content) → create a new file
+    /// - ctx.editFile(path, startByte, endByte, replacement) → raw byte-range edit
+    /// Nodes have methods: replaceText, replaceBody, replaceName, remove, insertBefore, insertAfter
+    program: String,
+
+    /// Run the language formatter on changed files. Defaults to false.
+    #[serde(default)]
+    format: bool,
+
+    /// Validate that modified files parse correctly. Defaults to true.
+    #[serde(default = "default_true")]
+    validate: bool,
+}
+
+#[derive(serde::Deserialize, schemars::JsonSchema)]
 struct ApplyParams {
     /// Set to true to confirm applying the pending changes.
     confirm: bool,
 }
+
+fn default_true() -> bool { true }
 
 #[derive(serde::Deserialize, schemars::JsonSchema)]
 struct TransformBatchParams {
@@ -688,6 +718,69 @@ impl PolyRefactorServer {
         let description = format!("remove_parameter '{}' from '{}'", params.param_name, params.function);
 
         *self.pending.lock().unwrap() = Some(PendingChanges { changes, description });
+
+        format!(
+            "{diff}\n---\n{file_count} file(s) changed. Call `apply` with confirm=true to write to disk."
+        )
+    }
+
+    #[tool(
+        name = "codegen",
+        description = "Execute a JavaScript code generator program against the codebase. The program receives a global `ctx` object for querying symbols, reading files, and making coordinated edits across multiple files. Returns a diff preview. Call `apply` to write changes."
+    )]
+    fn codegen(&self, Parameters(params): Parameters<CodegenParams>) -> String {
+        let path = PathBuf::from(&params.path);
+        let forest = match self.get_forest(&path) {
+            Ok(f) => f,
+            Err(e) => return e,
+        };
+
+        let changes = match codegen::run_codegen(&forest, &params.program) {
+            Ok(c) => c,
+            Err(e) => return format!("Error in codegen program: {e}"),
+        };
+
+        if changes.is_empty() {
+            return "Program produced no changes.".to_string();
+        }
+
+        // Pre-flight validation.
+        if params.validate {
+            let errors = codegen::validate_changes(&changes);
+            if !errors.is_empty() {
+                let mut output = "WARNING: parse errors detected after transformation:\n".to_string();
+                for err in &errors {
+                    output.push_str(&format!("  - {err}\n"));
+                }
+                output.push_str("\nDiff preview (NOT applied):\n\n");
+                for c in &changes {
+                    output.push_str(&c.diff());
+                }
+                return output;
+            }
+        }
+
+        // Format if requested.
+        let final_changes: Vec<FileChange> = if params.format {
+            changes.into_iter().map(|mut c| {
+                if let Some(ext) = c.path.extension().and_then(|e| e.to_str()) {
+                    if let Some(adapter) = crate::adapters::adapter_for_extension(ext) {
+                        c.new_source = rewrite::format_source(&c.new_source, adapter);
+                    }
+                }
+                c
+            }).collect()
+        } else {
+            changes
+        };
+
+        let diff: String = final_changes.iter().map(|c| c.diff()).collect();
+        let file_count = final_changes.len();
+
+        *self.pending.lock().unwrap() = Some(PendingChanges {
+            changes: final_changes,
+            description: "codegen".to_string(),
+        });
 
         format!(
             "{diff}\n---\n{file_count} file(s) changed. Call `apply` with confirm=true to write to disk."

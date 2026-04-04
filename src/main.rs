@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 mod adapters;
+mod codegen;
 mod forest;
 mod index;
 mod js_engine;
