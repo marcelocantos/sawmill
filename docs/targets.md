@@ -1,17 +1,30 @@
 # Convergence Targets
 
-## 🎯T1 Phase 2: Match/act engine + multi-language + querying
+## 🎯T1 Phase 2 — ACHIEVED
+## 🎯T2 Phase 3 — ACHIEVED
 
-**Status:** ACHIEVED
+## 🎯T3 Phase 4: Persistent codebase model
 
-## 🎯T2 Phase 3: Programmable transforms + batch + named ops
+**Status:** In progress
 
-**Status:** ACHIEVED
+**Desired state:** The MCP server maintains a live, indexed model of
+the codebase that persists across sessions (SQLite), stays current via
+file watching, and supports incremental re-parsing. Tool calls operate
+against the in-memory model rather than re-parsing from disk on every
+invocation.
 
-All sub-targets complete:
-- 🎯T2.1 Embedded QuickJS — `transform_fn` on `transform` tool,
-  TransformNode API, sandboxed execution
-- 🎯T2.2 `transform_batch` — sequential transforms, single diff
-- 🎯T2.3 Named operations — `add_parameter`, `remove_parameter`
-- 🎯T2.4 Cross-file reference tracking — deferred (rename already
-  works cross-file; deeper import-aware tracking is Phase 4 scope)
+### Sub-targets
+
+- 🎯T3.1 **SQLite store** — schema for file metadata (path, language,
+  mtime, content hash), symbol index (name, kind, file, line, scope),
+  cross-references. Read/write operations.
+- 🎯T3.2 **Stateful forest** — the MCP server holds a persistent
+  `Forest` in memory. `parse` loads from cache and incrementally
+  updates changed files. All other tools operate against the
+  in-memory forest without re-parsing.
+- 🎯T3.3 **File watcher** — `notify` crate monitors parsed
+  directories. Changed files are re-parsed and indexes updated
+  incrementally.
+- 🎯T3.4 **Symbol index** — queryable index of all symbols (functions,
+  types, imports) with cross-references. Replaces ad-hoc Tree-sitter
+  queries for `find_symbol` and `find_references`.

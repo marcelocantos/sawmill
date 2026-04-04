@@ -641,15 +641,28 @@ polyrefactor apply --path ./src
   `move_symbol`, `add_parameter`, `remove_parameter`, `replace_body`)
 - Cross-file reference tracking (basic symbol index)
 
-### Phase 4
-- Additional languages (Rust, Go, Java, C)
-- MCP resources
-- Performance optimisation (incremental re-parsing, parallel
-  transforms, caching)
-- Advanced C++ support (preprocessor awareness, template handling)
-- Comprehensive test suite with real-world corpora
-- Error recovery and validation enhancements
-- Dynamic grammar loading for user-supplied languages
+### Phase 4 — Persistent Codebase Model
+- SQLite-backed store for file metadata, symbol index, and
+  cross-references (persistent across sessions)
+- Stateful MCP server — holds a `Forest` in memory, `parse`
+  loads from cache and incrementally updates changed files,
+  all tools operate against the live model
+- File watching via `notify` — re-parse changed files and
+  update indexes automatically
+- Symbol index — queryable index of all symbols with
+  cross-references, replacing ad-hoc Tree-sitter queries
+
+### Phase 5 — Code Generator Runtime
+- `ctx` API in QuickJS — cross-file discovery and coordinated
+  edits from a single JS program
+- Pattern teaching (recipe-based, then exemplar-based)
+- Pre-flight parse validation
+
+### Phase 6 — LSP Integration + Semantics
+- Connect to language servers for type info, references, impls
+- Pre-flight compile validation via LSP diagnostics
+- Richer `ctx` API with semantic queries
+- Change decomposition for large-scale edits
 
 ## 7. Testing Strategy
 

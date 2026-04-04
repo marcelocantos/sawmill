@@ -3,10 +3,14 @@
 
 mod adapters;
 mod forest;
+mod index;
 mod js_engine;
 mod mcp;
+mod model;
 mod rewrite;
+mod store;
 mod transform;
+mod watcher;
 
 use clap::{Parser, Subcommand};
 use std::path::PathBuf;

@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 use std::collections::HashMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
 use rmcp::handler::server::router::tool::ToolRouter;
@@ -13,6 +13,7 @@ use tree_sitter::{Parser, Query, QueryCursor};
 use streaming_iterator::StreamingIterator;
 
 use crate::forest::{FileChange, Forest, ParsedFile};
+use crate::model::CodebaseModel;
 use crate::rewrite;
 use crate::transform;
 
@@ -25,6 +26,8 @@ struct PendingChanges {
 pub struct PolyRefactorServer {
     tool_router: ToolRouter<Self>,
     pending: Mutex<Option<PendingChanges>>,
+    /// Persistent codebase model, loaded on first `parse` call.
+    model: Mutex<Option<CodebaseModel>>,
 }
 
 // --- Parameter types ---
@@ -220,13 +223,40 @@ fn default_position() -> String {
 impl PolyRefactorServer {
     #[tool(
         name = "parse",
-        description = "Parse source files and return a summary of the codebase forest (file count, languages, parse errors)."
+        description = "Parse source files into the persistent codebase model. First call loads and indexes all files; subsequent calls sync changes. Returns a summary of files and languages."
     )]
     fn parse(&self, Parameters(params): Parameters<ParseParams>) -> String {
         let path = PathBuf::from(&params.path);
-        match Forest::from_path(&path) {
-            Ok(forest) => format!("{forest}"),
-            Err(e) => format!("Error: {e}"),
+
+        let mut model_lock = self.model.lock().unwrap();
+
+        match &mut *model_lock {
+            Some(model) => {
+                // Model already loaded — sync any file changes.
+                if let Err(e) = model.sync() {
+                    return format!("Error syncing: {e}");
+                }
+                format!(
+                    "Codebase model updated. {} file(s) tracked.\n{}",
+                    model.file_count(),
+                    model.forest,
+                )
+            }
+            None => {
+                // First load — create the model.
+                match CodebaseModel::load(&path) {
+                    Ok(model) => {
+                        let summary = format!(
+                            "Codebase model loaded. {} file(s) indexed.\n{}",
+                            model.file_count(),
+                            model.forest,
+                        );
+                        *model_lock = Some(model);
+                        summary
+                    }
+                    Err(e) => format!("Error loading codebase: {e}"),
+                }
+            }
         }
     }
 
@@ -725,7 +755,33 @@ impl PolyRefactorServer {
         Self {
             tool_router: Self::tool_router(),
             pending: Mutex::new(None),
+            model: Mutex::new(None),
         }
+    }
+
+    /// Get a forest for the given path. Uses the persistent model if loaded
+    /// and the path is within the model's root; otherwise parses fresh.
+    fn get_forest(&self, path: &Path) -> Result<Forest, String> {
+        // Check if the model is loaded and covers this path.
+        let mut model_lock = self.model.lock().unwrap();
+        if let Some(model) = &mut *model_lock {
+            let _ = model.sync();
+            let model_root = model.root().to_owned();
+            let abs_path = path.canonicalize().unwrap_or_else(|_| path.to_owned());
+            if abs_path.starts_with(&model_root) {
+                // Filter forest to files under the requested path.
+                return Ok(Forest {
+                    files: model.forest.files.iter()
+                        .filter(|f| f.path.starts_with(&abs_path))
+                        .cloned()
+                        .collect(),
+                });
+            }
+        }
+        drop(model_lock);
+
+        // Fall back to parsing fresh.
+        Forest::from_path(path).map_err(|e| format!("Error parsing: {e}"))
     }
 }
 

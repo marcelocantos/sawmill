@@ -21,6 +21,17 @@ pub struct ParsedFile {
     pub adapter: &'static dyn LanguageAdapter,
 }
 
+impl Clone for ParsedFile {
+    fn clone(&self) -> Self {
+        ParsedFile {
+            path: self.path.clone(),
+            original_source: self.original_source.clone(),
+            tree: self.tree.clone(),
+            adapter: self.adapter,
+        }
+    }
+}
+
 /// A pending file change (original + new content).
 pub struct FileChange {
     pub path: PathBuf,

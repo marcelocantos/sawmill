@@ -39,5 +39,14 @@ serde_json = "1"
 # Error handling
 anyhow = "1"
 
+# Persistence
+rusqlite = { version = "0.35", features = ["bundled"] }
+
+# File watching
+notify = "8"
+
+# Hashing
+blake3 = "1"
+
 # Embedded JS
 rquickjs = { version = "0.11", features = ["bindgen", "classes", "properties"] }
