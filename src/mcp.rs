@@ -40,6 +40,9 @@ struct RenameParams {
     /// Path scope (file or directory). Defaults to current directory.
     #[serde(default = "default_path")]
     path: String,
+    /// Run the language formatter on changed files. Defaults to false.
+    #[serde(default)]
+    format: bool,
 }
 
 #[derive(serde::Deserialize, schemars::JsonSchema)]
@@ -113,6 +116,10 @@ struct TransformParams {
     /// "after" text for wrap action.
     #[serde(default)]
     after: Option<String>,
+
+    /// Run the language formatter on changed files. Defaults to false.
+    #[serde(default)]
+    format: bool,
 }
 
 #[derive(serde::Deserialize, schemars::JsonSchema)]
@@ -152,7 +159,7 @@ impl PolyRefactorServer {
             Err(e) => return format!("Error parsing: {e}"),
         };
 
-        let changes = match forest.rename(&params.from, &params.to) {
+        let changes = match forest.rename(&params.from, &params.to, params.format) {
             Ok(c) => c,
             Err(e) => return format!("Error renaming: {e}"),
         };
@@ -378,7 +385,7 @@ impl PolyRefactorServer {
             other => return format!("Error: unknown action '{other}'."),
         };
 
-        let changes = match forest.transform(&match_spec, &action) {
+        let changes = match forest.transform(&match_spec, &action, params.format) {
             Ok(c) => c,
             Err(e) => return format!("Error transforming: {e}"),
         };

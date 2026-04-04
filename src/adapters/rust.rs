@@ -34,4 +34,8 @@ impl LanguageAdapter for RustAdapter {
     fn import_query(&self) -> &str {
         "(use_declaration argument: (_) @name) @import"
     }
+
+    fn formatter_command(&self) -> Option<&[&str]> {
+        Some(&["rustfmt"])
+    }
 }

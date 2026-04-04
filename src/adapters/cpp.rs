@@ -34,4 +34,8 @@ impl LanguageAdapter for CppAdapter {
     fn import_query(&self) -> &str {
         "(preproc_include path: (_) @name) @import"
     }
+
+    fn formatter_command(&self) -> Option<&[&str]> {
+        Some(&["clang-format"])
+    }
 }

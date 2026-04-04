@@ -4,9 +4,11 @@
 use anyhow::{Context, Result};
 use similar::TextDiff;
 use std::path::Path;
+use std::process::{Command, Stdio};
 use streaming_iterator::StreamingIterator;
 use tree_sitter::Query;
 
+use crate::adapters::LanguageAdapter;
 use crate::forest::ParsedFile;
 
 /// Rename all occurrences of identifier `from` to `to` in a single file.
@@ -52,6 +54,37 @@ pub fn rename_in_file(file: &ParsedFile, from: &str, to: &str) -> Result<Vec<u8>
     result.extend_from_slice(&file.original_source[last_end..]);
 
     Ok(result)
+}
+
+/// Run the language's formatter on source bytes via stdin→stdout.
+/// Returns the formatted output, or the original source unchanged if
+/// the formatter is not available or fails.
+pub fn format_source(source: &[u8], adapter: &dyn LanguageAdapter) -> Vec<u8> {
+    let cmd_parts = match adapter.formatter_command() {
+        Some(parts) if !parts.is_empty() => parts,
+        _ => return source.to_vec(),
+    };
+
+    let mut child = match Command::new(cmd_parts[0])
+        .args(&cmd_parts[1..])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+    {
+        Ok(c) => c,
+        Err(_) => return source.to_vec(), // Formatter not installed.
+    };
+
+    if let Some(mut stdin) = child.stdin.take() {
+        use std::io::Write;
+        let _ = stdin.write_all(source);
+    }
+
+    match child.wait_with_output() {
+        Ok(output) if output.status.success() && !output.stdout.is_empty() => output.stdout,
+        _ => source.to_vec(), // Formatter failed; return original.
+    }
 }
 
 /// Produce a unified diff between original and new source for a file.

@@ -96,13 +96,16 @@ impl Forest {
     }
 
     /// Rename all occurrences of `from` to `to` across the forest.
-    /// Returns a list of pending file changes.
-    pub fn rename(&self, from: &str, to: &str) -> Result<Vec<FileChange>> {
+    /// If `format` is true, runs the language formatter on changed files.
+    pub fn rename(&self, from: &str, to: &str, format: bool) -> Result<Vec<FileChange>> {
         let mut changes = Vec::new();
 
         for file in &self.files {
-            let new_source = rewrite::rename_in_file(file, from, to)?;
+            let mut new_source = rewrite::rename_in_file(file, from, to)?;
             if new_source != file.original_source {
+                if format {
+                    new_source = rewrite::format_source(&new_source, file.adapter);
+                }
                 changes.push(FileChange {
                     path: file.path.clone(),
                     original: file.original_source.clone(),
@@ -116,22 +119,26 @@ impl Forest {
 
     /// Convenience: rename and return unified diff string.
     pub fn rename_diff(&self, from: &str, to: &str) -> Result<String> {
-        let changes = self.rename(from, to)?;
+        let changes = self.rename(from, to, false)?;
         Ok(changes.iter().map(|c| c.diff()).collect())
     }
 
     /// Apply a match/act transform across the forest.
-    /// Returns a list of pending file changes.
+    /// If `format` is true, runs the language formatter on changed files.
     pub fn transform(
         &self,
         match_spec: &transform::Match,
         action: &transform::Action,
+        format: bool,
     ) -> Result<Vec<FileChange>> {
         let mut changes = Vec::new();
 
         for file in &self.files {
-            let new_source = transform::transform_file(file, match_spec, action)?;
+            let mut new_source = transform::transform_file(file, match_spec, action)?;
             if new_source != file.original_source {
+                if format {
+                    new_source = rewrite::format_source(&new_source, file.adapter);
+                }
                 changes.push(FileChange {
                     path: file.path.clone(),
                     original: file.original_source.clone(),

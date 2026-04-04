@@ -34,4 +34,8 @@ impl LanguageAdapter for TypeScriptAdapter {
     fn import_query(&self) -> &str {
         "(import_statement source: (string) @name) @import"
     }
+
+    fn formatter_command(&self) -> Option<&[&str]> {
+        Some(&["prettier", "--parser", "typescript"])
+    }
 }

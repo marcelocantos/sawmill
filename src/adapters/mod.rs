@@ -36,6 +36,12 @@ pub trait LanguageAdapter: Send + Sync {
     /// Tree-sitter query for import/include statements.
     /// Must capture `@name` for the module name and `@import` for the whole statement.
     fn import_query(&self) -> &str;
+
+    /// Formatter command that reads source from stdin and writes formatted
+    /// output to stdout. Returns None if no formatter is configured.
+    fn formatter_command(&self) -> Option<&[&str]> {
+        None
+    }
 }
 
 /// Select the appropriate adapter for a file extension.

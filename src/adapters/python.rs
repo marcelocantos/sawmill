@@ -34,4 +34,8 @@ impl LanguageAdapter for PythonAdapter {
     fn import_query(&self) -> &str {
         "(import_statement name: (dotted_name) @name) @import"
     }
+
+    fn formatter_command(&self) -> Option<&[&str]> {
+        Some(&["ruff", "format", "-"])
+    }
 }

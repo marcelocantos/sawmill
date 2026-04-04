@@ -34,4 +34,8 @@ impl LanguageAdapter for GoAdapter {
     fn import_query(&self) -> &str {
         "(import_spec path: (interpreted_string_literal) @name) @import"
     }
+
+    fn formatter_command(&self) -> Option<&[&str]> {
+        Some(&["gofmt"])
+    }
 }
