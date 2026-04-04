@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 pub mod python;
+pub mod rust;
 
 use tree_sitter::Language;
 
@@ -26,6 +27,7 @@ pub trait LanguageAdapter: Send + Sync {
 pub fn adapter_for_extension(ext: &str) -> Option<&'static dyn LanguageAdapter> {
     match ext {
         "py" | "pyi" => Some(&python::PythonAdapter),
+        "rs" => Some(&rust::RustAdapter),
         _ => None,
     }
 }

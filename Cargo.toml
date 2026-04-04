@@ -9,6 +9,7 @@ license = "Apache-2.0"
 # Parsing
 tree-sitter = "0.26"
 tree-sitter-python = "0.25"
+tree-sitter-rust = "0.24"
 streaming-iterator = "0.1"
 
 # CLI
