@@ -192,6 +192,37 @@ struct TransformBatchParams {
 }
 
 #[derive(serde::Deserialize, schemars::JsonSchema)]
+struct TeachRecipeParams {
+    /// Unique name for this recipe.
+    name: String,
+    /// Human-readable description.
+    #[serde(default)]
+    description: String,
+    /// Parameter names that will be substituted (e.g. ["name", "type"]).
+    params: Vec<String>,
+    /// Ordered list of transform steps (same format as transform_batch).
+    /// Use $param_name in string values for substitution.
+    steps: serde_json::Value,
+}
+
+#[derive(serde::Deserialize, schemars::JsonSchema)]
+struct InstantiateParams {
+    /// Name of the recipe to instantiate.
+    recipe: String,
+    /// Parameter values to substitute (e.g. {"name": "User", "type": "struct"}).
+    params: HashMap<String, String>,
+    /// Path scope. Defaults to current directory.
+    #[serde(default = "default_path")]
+    path: String,
+    /// Run the language formatter. Defaults to false.
+    #[serde(default)]
+    format: bool,
+}
+
+#[derive(serde::Deserialize, schemars::JsonSchema)]
+struct ListRecipesParams {}
+
+#[derive(serde::Deserialize, schemars::JsonSchema)]
 struct AddParameterParams {
     /// Path scope (file or directory). Defaults to current directory.
     #[serde(default = "default_path")]
@@ -722,6 +753,102 @@ impl PolyRefactorServer {
         format!(
             "{diff}\n---\n{file_count} file(s) changed. Call `apply` with confirm=true to write to disk."
         )
+    }
+
+    #[tool(
+        name = "teach_recipe",
+        description = "Teach a reusable recipe — a named sequence of transform operations with parameter variables. Use $param_name in string values for substitution. Recipes persist across sessions."
+    )]
+    fn teach_recipe(&self, Parameters(params): Parameters<TeachRecipeParams>) -> String {
+        let model_lock = self.model.lock().unwrap();
+        if let Some(model) = &*model_lock {
+            match model.save_recipe(&params.name, &params.description, &params.params, &params.steps) {
+                Ok(()) => format!(
+                    "Recipe '{}' saved with parameters: [{}]",
+                    params.name,
+                    params.params.join(", "),
+                ),
+                Err(e) => format!("Error saving recipe: {e}"),
+            }
+        } else {
+            // No model loaded — use ephemeral store.
+            "Error: call `parse` first to load the codebase model.".to_string()
+        }
+    }
+
+    #[tool(
+        name = "instantiate",
+        description = "Instantiate a taught recipe with specific parameter values. Substitutes $param_name in all string values of the recipe steps, then executes the steps as a transform_batch. Returns a diff preview."
+    )]
+    fn instantiate(&self, Parameters(params): Parameters<InstantiateParams>) -> String {
+        let model_lock = self.model.lock().unwrap();
+        let (recipe_params, steps, _desc) = if let Some(model) = &*model_lock {
+            match model.load_recipe(&params.recipe) {
+                Ok(Some(r)) => r,
+                Ok(None) => return format!("Recipe '{}' not found.", params.recipe),
+                Err(e) => return format!("Error loading recipe: {e}"),
+            }
+        } else {
+            return "Error: call `parse` first to load the codebase model.".to_string();
+        };
+        drop(model_lock);
+
+        // Check all required params are provided.
+        for p in &recipe_params {
+            if !params.params.contains_key(p) {
+                return format!("Missing parameter '${p}' for recipe '{}'.", params.recipe);
+            }
+        }
+
+        // Substitute parameters in the steps JSON.
+        let mut steps_str = serde_json::to_string(&steps).unwrap_or_default();
+        for (key, value) in &params.params {
+            steps_str = steps_str.replace(&format!("${key}"), value);
+        }
+
+        let substituted_steps: serde_json::Value = match serde_json::from_str(&steps_str) {
+            Ok(v) => v,
+            Err(e) => return format!("Error substituting parameters: {e}"),
+        };
+
+        // Execute as transform_batch.
+        let batch_params = serde_json::json!({
+            "path": params.path,
+            "format": params.format,
+            "transforms": substituted_steps,
+        });
+
+        // Delegate to the existing transform_batch logic.
+        let batch: crate::mcp::TransformBatchParams = match serde_json::from_value(batch_params) {
+            Ok(b) => b,
+            Err(e) => return format!("Error building batch: {e}"),
+        };
+
+        self.transform_batch(Parameters(batch))
+    }
+
+    #[tool(
+        name = "list_recipes",
+        description = "List all taught recipes with their descriptions and parameters."
+    )]
+    fn list_recipes(&self, Parameters(_params): Parameters<ListRecipesParams>) -> String {
+        let model_lock = self.model.lock().unwrap();
+        if let Some(model) = &*model_lock {
+            match model.list_recipes() {
+                Ok(recipes) if recipes.is_empty() => "No recipes defined.".to_string(),
+                Ok(recipes) => {
+                    let mut output = format!("{} recipe(s):\n\n", recipes.len());
+                    for (name, desc) in &recipes {
+                        let desc_str = if desc.is_empty() { "" } else { &format!(" — {desc}") };
+                        output.push_str(&format!("  {name}{desc_str}\n"));
+                    }
+                    output
+                }
+                Err(e) => format!("Error listing recipes: {e}"),
+            }
+        } else {
+            "Error: call `parse` first to load the codebase model.".to_string()
+        }
     }
 
     #[tool(

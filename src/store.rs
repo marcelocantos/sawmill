@@ -72,7 +72,14 @@ impl Store {
 
              CREATE INDEX IF NOT EXISTS idx_symbols_name ON symbols(name);
              CREATE INDEX IF NOT EXISTS idx_symbols_file ON symbols(file_path);
-             CREATE INDEX IF NOT EXISTS idx_symbols_kind ON symbols(kind);",
+             CREATE INDEX IF NOT EXISTS idx_symbols_kind ON symbols(kind);
+
+             CREATE TABLE IF NOT EXISTS recipes (
+                 name TEXT PRIMARY KEY,
+                 description TEXT NOT NULL DEFAULT '',
+                 params_json TEXT NOT NULL,
+                 steps_json TEXT NOT NULL
+             );",
         )
         .context("initialising store schema")?;
         Ok(())
@@ -259,6 +266,81 @@ impl Store {
                 .context("reading tracked file path")
         })
         .collect()
+    }
+
+    /// Save a recipe (upsert).
+    pub fn save_recipe(
+        &self,
+        name: &str,
+        description: &str,
+        params: &[String],
+        steps: &serde_json::Value,
+    ) -> Result<()> {
+        let params_json = serde_json::to_string(params)
+            .context("serialising recipe params")?;
+        let steps_json = serde_json::to_string(steps)
+            .context("serialising recipe steps")?;
+
+        self.conn.execute(
+            "INSERT INTO recipes (name, description, params_json, steps_json)
+             VALUES (?1, ?2, ?3, ?4)
+             ON CONFLICT(name) DO UPDATE SET
+                 description = excluded.description,
+                 params_json = excluded.params_json,
+                 steps_json = excluded.steps_json",
+            params![name, description, params_json, steps_json],
+        ).with_context(|| format!("saving recipe '{name}'"))?;
+
+        Ok(())
+    }
+
+    /// Load a recipe by name.
+    pub fn load_recipe(&self, name: &str) -> Result<Option<(Vec<String>, serde_json::Value, String)>> {
+        let result = self.conn.query_row(
+            "SELECT params_json, steps_json, description FROM recipes WHERE name = ?1",
+            params![name],
+            |row| {
+                let params_json: String = row.get(0)?;
+                let steps_json: String = row.get(1)?;
+                let description: String = row.get(2)?;
+                Ok((params_json, steps_json, description))
+            },
+        );
+
+        match result {
+            Ok((params_json, steps_json, description)) => {
+                let params: Vec<String> = serde_json::from_str(&params_json)
+                    .context("deserialising recipe params")?;
+                let steps: serde_json::Value = serde_json::from_str(&steps_json)
+                    .context("deserialising recipe steps")?;
+                Ok(Some((params, steps, description)))
+            }
+            Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
+            Err(e) => Err(e).with_context(|| format!("loading recipe '{name}'")),
+        }
+    }
+
+    /// List all recipe names with descriptions.
+    pub fn list_recipes(&self) -> Result<Vec<(String, String)>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT name, description FROM recipes ORDER BY name",
+        ).context("preparing list_recipes")?;
+
+        let rows = stmt.query_map([], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+        }).context("listing recipes")?;
+
+        rows.map(|r| r.context("reading recipe row"))
+            .collect()
+    }
+
+    /// Delete a recipe.
+    pub fn delete_recipe(&self, name: &str) -> Result<bool> {
+        let count = self.conn.execute(
+            "DELETE FROM recipes WHERE name = ?1",
+            params![name],
+        ).with_context(|| format!("deleting recipe '{name}'"))?;
+        Ok(count > 0)
     }
 }
 

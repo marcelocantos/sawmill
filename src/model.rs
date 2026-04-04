@@ -274,6 +274,27 @@ impl CodebaseModel {
     pub fn file_count(&self) -> usize {
         self.forest.files.len()
     }
+
+    /// Save a recipe to the store.
+    pub fn save_recipe(
+        &self,
+        name: &str,
+        description: &str,
+        params: &[String],
+        steps: &serde_json::Value,
+    ) -> Result<()> {
+        self.store.save_recipe(name, description, params, steps)
+    }
+
+    /// Load a recipe from the store.
+    pub fn load_recipe(&self, name: &str) -> Result<Option<(Vec<String>, serde_json::Value, String)>> {
+        self.store.load_recipe(name)
+    }
+
+    /// List all recipes.
+    pub fn list_recipes(&self) -> Result<Vec<(String, String)>> {
+        self.store.list_recipes()
+    }
 }
 
 /// Convert index::Symbol to store::SymbolRecord.
