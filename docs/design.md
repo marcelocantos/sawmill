@@ -689,9 +689,241 @@ polyrefactor apply --path ./src
   default. Add execution time limits and memory caps. No host
   bindings beyond the `TransformNode` API.
 
-## 9. Future Extensions
-- Integration with LSP servers for richer symbol information.
-- Support for declarative transformation languages (inspired by
-  GritQL or ast-grep).
-- WASM build for browser-based playground.
-- Plugin system for user-defined language adapters and transforms.
+## 9. Long-Term Vision: Codebase Operations Platform
+
+The current tool handles one layer: **find AST nodes → apply
+mechanical edits**. The long-term vision is a **codebase operations
+platform** — the thing that stands between an agent's intent and
+the filesystem, handling all mechanical complexity so the agent
+focuses entirely on what to do, never on how to do it.
+
+### 9.1 The Core Shift
+
+Today, agents write code. They read files, understand context,
+generate new code, and apply edits — spending most of their tokens
+on bookkeeping (finding the right location, preserving formatting,
+maintaining consistency across files) rather than on the creative
+decisions that actually require intelligence.
+
+The platform absorbs all the bookkeeping. The agent becomes a
+**programmer of code generators** — it writes small programs that
+describe intent, and the platform executes them against a live,
+semantic model of the codebase.
+
+### 9.2 Agent-Taught Patterns
+
+Agents understand codebases deeply but waste tokens re-deriving
+the same structural patterns across sessions. The platform lets
+agents teach patterns that persist:
+
+**Teaching by example:** The agent points at existing code, names
+the variable parts, and the platform extracts a reusable template.
+
+```json
+{"tool": "teach_by_example",
+ "name": "api_endpoint",
+ "exemplar": "src/handlers/users.rs",
+ "parameters": {
+   "name": "users",
+   "entity": "User",
+   "path": "/users"
+ },
+ "also_affects": [
+   "src/routes/mod.rs",
+   "tests/api/"
+ ]}
+```
+
+The platform uses Tree-sitter to parse the exemplar, identify
+which subtrees contain parameter values, and extract a structural
+template. The `also_affects` field tells it to look for
+corresponding patterns in related files (route registration,
+tests, etc.).
+
+**Teaching by recipe:** The agent composes existing tool operations
+into a reusable sequence with variables.
+
+```json
+{"tool": "teach_recipe",
+ "name": "add_field",
+ "params": ["struct", "field", "type", "default"],
+ "steps": [
+   {"action": "add_parameter",
+    "function": "$struct",
+    "param_name": "$field", "param_type": "$type"},
+   {"action": "transform", "kind": "function", "name": "new",
+    "parent": "$struct",
+    "transform_fn": "(node) => /* add $field to constructor */"},
+   {"action": "transform", "kind": "function", "name_regex": "^test_",
+    "transform_fn": "(node) => /* add $field to test fixtures */"}
+ ]}
+```
+
+**Instantiation** is mechanical — the agent (or a different agent
+in a later session) invokes the pattern with specific values and
+the platform produces the code:
+
+```json
+{"tool": "instantiate", "pattern": "api_endpoint",
+ "params": {"name": "products", "entity": "Product",
+            "path": "/products"}}
+```
+
+Patterns are persistent (stored in SQLite per-project). The agent
+teaches once, the platform remembers indefinitely.
+
+### 9.3 Code Generator Runtime
+
+The `transform_fn` evolves from operating on a single node to
+operating on the entire codebase model. The agent writes a
+JavaScript program — a **code generator** — that the platform
+executes:
+
+```javascript
+(ctx) => {
+  const user = ctx.findType("User");
+  const fields = user.fields();
+  const constructor = user.method("new");
+  const tests = ctx.query({kind: "function", name: "test_*user*"});
+
+  // Add field
+  user.addField("avatar_url", "Option<String>");
+
+  // Update constructor
+  constructor.addParameter("avatar_url", "Option<String>", "None");
+  constructor.appendToBody("avatar_url,");
+
+  // Update all test fixtures
+  for (const test of tests) {
+    test.transform(node => {
+      if (node.text.includes("User {")) {
+        return node.replaceText(
+          node.text.replace("}", "avatar_url: None, }")
+        );
+      }
+      return node;
+    });
+  }
+}
+```
+
+The `ctx` object exposes:
+- **Discovery** — `findType`, `findFunction`, `query`, `references`
+- **Semantic projection** — `.fields()`, `.parameters()`,
+  `.returnType()`, `.traitImpls()` — structured data, not raw text
+- **Edit primitives** — `addField`, `addParameter`,
+  `appendToBody`, `addImport` — semantic-level mutations
+- **Cross-file coordination** — a single program touches multiple
+  files atomically
+- **Validation** — `ctx.willParse()` checks the result before
+  committing
+
+### 9.4 Persistent Codebase Model
+
+The platform maintains a **live, indexed model** of the codebase:
+
+**First parse:** Walk the directory, parse all files, build
+indexes (symbol table, cross-references, type information from
+LSP), persist to SQLite.
+
+**File watching:** `notify` crate monitors the filesystem.
+Changed files are re-parsed incrementally (Tree-sitter supports
+this natively — you specify which byte ranges changed and it
+re-parses only affected subtrees). Indexes are updated in place.
+
+**In-memory hot cache:** The forest + indexes live in memory for
+sub-millisecond queries. SQLite is the durable backing store for
+cross-session persistence.
+
+**Session continuity:** An agent starting a new session gets
+immediate access to the full codebase model without re-scanning.
+The platform loads from SQLite, checks mtimes, incrementally
+updates changed files, and is ready.
+
+The SQLite store holds:
+- Parsed file metadata (path, language, mtime, content hash)
+- Symbol index (name → file, line, kind, scope)
+- Cross-references (definition → usages)
+- Cached LSP results (type info, trait impls, diagnostics)
+- Learned patterns and recipes
+- Project conventions and invariants
+
+### 9.5 LSP Integration for Semantics
+
+Tree-sitter gives us syntax. LSP servers give us semantics.
+Rather than reimplementing type inference per language, the
+platform connects to existing LSP servers (rust-analyzer,
+tsserver, gopls, pyright, clangd) and proxies semantic queries:
+
+- **Type information** — `textDocument/hover` → "this variable
+  is a `Vec<String>`"
+- **Go to definition** — `textDocument/definition` → precise
+  cross-file symbol resolution
+- **Find implementations** — `textDocument/implementation` →
+  "these types implement this trait/interface"
+- **References** — `textDocument/references` → all usages, not
+  just syntactic name matches
+- **Diagnostics** — after applying edits in memory, ask the LSP
+  if the result has errors before writing to disk
+
+This gives code generator programs access to rich semantic
+information (`ctx.typeOf(expr)`, `ctx.implementors("Handler")`)
+without us building language-specific analysis.
+
+### 9.6 Pre-flight Validation
+
+Before applying changes, the platform can verify:
+
+1. **Parse check** — does every modified file still parse? This
+   is fast (Tree-sitter) and catches basic syntax errors.
+2. **Structural check** — are there dangling references? (renamed
+   a function but missed a call site)
+3. **LSP check** — feed the modified source to the LSP and check
+   for diagnostic errors. This catches type errors, missing
+   imports, and other semantic issues.
+4. **Convention check** — does the result satisfy the project's
+   taught patterns and invariants?
+
+Validation happens before `apply`, so the agent (and user) see
+any issues in the diff preview, not after files are written.
+
+### 9.7 Change Decomposition
+
+Inspired by Google's Rosie tool for large-scale changes across
+their monorepo: a single logical change may need to be split
+into independent, individually-testable units.
+
+The platform can **shard** a large change by:
+- Directory or package boundary
+- Ownership (if configured)
+- Dependency order (change libraries before dependents)
+
+Each shard is independently verified (parses, passes LSP checks),
+can be applied and rolled back independently, and produces its
+own diff for review.
+
+This matters less for single-repo work but becomes critical when
+the platform is used for large-scale migrations — "update all
+usages of API v1 to API v2 across 200 files" needs to land
+safely even if some files have edge cases.
+
+### 9.8 Interaction Model Summary
+
+The agent interacts with the platform at three levels of
+abstraction, choosing the one that fits:
+
+| Level | Agent provides | Platform handles |
+|---|---|---|
+| **Intent** | "Add field X to struct Y" | Discovery, editing all affected locations, validation |
+| **Program** | JS code generator against `ctx` | Execution, coordination, validation, file I/O |
+| **Pattern** | "Do it like the users endpoint" | Template extraction, parameterised instantiation |
+
+All three levels produce the same output: a set of verified,
+previewable file changes that the agent reviews as a diff and
+commits with `apply`.
+
+The platform is the **mechanical layer** — fast, precise,
+consistent, persistent. The agent is the **semantic layer** —
+understanding intent, making design decisions, choosing what to
+build. The boundary between them is the `ctx` API and the
+pattern/recipe system.
