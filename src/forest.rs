@@ -103,11 +103,19 @@ pub fn apply_with_backup(changes: &[FileChange]) -> Result<Vec<PathBuf>> {
 pub fn undo_from_backups(backup_paths: &[PathBuf]) -> Result<usize> {
     let mut restored = 0;
     for backup in backup_paths {
-        // Derive the original path from the backup path.
-        let _original = backup.with_extension(""); // strips .canopy.bak
-        // Actually, with_extension only strips the last extension.
-        // .canopy.bak → .canopy → need to strip again.
-        let original = PathBuf::from(backup.to_string_lossy().trim_end_matches(".canopy.bak"));
+        // Derive the original path by stripping the ASCII ".canopy.bak" suffix.
+        let backup_os = backup.as_os_str().as_encoded_bytes();
+        let suffix = b".canopy.bak";
+        let original = if backup_os.ends_with(suffix) {
+            // SAFETY: stripping an ASCII suffix from a valid OsStr preserves encoding.
+            PathBuf::from(unsafe {
+                std::ffi::OsStr::from_encoded_bytes_unchecked(
+                    &backup_os[..backup_os.len() - suffix.len()],
+                )
+            })
+        } else {
+            continue;
+        };
 
         if !backup.exists() {
             continue;
