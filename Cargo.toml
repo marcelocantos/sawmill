@@ -53,3 +53,6 @@ rquickjs = { version = "0.11", features = ["bindgen", "classes", "properties"] }
 
 # LSP client
 lsp-types = "0.97"
+
+# Unix I/O (poll for non-blocking LSP reads)
+libc = "0.2"

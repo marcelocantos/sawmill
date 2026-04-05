@@ -193,6 +193,7 @@ dependencies = [
  "blake3",
  "clap",
  "ignore",
+ "libc",
  "lsp-types",
  "notify",
  "rayon",

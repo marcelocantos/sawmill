@@ -396,11 +396,28 @@ impl LspConnection {
     }
 
     /// Try to read a message within a timeout. Returns None on timeout.
+    ///
+    /// Uses `poll(2)` to check readability before blocking — Unix-only
+    /// (macOS/Linux), matching the project's supported target platforms.
     fn try_read_message(&mut self, timeout: std::time::Duration) -> Option<Value> {
-        // Simplified: attempt a blocking read with a timeout via thread.
-        // For production, use non-blocking I/O.
-        let start = std::time::Instant::now();
-        if start.elapsed() < timeout {
+        use std::os::unix::io::AsRawFd;
+
+        let stdout = self.process.stdout.as_ref()?;
+        let fd = stdout.as_raw_fd();
+        // poll takes a signed millisecond timeout; cap at i32::MAX (~24 days).
+        let timeout_ms = timeout.as_millis().min(i32::MAX as u128) as libc::c_int;
+
+        let mut pfd = libc::pollfd {
+            fd,
+            events: libc::POLLIN,
+            revents: 0,
+        };
+
+        // SAFETY: pfd is a valid, properly initialised pollfd; nfds=1; timeout
+        // is a non-negative millisecond count.
+        let ready = unsafe { libc::poll(&mut pfd, 1, timeout_ms) };
+
+        if ready > 0 && (pfd.revents & libc::POLLIN) != 0 {
             self.read_message().ok()
         } else {
             None
