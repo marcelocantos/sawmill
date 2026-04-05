@@ -1278,7 +1278,20 @@ impl PolyRefactorServer {
             Err(e) => return e,
         };
 
-        let changes = match codegen::run_codegen(&forest, &params.program) {
+        // Try to use LSP if model is loaded.
+        let changes = {
+            let mut model_lock = self.model.lock().unwrap();
+            if let Some(model) = &mut *model_lock {
+                if let Some(lsp) = &mut model.lsp {
+                    codegen::run_codegen_with_lsp(&forest, &params.program, lsp)
+                } else {
+                    codegen::run_codegen(&forest, &params.program)
+                }
+            } else {
+                codegen::run_codegen(&forest, &params.program)
+            }
+        };
+        let changes = match changes {
             Ok(c) => c,
             Err(e) => return format!("Error in codegen program: {e}"),
         };

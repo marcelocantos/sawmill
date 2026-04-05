@@ -125,11 +125,80 @@ globalThis.__makeNode = function(props) {
 };
 "#;
 
-/// Execute a codegen program against the forest.
-/// Returns file changes (edits + new files).
+/// Execute a codegen program against the forest (without LSP).
 pub fn run_codegen(
     forest: &Forest,
     program: &str,
+) -> Result<Vec<FileChange>> {
+    run_codegen_inner(forest, program, None)
+}
+
+/// Execute a codegen program with LSP access.
+pub fn run_codegen_with_lsp(
+    forest: &Forest,
+    program: &str,
+    lsp: &mut crate::lsp::LspManager,
+) -> Result<Vec<FileChange>> {
+    run_codegen_inner(forest, program, Some(lsp))
+}
+
+/// Thread-local storage for LSP proxy during JS execution.
+/// SAFETY: Only accessed from the single thread running JS.
+struct LspProxy {
+    ptr: *mut crate::lsp::LspManager,
+}
+
+// SAFETY: LspProxy is only used within a single-threaded JS context.
+// The raw pointer is valid for the duration of run_codegen_inner.
+unsafe impl Send for LspProxy {}
+
+impl LspProxy {
+    fn hover(&self, file: &str, lang_id: &str, line: u32, col: u32) -> Option<String> {
+        let lsp = unsafe { &mut *self.ptr };
+        let path = std::path::PathBuf::from(file);
+        lsp.hover(&path, lang_id, line, col).ok().flatten()
+    }
+
+    fn definition(&self, file: &str, lang_id: &str, line: u32, col: u32) -> Vec<serde_json::Value> {
+        let lsp = unsafe { &mut *self.ptr };
+        let path = std::path::PathBuf::from(file);
+        match lsp.definition(&path, lang_id, line, col) {
+            Ok(locs) => locs.iter().map(|l| serde_json::json!({
+                "file": l.path.to_string_lossy(),
+                "line": l.line + 1,
+                "column": l.column + 1,
+            })).collect(),
+            Err(_) => Vec::new(),
+        }
+    }
+
+    fn references(&self, file: &str, lang_id: &str, line: u32, col: u32) -> Vec<serde_json::Value> {
+        let lsp = unsafe { &mut *self.ptr };
+        let path = std::path::PathBuf::from(file);
+        match lsp.references(&path, lang_id, line, col) {
+            Ok(locs) => locs.iter().map(|l| serde_json::json!({
+                "file": l.path.to_string_lossy(),
+                "line": l.line + 1,
+                "column": l.column + 1,
+            })).collect(),
+            Err(_) => Vec::new(),
+        }
+    }
+
+    fn diagnostics_for(&self, file: &str, lang_id: &str, text: &str) -> Vec<serde_json::Value> {
+        let lsp = unsafe { &mut *self.ptr };
+        let path = std::path::PathBuf::from(file);
+        match lsp.get_diagnostics(&path, lang_id, text) {
+            Ok(diags) => diags.iter().map(|d| serde_json::json!(d)).collect(),
+            Err(_) => Vec::new(),
+        }
+    }
+}
+
+fn run_codegen_inner(
+    forest: &Forest,
+    program: &str,
+    lsp: Option<&mut crate::lsp::LspManager>,
 ) -> Result<Vec<FileChange>> {
     let runtime = JsRuntime::new()
         .context("creating QuickJS runtime")?;
@@ -140,6 +209,19 @@ pub fn run_codegen(
         .context("creating QuickJS context")?;
 
     let collector = Rc::new(RefCell::new(EditCollector::new()));
+
+    // Build file→langId map for LSP dispatch.
+    let lang_map: HashMap<String, String> = forest.files.iter()
+        .map(|f| (
+            f.path.to_string_lossy().to_string(),
+            f.adapter.lsp_language_id().to_string(),
+        ))
+        .collect();
+
+    // Create LSP proxy if available.
+    let lsp_proxy: Option<Rc<LspProxy>> = lsp.map(|l| {
+        Rc::new(LspProxy { ptr: l as *mut _ })
+    });
 
     let changes = context.with(|ctx| -> Result<Vec<FileChange>> {
         // Inject helpers.
@@ -187,6 +269,48 @@ pub fn run_codegen(
                 gen_for_lang(&lang_id, |a| a.gen_import(&path))
             },
         ).context("creating __genImport")?).context("setting __genImport")?;
+
+        // Register LSP callbacks if available.
+        if let Some(proxy) = &lsp_proxy {
+            let p = proxy.clone();
+            let lm = lang_map.clone();
+            ctx.globals().set("__lspHover", Function::new(ctx.clone(),
+                move |file: String, line: u32, col: u32| -> Option<String> {
+                    let lang_id = lm.get(&file).map(|s| s.as_str()).unwrap_or("");
+                    p.hover(&file, lang_id, line.saturating_sub(1), col.saturating_sub(1))
+                },
+            ).context("creating __lspHover")?).context("setting __lspHover")?;
+
+            let p = proxy.clone();
+            let lm = lang_map.clone();
+            ctx.globals().set("__lspDefinition", Function::new(ctx.clone(),
+                move |file: String, line: u32, col: u32| -> String {
+                    let lang_id = lm.get(&file).map(|s| s.as_str()).unwrap_or("");
+                    let locs = p.definition(&file, lang_id, line.saturating_sub(1), col.saturating_sub(1));
+                    serde_json::to_string(&locs).unwrap_or("[]".to_string())
+                },
+            ).context("creating __lspDefinition")?).context("setting __lspDefinition")?;
+
+            let p = proxy.clone();
+            let lm = lang_map.clone();
+            ctx.globals().set("__lspReferences", Function::new(ctx.clone(),
+                move |file: String, line: u32, col: u32| -> String {
+                    let lang_id = lm.get(&file).map(|s| s.as_str()).unwrap_or("");
+                    let locs = p.references(&file, lang_id, line.saturating_sub(1), col.saturating_sub(1));
+                    serde_json::to_string(&locs).unwrap_or("[]".to_string())
+                },
+            ).context("creating __lspReferences")?).context("setting __lspReferences")?;
+
+            let p = proxy.clone();
+            let lm = lang_map.clone();
+            ctx.globals().set("__lspDiagnostics", Function::new(ctx.clone(),
+                move |file: String, text: String| -> String {
+                    let lang_id = lm.get(&file).map(|s| s.as_str()).unwrap_or("");
+                    let diags = p.diagnostics_for(&file, lang_id, &text);
+                    serde_json::to_string(&diags).unwrap_or("[]".to_string())
+                },
+            ).context("creating __lspDiagnostics")?).context("setting __lspDiagnostics")?;
+        }
 
         // Build ctx object.
         let ctx_obj = rquickjs::Object::new(ctx.clone())
@@ -281,6 +405,29 @@ pub fn run_codegen(
                 ctx.genMethod = function(langId, name, params, returnType, body) {{
                     return __genMethod(langId, name, params, returnType, body);
                 }};
+
+                // LSP methods (available when LSP servers are connected).
+                ctx.typeOf = function(file, line, col) {{
+                    if (typeof __lspHover === "undefined") return null;
+                    return __lspHover(file, line, col);
+                }};
+
+                ctx.definition = function(file, line, col) {{
+                    if (typeof __lspDefinition === "undefined") return [];
+                    return JSON.parse(__lspDefinition(file, line, col));
+                }};
+
+                ctx.lspReferences = function(file, line, col) {{
+                    if (typeof __lspReferences === "undefined") return [];
+                    return JSON.parse(__lspReferences(file, line, col));
+                }};
+
+                ctx.diagnostics = function(file, text) {{
+                    if (typeof __lspDiagnostics === "undefined") return [];
+                    return JSON.parse(__lspDiagnostics(file, text || ""));
+                }};
+
+                ctx.hasLsp = typeof __lspHover !== "undefined";
             }})
             "#
         );
@@ -723,6 +870,7 @@ fn find_node_info(file: &ParsedFile, start: usize, end: usize) -> Option<NodeInf
 }
 
 /// Pre-flight validation: re-parse modified files and check for parse errors.
+/// Also includes structural checks via `structural_checks`.
 pub fn validate_changes(changes: &[FileChange]) -> Vec<String> {
     let mut errors = Vec::new();
 
@@ -757,6 +905,113 @@ pub fn validate_changes(changes: &[FileChange]) -> Vec<String> {
     }
 
     errors
+}
+
+/// Structural pre-flight checks: detect removed symbols still referenced,
+/// using the symbol index and Tree-sitter (not LSP).
+///
+/// Builds a "post-change" symbol index by re-parsing changed files and
+/// combining with unchanged files' existing symbols from the forest.
+/// Only reports issues for symbols that *existed* before the changes,
+/// avoiding false positives for built-ins and external functions.
+pub fn structural_checks(
+    forest: &Forest,
+    changes: &[FileChange],
+) -> Vec<String> {
+    use std::collections::{HashMap, HashSet};
+
+    // Build a map of changed file paths for quick lookup.
+    let changed_paths: HashMap<String, &FileChange> = changes.iter()
+        .map(|c| (c.path.to_string_lossy().to_string(), c))
+        .collect();
+
+    // Pre-change: collect function/type definition names from the forest.
+    let mut pre_functions: HashSet<String> = HashSet::new();
+    for file in &forest.files {
+        for sym in index::extract_symbols(file) {
+            if sym.kind == "function" || sym.kind == "type" {
+                pre_functions.insert(sym.name.clone());
+            }
+        }
+    }
+
+    // Helper: parse new_source from a FileChange into a temporary ParsedFile.
+    let parse_change = |change: &FileChange| -> Option<ParsedFile> {
+        let ext = change.path.extension().and_then(|e| e.to_str()).unwrap_or("");
+        let adapter = crate::adapters::adapter_for_extension(ext)?;
+        let mut parser = tree_sitter::Parser::new();
+        parser.set_language(&adapter.language()).ok()?;
+        let tree = parser.parse(&change.new_source, None)?;
+        Some(ParsedFile {
+            path: change.path.clone(),
+            original_source: change.new_source.clone(),
+            tree,
+            adapter,
+        })
+    };
+
+    // Post-change: build symbol lists by combining:
+    // - Re-parsed changed files (using new_source)
+    // - Unchanged forest files (using their existing parsed trees)
+    let mut post_functions: HashSet<String> = HashSet::new();
+    let mut post_calls: Vec<index::Symbol> = Vec::new();
+
+    for file in &forest.files {
+        let file_key = file.path.to_string_lossy().to_string();
+        let syms = if let Some(change) = changed_paths.get(&file_key) {
+            if let Some(tmp) = parse_change(change) {
+                index::extract_symbols(&tmp)
+            } else {
+                continue;
+            }
+        } else {
+            index::extract_symbols(file)
+        };
+        for sym in syms {
+            match sym.kind.as_str() {
+                "function" | "type" => { post_functions.insert(sym.name.clone()); }
+                "call" => post_calls.push(sym),
+                _ => {}
+            }
+        }
+    }
+
+    // Also handle brand-new files (not yet in the forest) from the changes list.
+    for change in changes {
+        let file_key = change.path.to_string_lossy().to_string();
+        if forest.files.iter().any(|f| f.path.to_string_lossy() == file_key) {
+            continue; // already handled above
+        }
+        if let Some(tmp) = parse_change(change) {
+            for sym in index::extract_symbols(&tmp) {
+                match sym.kind.as_str() {
+                    "function" | "type" => { post_functions.insert(sym.name.clone()); }
+                    "call" => post_calls.push(sym),
+                    _ => {}
+                }
+            }
+        }
+    }
+
+    // Symbols removed by the changes: existed pre-change, missing post-change.
+    let removed: HashSet<&String> = pre_functions.iter()
+        .filter(|name| !post_functions.contains(*name))
+        .collect();
+
+    let mut warnings = Vec::new();
+
+    for call in &post_calls {
+        if removed.contains(&call.name) {
+            warnings.push(format!(
+                "Removed symbol `{}` still referenced at {}:{}",
+                call.name,
+                call.file_path,
+                call.start_line,
+            ));
+        }
+    }
+
+    warnings
 }
 
 #[cfg(test)]
