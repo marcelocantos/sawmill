@@ -46,7 +46,8 @@ impl CodebaseModel {
     /// 4. Builds the symbol index for changed files
     /// 5. Starts a file watcher for live updates
     pub fn load(root: &Path) -> Result<Self> {
-        let root = root.canonicalize()
+        let root = root
+            .canonicalize()
             .with_context(|| format!("canonicalising {}", root.display()))?;
 
         // Ensure .canopy directory exists.
@@ -96,8 +97,7 @@ impl CodebaseModel {
 
     /// Load without persistence or watching (for testing or one-shot CLI use).
     pub fn load_ephemeral(root: &Path) -> Result<Self> {
-        let root = root.canonicalize()
-            .unwrap_or_else(|_| root.to_owned());
+        let root = root.canonicalize().unwrap_or_else(|_| root.to_owned());
         let store = Store::open_in_memory()?;
         let forest = Forest::from_path(&root)?;
 
@@ -157,16 +157,14 @@ impl CodebaseModel {
             match self.parse_and_index_file(path) {
                 Ok(Some(parsed)) => {
                     // Replace or add in forest.
-                    if let Some(existing) = self.forest.files.iter_mut()
-                        .find(|f| f.path == *path)
-                    {
+                    if let Some(existing) = self.forest.files.iter_mut().find(|f| f.path == *path) {
                         *existing = parsed;
                     } else {
                         self.forest.files.push(parsed);
                     }
                 }
                 Ok(None) => {} // Unsupported file type.
-                Err(_) => {} // Parse error; keep old version.
+                Err(_) => {}   // Parse error; keep old version.
             }
         }
 
@@ -185,8 +183,7 @@ impl CodebaseModel {
             None => return Ok(None),
         };
 
-        let source = std::fs::read(path)
-            .with_context(|| format!("reading {}", path.display()))?;
+        let source = std::fs::read(path).with_context(|| format!("reading {}", path.display()))?;
 
         let mtime = std::fs::metadata(path)
             .and_then(|m| m.modified())
@@ -195,10 +192,12 @@ impl CodebaseModel {
         let content_hash = blake3::hash(&source).to_hex().to_string();
 
         let mut parser = tree_sitter::Parser::new();
-        parser.set_language(&adapter.language())
+        parser
+            .set_language(&adapter.language())
             .with_context(|| format!("setting language for {}", path.display()))?;
 
-        let tree = parser.parse(&source, None)
+        let tree = parser
+            .parse(&source, None)
             .with_context(|| format!("parsing {}", path.display()))?;
 
         let parsed = ParsedFile {
@@ -210,7 +209,8 @@ impl CodebaseModel {
 
         // Update store.
         let lang_name = ext; // Simple mapping for now.
-        self.store.upsert_file(path, lang_name, mtime, &content_hash)?;
+        self.store
+            .upsert_file(path, lang_name, mtime, &content_hash)?;
 
         // Update symbol index.
         let symbols = index::extract_symbols(&parsed);
@@ -246,20 +246,23 @@ impl CodebaseModel {
                 .and_then(|m| m.modified())
                 .unwrap_or(SystemTime::UNIX_EPOCH);
 
-            let source = std::fs::read(path)
-                .with_context(|| format!("reading {}", path.display()))?;
+            let source =
+                std::fs::read(path).with_context(|| format!("reading {}", path.display()))?;
 
             let content_hash = blake3::hash(&source).to_hex().to_string();
 
             // Check if the file is cached and unchanged.
-            let is_cached = store.check_file(path, mtime)?
+            let is_cached = store
+                .check_file(path, mtime)?
                 .is_some_and(|stored_hash| stored_hash == content_hash);
 
             let mut parser = tree_sitter::Parser::new();
-            parser.set_language(&adapter.language())
+            parser
+                .set_language(&adapter.language())
                 .with_context(|| format!("setting language for {}", path.display()))?;
 
-            let tree = parser.parse(&source, None)
+            let tree = parser
+                .parse(&source, None)
                 .with_context(|| format!("parsing {}", path.display()))?;
 
             let parsed = ParsedFile {
@@ -311,7 +314,10 @@ impl CodebaseModel {
     }
 
     /// Load a recipe from the store.
-    pub fn load_recipe(&self, name: &str) -> Result<Option<(Vec<String>, serde_json::Value, String)>> {
+    pub fn load_recipe(
+        &self,
+        name: &str,
+    ) -> Result<Option<(Vec<String>, serde_json::Value, String)>> {
         self.store.load_recipe(name)
     }
 
@@ -321,7 +327,12 @@ impl CodebaseModel {
     }
 
     /// Save a convention.
-    pub fn save_convention(&self, name: &str, description: &str, check_program: &str) -> Result<()> {
+    pub fn save_convention(
+        &self,
+        name: &str,
+        description: &str,
+        check_program: &str,
+    ) -> Result<()> {
         self.store.save_convention(name, description, check_program)
     }
 
@@ -338,15 +349,18 @@ impl CodebaseModel {
 
 /// Convert index::Symbol to store::SymbolRecord.
 fn symbols_to_records(symbols: &[index::Symbol]) -> Vec<SymbolRecord> {
-    symbols.iter().map(|s| SymbolRecord {
-        name: s.name.clone(),
-        kind: s.kind.clone(),
-        file_path: PathBuf::from(&s.file_path),
-        start_line: s.start_line,
-        start_col: s.start_col,
-        end_line: s.end_line,
-        end_col: s.end_col,
-        start_byte: s.start_byte,
-        end_byte: s.end_byte,
-    }).collect()
+    symbols
+        .iter()
+        .map(|s| SymbolRecord {
+            name: s.name.clone(),
+            kind: s.kind.clone(),
+            file_path: PathBuf::from(&s.file_path),
+            start_line: s.start_line,
+            start_col: s.start_col,
+            end_line: s.end_line,
+            end_col: s.end_col,
+            start_byte: s.start_byte,
+            end_byte: s.end_byte,
+        })
+        .collect()
 }

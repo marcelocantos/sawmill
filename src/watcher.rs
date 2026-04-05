@@ -16,7 +16,16 @@ pub enum FileEvent {
 }
 
 /// Directories whose contents we never want to report events for.
-const IGNORED_DIRS: &[&str] = &[".git", "target", "node_modules", ".svn", ".hg", "dist", "build", "__pycache__"];
+const IGNORED_DIRS: &[&str] = &[
+    ".git",
+    "target",
+    "node_modules",
+    ".svn",
+    ".hg",
+    "dist",
+    "build",
+    "__pycache__",
+];
 
 /// Debounce window: collapse events for the same file within this duration.
 const DEBOUNCE: Duration = Duration::from_millis(100);
@@ -149,7 +158,10 @@ enum PendingKind {
 }
 
 /// Flush all pending entries whose deadline has passed.
-fn flush_ready(pending: &mut HashMap<PathBuf, (PendingKind, Instant)>, tx: &mpsc::Sender<FileEvent>) {
+fn flush_ready(
+    pending: &mut HashMap<PathBuf, (PendingKind, Instant)>,
+    tx: &mpsc::Sender<FileEvent>,
+) {
     let now = Instant::now();
     pending.retain(|path, (kind, deadline)| {
         if *deadline <= now {
@@ -173,12 +185,11 @@ fn flush_ready(pending: &mut HashMap<PathBuf, (PendingKind, Instant)>, tx: &mpsc
 fn is_relevant(path: &Path) -> bool {
     // Reject paths that contain any ignored directory component.
     for component in path.components() {
-        if let std::path::Component::Normal(name) = component {
-            if let Some(s) = name.to_str() {
-                if IGNORED_DIRS.contains(&s) {
-                    return false;
-                }
-            }
+        if let std::path::Component::Normal(name) = component
+            && let Some(s) = name.to_str()
+            && IGNORED_DIRS.contains(&s)
+        {
+            return false;
         }
     }
 

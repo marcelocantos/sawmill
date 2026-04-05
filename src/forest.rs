@@ -107,10 +107,7 @@ pub fn undo_from_backups(backup_paths: &[PathBuf]) -> Result<usize> {
         let _original = backup.with_extension(""); // strips .canopy.bak
         // Actually, with_extension only strips the last extension.
         // .canopy.bak → .canopy → need to strip again.
-        let original = PathBuf::from(
-            backup.to_string_lossy()
-                .trim_end_matches(".canopy.bak")
-        );
+        let original = PathBuf::from(backup.to_string_lossy().trim_end_matches(".canopy.bak"));
 
         if !backup.exists() {
             continue;
@@ -148,8 +145,9 @@ pub fn cleanup_backups(backup_paths: &[PathBuf]) {
     // Also clean up any stale .new files.
     for backup in backup_paths {
         let new_path = PathBuf::from(
-            backup.to_string_lossy()
-                .replace(".canopy.bak", ".canopy.new")
+            backup
+                .to_string_lossy()
+                .replace(".canopy.bak", ".canopy.new"),
         );
         let _ = std::fs::remove_file(new_path);
     }
@@ -172,10 +170,10 @@ impl Forest {
         } else {
             for entry in WalkBuilder::new(path).build() {
                 let entry = entry?;
-                if entry.file_type().is_some_and(|ft| ft.is_file()) {
-                    if let Some(parsed) = Self::parse_file(entry.path())? {
-                        files.push(parsed);
-                    }
+                if entry.file_type().is_some_and(|ft| ft.is_file())
+                    && let Some(parsed) = Self::parse_file(entry.path())?
+                {
+                    files.push(parsed);
                 }
             }
         }
@@ -194,14 +192,15 @@ impl Forest {
             None => return Ok(None),
         };
 
-        let source = std::fs::read(path)
-            .with_context(|| format!("reading {}", path.display()))?;
+        let source = std::fs::read(path).with_context(|| format!("reading {}", path.display()))?;
 
         let mut parser = Parser::new();
-        parser.set_language(&adapter.language())
+        parser
+            .set_language(&adapter.language())
             .with_context(|| format!("setting language for {}", path.display()))?;
 
-        let tree = parser.parse(&source, None)
+        let tree = parser
+            .parse(&source, None)
             .with_context(|| format!("parsing {}", path.display()))?;
 
         Ok(Some(ParsedFile {
@@ -303,10 +302,7 @@ impl Forest {
 
     /// Query the forest for nodes matching a pattern.
     /// Returns a list of (file_path, line, column, node_kind, node_text) tuples.
-    pub fn query(
-        &self,
-        match_spec: &transform::Match,
-    ) -> Result<Vec<QueryResult>> {
+    pub fn query(&self, match_spec: &transform::Match) -> Result<Vec<QueryResult>> {
         let mut results = Vec::new();
 
         for file in &self.files {

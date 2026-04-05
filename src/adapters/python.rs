@@ -60,7 +60,9 @@ impl LanguageAdapter for PythonAdapter {
         "(decorator) @decorator"
     }
 
-    fn doc_comment_prefix(&self) -> &str { "#" }
+    fn doc_comment_prefix(&self) -> &str {
+        "#"
+    }
 
     fn gen_field(&self, name: &str, _type_name: &str) -> String {
         format!("    {name} = None\n")

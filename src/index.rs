@@ -35,8 +35,11 @@ pub fn extract_symbols(file: &ParsedFile) -> Vec<Symbol> {
 
     // Extract functions.
     extract_with_query(
-        file, "function", file.adapter.function_def_query(),
-        &file_path, &mut symbols,
+        file,
+        "function",
+        file.adapter.function_def_query(),
+        &file_path,
+        &mut symbols,
     );
 
     // Extract types.
@@ -78,7 +81,8 @@ fn extract_with_query(
     };
 
     // Find the "whole node" capture.
-    let whole_idx = ["func", "call", "type_def", "import"].iter()
+    let whole_idx = ["func", "call", "type_def", "import"]
+        .iter()
         .find_map(|name| query.capture_index_for_name(name))
         .unwrap_or(name_idx);
 
@@ -90,17 +94,22 @@ fn extract_with_query(
     );
 
     while let Some(m) = matches.next() {
-        let name_node = m.captures.iter()
+        let name_node = m
+            .captures
+            .iter()
             .find(|c| c.index == name_idx)
             .map(|c| c.node);
-        let whole_node = m.captures.iter()
+        let whole_node = m
+            .captures
+            .iter()
             .find(|c| c.index == whole_idx)
             .map(|c| c.node);
 
         if let (Some(name_n), Some(whole_n)) = (name_node, whole_node) {
-            let name = std::str::from_utf8(
-                &file.original_source[name_n.start_byte()..name_n.end_byte()]
-            ).unwrap_or("").to_string();
+            let name =
+                std::str::from_utf8(&file.original_source[name_n.start_byte()..name_n.end_byte()])
+                    .unwrap_or("")
+                    .to_string();
 
             if !name.is_empty() {
                 symbols.push(Symbol {
@@ -124,8 +133,8 @@ fn extract_with_query(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::adapters::python::PythonAdapter;
     use crate::adapters::LanguageAdapter;
+    use crate::adapters::python::PythonAdapter;
     use std::path::PathBuf;
     use tree_sitter::Parser;
 
@@ -158,10 +167,14 @@ def my_function():
         let symbols = extract_symbols(&file);
 
         let names: Vec<&str> = symbols.iter().map(|s| s.name.as_str()).collect();
-        assert!(names.contains(&"my_function"), "should find function: {names:?}");
+        assert!(
+            names.contains(&"my_function"),
+            "should find function: {names:?}"
+        );
         assert!(names.contains(&"MyClass"), "should find class: {names:?}");
 
-        let kinds: Vec<&str> = symbols.iter()
+        let kinds: Vec<&str> = symbols
+            .iter()
             .filter(|s| s.name == "my_function")
             .map(|s| s.kind.as_str())
             .collect();

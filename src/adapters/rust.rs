@@ -59,7 +59,9 @@ impl LanguageAdapter for RustAdapter {
         "(attribute_item) @decorator"
     }
 
-    fn doc_comment_prefix(&self) -> &str { "///" }
+    fn doc_comment_prefix(&self) -> &str {
+        "///"
+    }
 
     fn gen_field(&self, name: &str, type_name: &str) -> String {
         format!("    {name}: {type_name},\n")

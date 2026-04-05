@@ -18,11 +18,16 @@ pub fn rename_in_file(file: &ParsedFile, from: &str, to: &str) -> Result<Vec<u8>
     let query = Query::new(&file.adapter.language(), query_src)
         .with_context(|| "compiling identifier query")?;
 
-    let name_idx = query.capture_index_for_name("name")
+    let name_idx = query
+        .capture_index_for_name("name")
         .with_context(|| "identifier query must capture @name")?;
 
     let mut cursor = tree_sitter::QueryCursor::new();
-    let mut matches = cursor.matches(&query, file.tree.root_node(), file.original_source.as_slice());
+    let mut matches = cursor.matches(
+        &query,
+        file.tree.root_node(),
+        file.original_source.as_slice(),
+    );
 
     // Collect byte ranges of matching identifiers (sorted by start position).
     let mut edits: Vec<(usize, usize)> = Vec::new();
@@ -108,8 +113,8 @@ pub fn unified_diff(path: &Path, original: &[u8], new: &[u8]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::adapters::python::PythonAdapter;
     use crate::adapters::LanguageAdapter;
+    use crate::adapters::python::PythonAdapter;
     use std::path::PathBuf;
     use tree_sitter::Parser;
 
@@ -149,10 +154,7 @@ x = hello("world")
         let source = "x = 1\nprint(x)\n";
         let file = parse_python(source);
         let result = rename_in_file(&file, "x", "y").unwrap();
-        assert_eq!(
-            String::from_utf8(result).unwrap(),
-            "y = 1\nprint(y)\n"
-        );
+        assert_eq!(String::from_utf8(result).unwrap(), "y = 1\nprint(y)\n");
     }
 
     #[test]

@@ -37,16 +37,16 @@ impl Store {
 
     /// Open an in-memory store (for testing).
     pub fn open_in_memory() -> Result<Self> {
-        let conn = Connection::open_in_memory()
-            .context("opening in-memory store")?;
+        let conn = Connection::open_in_memory().context("opening in-memory store")?;
         let store = Store { conn };
         store.init()?;
         Ok(store)
     }
 
     fn init(&self) -> Result<()> {
-        self.conn.execute_batch(
-            "PRAGMA journal_mode=WAL;
+        self.conn
+            .execute_batch(
+                "PRAGMA journal_mode=WAL;
              PRAGMA foreign_keys=ON;
 
              CREATE TABLE IF NOT EXISTS files (
@@ -86,8 +86,8 @@ impl Store {
                  description TEXT NOT NULL DEFAULT '',
                  check_program TEXT NOT NULL
              );",
-        )
-        .context("initialising store schema")?;
+            )
+            .context("initialising store schema")?;
         Ok(())
     }
 
@@ -122,17 +122,18 @@ impl Store {
         let (mtime_secs, mtime_nanos) = split_mtime(mtime)?;
         let path_str = path_to_str(path)?;
 
-        self.conn.execute(
-            "INSERT INTO files (path, language, mtime_secs, mtime_nanos, content_hash)
+        self.conn
+            .execute(
+                "INSERT INTO files (path, language, mtime_secs, mtime_nanos, content_hash)
              VALUES (?1, ?2, ?3, ?4, ?5)
              ON CONFLICT(path) DO UPDATE SET
                  language = excluded.language,
                  mtime_secs = excluded.mtime_secs,
                  mtime_nanos = excluded.mtime_nanos,
                  content_hash = excluded.content_hash",
-            params![path_str, language, mtime_secs, mtime_nanos, content_hash],
-        )
-        .with_context(|| format!("upserting file {}", path.display()))?;
+                params![path_str, language, mtime_secs, mtime_nanos, content_hash],
+            )
+            .with_context(|| format!("upserting file {}", path.display()))?;
 
         Ok(())
     }
@@ -179,7 +180,11 @@ impl Store {
                     ],
                 )
                 .with_context(|| {
-                    format!("inserting symbol '{}' for {}", sym.name, file_path.display())
+                    format!(
+                        "inserting symbol '{}' for {}",
+                        sym.name,
+                        file_path.display()
+                    )
                 })?;
         }
 
@@ -191,7 +196,10 @@ impl Store {
     pub fn find_symbols(&self, name: &str, kind: Option<&str>) -> Result<Vec<SymbolRecord>> {
         let (query_name, use_like) = if let Some(prefix) = name.strip_suffix('*') {
             // Escape any LIKE special chars in the prefix, then append %.
-            let escaped = prefix.replace('\\', "\\\\").replace('%', "\\%").replace('_', "\\_");
+            let escaped = prefix
+                .replace('\\', "\\\\")
+                .replace('%', "\\%")
+                .replace('_', "\\_");
             (format!("{escaped}%"), true)
         } else {
             (name.to_owned(), false)
@@ -225,7 +233,10 @@ impl Store {
             }
         };
 
-        let mut stmt = self.conn.prepare(sql).context("preparing find_symbols query")?;
+        let mut stmt = self
+            .conn
+            .prepare(sql)
+            .context("preparing find_symbols query")?;
 
         let rows = match kind {
             Some(k) => stmt.query(params![query_name, k]),
@@ -267,11 +278,8 @@ impl Store {
             .query_map([], |row| row.get::<_, String>(0))
             .context("executing tracked_files query")?;
 
-        rows.map(|r| {
-            r.map(PathBuf::from)
-                .context("reading tracked file path")
-        })
-        .collect()
+        rows.map(|r| r.map(PathBuf::from).context("reading tracked file path"))
+            .collect()
     }
 
     /// Save a recipe (upsert).
@@ -282,26 +290,29 @@ impl Store {
         params: &[String],
         steps: &serde_json::Value,
     ) -> Result<()> {
-        let params_json = serde_json::to_string(params)
-            .context("serialising recipe params")?;
-        let steps_json = serde_json::to_string(steps)
-            .context("serialising recipe steps")?;
+        let params_json = serde_json::to_string(params).context("serialising recipe params")?;
+        let steps_json = serde_json::to_string(steps).context("serialising recipe steps")?;
 
-        self.conn.execute(
-            "INSERT INTO recipes (name, description, params_json, steps_json)
+        self.conn
+            .execute(
+                "INSERT INTO recipes (name, description, params_json, steps_json)
              VALUES (?1, ?2, ?3, ?4)
              ON CONFLICT(name) DO UPDATE SET
                  description = excluded.description,
                  params_json = excluded.params_json,
                  steps_json = excluded.steps_json",
-            params![name, description, params_json, steps_json],
-        ).with_context(|| format!("saving recipe '{name}'"))?;
+                params![name, description, params_json, steps_json],
+            )
+            .with_context(|| format!("saving recipe '{name}'"))?;
 
         Ok(())
     }
 
     /// Load a recipe by name.
-    pub fn load_recipe(&self, name: &str) -> Result<Option<(Vec<String>, serde_json::Value, String)>> {
+    pub fn load_recipe(
+        &self,
+        name: &str,
+    ) -> Result<Option<(Vec<String>, serde_json::Value, String)>> {
         let result = self.conn.query_row(
             "SELECT params_json, steps_json, description FROM recipes WHERE name = ?1",
             params![name],
@@ -315,10 +326,10 @@ impl Store {
 
         match result {
             Ok((params_json, steps_json, description)) => {
-                let params: Vec<String> = serde_json::from_str(&params_json)
-                    .context("deserialising recipe params")?;
-                let steps: serde_json::Value = serde_json::from_str(&steps_json)
-                    .context("deserialising recipe steps")?;
+                let params: Vec<String> =
+                    serde_json::from_str(&params_json).context("deserialising recipe params")?;
+                let steps: serde_json::Value =
+                    serde_json::from_str(&steps_json).context("deserialising recipe steps")?;
                 Ok(Some((params, steps, description)))
             }
             Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
@@ -328,66 +339,77 @@ impl Store {
 
     /// List all recipe names with descriptions.
     pub fn list_recipes(&self) -> Result<Vec<(String, String)>> {
-        let mut stmt = self.conn.prepare(
-            "SELECT name, description FROM recipes ORDER BY name",
-        ).context("preparing list_recipes")?;
+        let mut stmt = self
+            .conn
+            .prepare("SELECT name, description FROM recipes ORDER BY name")
+            .context("preparing list_recipes")?;
 
-        let rows = stmt.query_map([], |row| {
-            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
-        }).context("listing recipes")?;
+        let rows = stmt
+            .query_map([], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+            })
+            .context("listing recipes")?;
 
-        rows.map(|r| r.context("reading recipe row"))
-            .collect()
+        rows.map(|r| r.context("reading recipe row")).collect()
     }
 
     /// Delete a recipe.
     pub fn delete_recipe(&self, name: &str) -> Result<bool> {
-        let count = self.conn.execute(
-            "DELETE FROM recipes WHERE name = ?1",
-            params![name],
-        ).with_context(|| format!("deleting recipe '{name}'"))?;
+        let count = self
+            .conn
+            .execute("DELETE FROM recipes WHERE name = ?1", params![name])
+            .with_context(|| format!("deleting recipe '{name}'"))?;
         Ok(count > 0)
     }
 
     // --- Conventions ---
 
     /// Save a convention (upsert).
-    pub fn save_convention(&self, name: &str, description: &str, check_program: &str) -> Result<()> {
-        self.conn.execute(
-            "INSERT INTO conventions (name, description, check_program)
+    pub fn save_convention(
+        &self,
+        name: &str,
+        description: &str,
+        check_program: &str,
+    ) -> Result<()> {
+        self.conn
+            .execute(
+                "INSERT INTO conventions (name, description, check_program)
              VALUES (?1, ?2, ?3)
              ON CONFLICT(name) DO UPDATE SET
                  description = excluded.description,
                  check_program = excluded.check_program",
-            params![name, description, check_program],
-        ).with_context(|| format!("saving convention '{name}'"))?;
+                params![name, description, check_program],
+            )
+            .with_context(|| format!("saving convention '{name}'"))?;
         Ok(())
     }
 
     /// Load all conventions.
     pub fn list_conventions(&self) -> Result<Vec<(String, String, String)>> {
-        let mut stmt = self.conn.prepare(
-            "SELECT name, description, check_program FROM conventions ORDER BY name",
-        ).context("preparing list_conventions")?;
+        let mut stmt = self
+            .conn
+            .prepare("SELECT name, description, check_program FROM conventions ORDER BY name")
+            .context("preparing list_conventions")?;
 
-        let rows = stmt.query_map([], |row| {
-            Ok((
-                row.get::<_, String>(0)?,
-                row.get::<_, String>(1)?,
-                row.get::<_, String>(2)?,
-            ))
-        }).context("listing conventions")?;
+        let rows = stmt
+            .query_map([], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                ))
+            })
+            .context("listing conventions")?;
 
-        rows.map(|r| r.context("reading convention row"))
-            .collect()
+        rows.map(|r| r.context("reading convention row")).collect()
     }
 
     /// Delete a convention.
     pub fn delete_convention(&self, name: &str) -> Result<bool> {
-        let count = self.conn.execute(
-            "DELETE FROM conventions WHERE name = ?1",
-            params![name],
-        ).with_context(|| format!("deleting convention '{name}'"))?;
+        let count = self
+            .conn
+            .execute("DELETE FROM conventions WHERE name = ?1", params![name])
+            .with_context(|| format!("deleting convention '{name}'"))?;
         Ok(count > 0)
     }
 }

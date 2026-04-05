@@ -100,32 +100,21 @@ fn resolve_abstract_query(
             let regex = n.replace('.', r"\.").replace('*', ".*");
             Ok(format!("({base_query} (#match? @name \"^{regex}$\"))"))
         }
-        Some(n) => {
-            Ok(format!("({base_query} (#eq? @name \"{n}\"))"))
-        }
+        Some(n) => Ok(format!("({base_query} (#eq? @name \"{n}\"))")),
         None => Ok(base_query.to_string()),
     }
 }
 
 /// Convert a Match spec into a Tree-sitter query string for a given adapter.
-pub fn resolve_query_str(
-    adapter: &dyn LanguageAdapter,
-    match_spec: &Match,
-) -> Result<String> {
+pub fn resolve_query_str(adapter: &dyn LanguageAdapter, match_spec: &Match) -> Result<String> {
     match match_spec {
-        Match::Abstract { kind, name, .. } => {
-            resolve_abstract_query(adapter, kind, name)
-        }
+        Match::Abstract { kind, name, .. } => resolve_abstract_query(adapter, kind, name),
         Match::Raw { raw_query, .. } => Ok(raw_query.clone()),
     }
 }
 
 /// Find all matching nodes in a file and return edits for the given action.
-pub fn transform_file(
-    file: &ParsedFile,
-    match_spec: &Match,
-    action: &Action,
-) -> Result<Vec<u8>> {
+pub fn transform_file(file: &ParsedFile, match_spec: &Match, action: &Action) -> Result<Vec<u8>> {
     let edits = collect_edits(file, match_spec, action)?;
 
     if edits.is_empty() {
@@ -136,13 +125,13 @@ pub fn transform_file(
 }
 
 /// Collect edits from matching nodes without applying them.
-fn collect_edits(
-    file: &ParsedFile,
-    match_spec: &Match,
-    action: &Action,
-) -> Result<Vec<Edit>> {
+fn collect_edits(file: &ParsedFile, match_spec: &Match, action: &Action) -> Result<Vec<Edit>> {
     let (query_str, capture_name) = match match_spec {
-        Match::Abstract { kind, name, file: file_filter } => {
+        Match::Abstract {
+            kind,
+            name,
+            file: file_filter,
+        } => {
             // Check file filter.
             if let Some(filter) = file_filter {
                 let path_str = file.path.to_string_lossy();
@@ -153,9 +142,7 @@ fn collect_edits(
             let q = resolve_abstract_query(file.adapter, kind, name)?;
             (q, None)
         }
-        Match::Raw { raw_query, capture } => {
-            (raw_query.clone(), capture.clone())
-        }
+        Match::Raw { raw_query, capture } => (raw_query.clone(), capture.clone()),
     };
 
     let query = Query::new(&file.adapter.language(), &query_str)
@@ -173,7 +160,8 @@ fn collect_edits(
         "name"
     });
 
-    let target_idx = query.capture_index_for_name(target_capture)
+    let target_idx = query
+        .capture_index_for_name(target_capture)
         .with_context(|| format!("capture @{target_capture} not found in query"))?;
 
     let name_idx = query.capture_index_for_name("name");
@@ -188,23 +176,17 @@ fn collect_edits(
     let mut edits = Vec::new();
 
     while let Some(m) = matches.next() {
-        let target_node = m.captures.iter()
+        let target_node = m
+            .captures
+            .iter()
             .find(|c| c.index == target_idx)
             .map(|c| c.node);
 
-        let name_node = name_idx.and_then(|idx| {
-            m.captures.iter()
-                .find(|c| c.index == idx)
-                .map(|c| c.node)
-        });
+        let name_node =
+            name_idx.and_then(|idx| m.captures.iter().find(|c| c.index == idx).map(|c| c.node));
 
         if let Some(node) = target_node {
-            let edit = make_edit(
-                &file.original_source,
-                node,
-                name_node,
-                action,
-            )?;
+            let edit = make_edit(&file.original_source, node, name_node, action)?;
             if let Some(e) = edit {
                 edits.push(e);
             }
@@ -224,9 +206,11 @@ fn make_edit(
     name_node: Option<Node>,
     action: &Action,
 ) -> Result<Option<Edit>> {
-    let node_text = || std::str::from_utf8(&source[node.start_byte()..node.end_byte()])
-        .unwrap_or("")
-        .to_string();
+    let node_text = || {
+        std::str::from_utf8(&source[node.start_byte()..node.end_byte()])
+            .unwrap_or("")
+            .to_string()
+    };
 
     match action {
         Action::Replace { code } => Ok(Some(Edit {
@@ -279,16 +263,14 @@ fn make_edit(
             replacement: String::new(),
         })),
 
-        Action::ReplaceName { code } => {
-            match name_node {
-                Some(n) => Ok(Some(Edit {
-                    start: n.start_byte(),
-                    end: n.end_byte(),
-                    replacement: code.clone(),
-                })),
-                None => bail!("replace_name: no @name capture found for matched node"),
-            }
-        }
+        Action::ReplaceName { code } => match name_node {
+            Some(n) => Ok(Some(Edit {
+                start: n.start_byte(),
+                end: n.end_byte(),
+                replacement: code.clone(),
+            })),
+            None => bail!("replace_name: no @name capture found for matched node"),
+        },
 
         Action::ReplaceBody { code } => {
             let body = find_body_node(node);
@@ -330,11 +312,14 @@ fn apply_edits(source: &[u8], edits: &[Edit]) -> Result<Vec<u8>> {
 /// Detect the indentation at a given byte offset by scanning backwards to the
 /// start of the line.
 fn detect_indent(source: &[u8], offset: usize) -> String {
-    let line_start = source[..offset].iter().rposition(|&b| b == b'\n')
+    let line_start = source[..offset]
+        .iter()
+        .rposition(|&b| b == b'\n')
         .map(|p| p + 1)
         .unwrap_or(0);
     let indent_bytes = &source[line_start..offset];
-    let indent: String = indent_bytes.iter()
+    let indent: String = indent_bytes
+        .iter()
         .take_while(|&&b| b == b' ' || b == b'\t')
         .map(|&b| b as char)
         .collect();
@@ -382,12 +367,13 @@ fn find_body_or_inner(node: Node, source: &[u8]) -> String {
 }
 
 /// Query a file for matching nodes (read-only, no edits).
-pub fn query_file(
-    file: &ParsedFile,
-    match_spec: &Match,
-) -> Result<Vec<QueryResult>> {
+pub fn query_file(file: &ParsedFile, match_spec: &Match) -> Result<Vec<QueryResult>> {
     let (query_str, capture_name) = match match_spec {
-        Match::Abstract { kind, name, file: file_filter } => {
+        Match::Abstract {
+            kind,
+            name,
+            file: file_filter,
+        } => {
             if let Some(filter) = file_filter {
                 let path_str = file.path.to_string_lossy();
                 if !path_str.contains(filter.as_str()) {
@@ -397,9 +383,7 @@ pub fn query_file(
             let q = resolve_abstract_query(file.adapter, kind, name)?;
             (q, None)
         }
-        Match::Raw { raw_query, capture } => {
-            (raw_query.clone(), capture.clone())
-        }
+        Match::Raw { raw_query, capture } => (raw_query.clone(), capture.clone()),
     };
 
     let query = Query::new(&file.adapter.language(), &query_str)
@@ -416,7 +400,8 @@ pub fn query_file(
         "name"
     });
 
-    let target_idx = query.capture_index_for_name(target_capture)
+    let target_idx = query
+        .capture_index_for_name(target_capture)
         .with_context(|| format!("capture @{target_capture} not found in query"))?;
 
     let name_idx = query.capture_index_for_name("name");
@@ -431,24 +416,25 @@ pub fn query_file(
     let mut results = Vec::new();
 
     while let Some(m) = matches.next() {
-        let target_node = m.captures.iter()
+        let target_node = m
+            .captures
+            .iter()
             .find(|c| c.index == target_idx)
             .map(|c| c.node);
 
         let name_text = name_idx.and_then(|idx| {
-            m.captures.iter()
-                .find(|c| c.index == idx)
-                .map(|c| {
-                    std::str::from_utf8(&file.original_source[c.node.start_byte()..c.node.end_byte()])
-                        .unwrap_or("")
-                        .to_string()
-                })
+            m.captures.iter().find(|c| c.index == idx).map(|c| {
+                std::str::from_utf8(&file.original_source[c.node.start_byte()..c.node.end_byte()])
+                    .unwrap_or("")
+                    .to_string()
+            })
         });
 
         if let Some(node) = target_node {
-            let text = std::str::from_utf8(&file.original_source[node.start_byte()..node.end_byte()])
-                .unwrap_or("")
-                .to_string();
+            let text =
+                std::str::from_utf8(&file.original_source[node.start_byte()..node.end_byte()])
+                    .unwrap_or("")
+                    .to_string();
 
             // Truncate text for readability.
             let display_text = if text.len() > 200 {
@@ -474,8 +460,8 @@ pub fn query_file(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::adapters::python::PythonAdapter;
     use crate::adapters::LanguageAdapter;
+    use crate::adapters::python::PythonAdapter;
     use std::path::PathBuf;
     use tree_sitter::Parser;
 
@@ -542,7 +528,9 @@ mod tests {
                 name: Some("old_func".into()),
                 file: None,
             },
-            &Action::ReplaceName { code: "new_func".into() },
+            &Action::ReplaceName {
+                code: "new_func".into(),
+            },
         );
         assert_eq!(result, "def new_func():\n    pass\n");
     }
@@ -557,7 +545,9 @@ mod tests {
                 name: Some("foo".into()),
                 file: None,
             },
-            &Action::PrependStatement { code: "# marker".into() },
+            &Action::PrependStatement {
+                code: "# marker".into(),
+            },
         );
         assert_eq!(result, "# marker\ndef foo():\n    return 1\n");
     }
@@ -572,7 +562,9 @@ mod tests {
                 name: Some("foo".into()),
                 file: None,
             },
-            &Action::AppendStatement { code: "# end".into() },
+            &Action::AppendStatement {
+                code: "# end".into(),
+            },
         );
         assert_eq!(result, "def foo():\n    return 1\n# end\n");
     }
@@ -586,14 +578,17 @@ mod tests {
                 raw_query: r#"((identifier) @name (#eq? @name "old_value"))"#.into(),
                 capture: Some("name".into()),
             },
-            &Action::Replace { code: "new_value".into() },
+            &Action::Replace {
+                code: "new_value".into(),
+            },
         );
         assert_eq!(result, "x = new_value\n");
     }
 
     #[test]
     fn glob_name_match() {
-        let source = "def test_foo():\n    pass\n\ndef test_bar():\n    pass\n\ndef helper():\n    pass\n";
+        let source =
+            "def test_foo():\n    pass\n\ndef test_bar():\n    pass\n\ndef helper():\n    pass\n";
         let result = transform_str(
             source,
             &Match::Abstract {

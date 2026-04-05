@@ -11,7 +11,7 @@
 //! - `node.replaceText(...)`, `node.replaceName(...)`, etc. → specific mutation
 
 use anyhow::{Context, Result, bail};
-use rquickjs::{Context as JsContext, Runtime as JsRuntime, Function, Value};
+use rquickjs::{Context as JsContext, Function, Runtime as JsRuntime, Value};
 use streaming_iterator::StreamingIterator;
 
 use crate::adapters::LanguageAdapter;
@@ -50,13 +50,15 @@ fn interpret_and_edit(
 
     // object → check _mutation_type
     if let Some(obj) = value.as_object() {
-        let mutation_type: Option<String> = obj.get::<_, Option<String>>("_mutation_type")
+        let mutation_type: Option<String> = obj
+            .get::<_, Option<String>>("_mutation_type")
             .unwrap_or(None);
 
         match mutation_type.as_deref() {
             None => return Ok(None), // No mutation — unchanged
             Some("replaceText") => {
-                let text: String = obj.get("_mutation")
+                let text: String = obj
+                    .get("_mutation")
                     .context("getting _mutation for replaceText")?;
                 return Ok(Some(Edit {
                     start: node.start_byte(),
@@ -65,9 +67,11 @@ fn interpret_and_edit(
                 }));
             }
             Some("replaceBody") => {
-                let text: String = obj.get("_mutation")
+                let text: String = obj
+                    .get("_mutation")
                     .context("getting _mutation for replaceBody")?;
-                let body = node.child_by_field_name("body")
+                let body = node
+                    .child_by_field_name("body")
                     .context("node has no body for replaceBody")?;
                 return Ok(Some(Edit {
                     start: body.start_byte(),
@@ -76,7 +80,8 @@ fn interpret_and_edit(
                 }));
             }
             Some("replaceName") => {
-                let text: String = obj.get("_mutation")
+                let text: String = obj
+                    .get("_mutation")
                     .context("getting _mutation for replaceName")?;
                 let name = name_node.context("no @name capture for replaceName")?;
                 return Ok(Some(Edit {
@@ -98,12 +103,10 @@ fn interpret_and_edit(
                 }));
             }
             Some("wrap") => {
-                let before: String = obj.get("_before")
-                    .context("getting _before for wrap")?;
-                let after: String = obj.get("_after")
-                    .context("getting _after for wrap")?;
-                let text = std::str::from_utf8(&source[node.start_byte()..node.end_byte()])
-                    .unwrap_or("");
+                let before: String = obj.get("_before").context("getting _before for wrap")?;
+                let after: String = obj.get("_after").context("getting _after for wrap")?;
+                let text =
+                    std::str::from_utf8(&source[node.start_byte()..node.end_byte()]).unwrap_or("");
                 return Ok(Some(Edit {
                     start: node.start_byte(),
                     end: node.end_byte(),
@@ -111,7 +114,8 @@ fn interpret_and_edit(
                 }));
             }
             Some("insertBefore") => {
-                let code: String = obj.get("_mutation")
+                let code: String = obj
+                    .get("_mutation")
                     .context("getting _mutation for insertBefore")?;
                 let indent = detect_indent(source, node.start_byte());
                 return Ok(Some(Edit {
@@ -121,7 +125,8 @@ fn interpret_and_edit(
                 }));
             }
             Some("insertAfter") => {
-                let code: String = obj.get("_mutation")
+                let code: String = obj
+                    .get("_mutation")
                     .context("getting _mutation for insertAfter")?;
                 let indent = detect_indent(source, node.start_byte());
                 return Ok(Some(Edit {
@@ -143,10 +148,13 @@ fn interpret_and_edit(
 }
 
 fn detect_indent(source: &[u8], offset: usize) -> String {
-    let line_start = source[..offset].iter().rposition(|&b| b == b'\n')
+    let line_start = source[..offset]
+        .iter()
+        .rposition(|&b| b == b'\n')
         .map(|p| p + 1)
         .unwrap_or(0);
-    source[line_start..offset].iter()
+    source[line_start..offset]
+        .iter()
         .take_while(|&&b| b == b' ' || b == b'\t')
         .map(|&b| b as char)
         .collect()
@@ -183,24 +191,30 @@ pub fn run_js_transform(
         .with_context(|| format!("compiling query: {query_str}"))?;
 
     // Determine target capture.
-    let target_idx = ["func", "call", "type_def", "import"].iter()
+    let target_idx = ["func", "call", "type_def", "import"]
+        .iter()
         .find_map(|name| query.capture_index_for_name(name))
         .unwrap_or(0);
     let name_idx = query.capture_index_for_name("name");
 
     // Collect matched node byte ranges first (to avoid lifetime issues with cursor).
-    let mut matched: Vec<(usize, usize, Option<(usize, usize)>)> = Vec::new();
+    type MatchRange = (usize, usize, Option<(usize, usize)>);
+    let mut matched: Vec<MatchRange> = Vec::new();
     {
         let mut cursor = tree_sitter::QueryCursor::new();
         let mut matches = cursor.matches(&query, tree.root_node(), source);
         while let Some(m) = matches.next() {
-            let target = m.captures.iter()
+            let target = m
+                .captures
+                .iter()
                 .find(|c| c.index == target_idx)
                 .map(|c| (c.node.start_byte(), c.node.end_byte()));
-            let name = name_idx.and_then(|idx|
-                m.captures.iter().find(|c| c.index == idx)
+            let name = name_idx.and_then(|idx| {
+                m.captures
+                    .iter()
+                    .find(|c| c.index == idx)
                     .map(|c| (c.node.start_byte(), c.node.end_byte()))
-            );
+            });
             if let Some((start, end)) = target {
                 matched.push((start, end, name));
             }
@@ -211,52 +225,53 @@ pub fn run_js_transform(
         return Ok(source.to_vec());
     }
 
-    let runtime = JsRuntime::new()
-        .context("creating QuickJS runtime")?;
+    let runtime = JsRuntime::new().context("creating QuickJS runtime")?;
     runtime.set_memory_limit(2 * 1024 * 1024 * 1024); // 2GB
     runtime.set_max_stack_size(8 * 1024 * 1024); // 8MB stack
 
-    let context = JsContext::full(&runtime)
-        .context("creating QuickJS context")?;
+    let context = JsContext::full(&runtime).context("creating QuickJS context")?;
 
     let edits = context.with(|ctx| -> Result<Vec<Edit>> {
         // Inject helper functions.
-        let _: Value = ctx.eval(JS_HELPERS.as_bytes())
+        let _: Value = ctx
+            .eval(JS_HELPERS.as_bytes())
             .context("injecting JS helpers")?;
 
         // Compile the user's transform function.
         let fn_source = format!("({transform_fn})");
-        let func: Function = ctx.eval(fn_source.as_bytes())
-            .context("compiling transform_fn — must be a function expression like (node) => {{ ... }}")?;
+        let func: Function = ctx.eval(fn_source.as_bytes()).context(
+            "compiling transform_fn — must be a function expression like (node) => {{ ... }}",
+        )?;
 
         let mut edits = Vec::new();
 
         for &(start, end, name_range) in &matched {
             // Find the tree-sitter nodes by byte range.
-            let node = tree.root_node().descendant_for_byte_range(start, end)
+            let node = tree
+                .root_node()
+                .descendant_for_byte_range(start, end)
                 .context("finding node by byte range")?;
-            let name_node = name_range.and_then(|(ns, ne)|
-                tree.root_node().descendant_for_byte_range(ns, ne)
-            );
+            let name_node =
+                name_range.and_then(|(ns, ne)| tree.root_node().descendant_for_byte_range(ns, ne));
 
             // Build a plain JS object with node properties.
             let node_text = std::str::from_utf8(&source[start..end]).unwrap_or("");
-            let name_text = name_range.map(|(ns, ne)|
-                std::str::from_utf8(&source[ns..ne]).unwrap_or("")
-            );
-            let body_text = node.child_by_field_name("body").map(|b|
-                std::str::from_utf8(&source[b.start_byte()..b.end_byte()]).unwrap_or("")
-            );
-            let params_text = node.child_by_field_name("parameters").map(|p|
-                std::str::from_utf8(&source[p.start_byte()..p.end_byte()]).unwrap_or("")
-            );
+            let name_text =
+                name_range.map(|(ns, ne)| std::str::from_utf8(&source[ns..ne]).unwrap_or(""));
+            let body_text = node
+                .child_by_field_name("body")
+                .map(|b| std::str::from_utf8(&source[b.start_byte()..b.end_byte()]).unwrap_or(""));
+            let params_text = node
+                .child_by_field_name("parameters")
+                .map(|p| std::str::from_utf8(&source[p.start_byte()..p.end_byte()]).unwrap_or(""));
 
             // Build node via JS helper to avoid Rust→JS object lifetime issues.
-            let make_node: Function = ctx.globals().get("__makeNode")
+            let make_node: Function = ctx
+                .globals()
+                .get("__makeNode")
                 .context("getting __makeNode")?;
 
-            let props = rquickjs::Object::new(ctx.clone())
-                .context("creating props object")?;
+            let props = rquickjs::Object::new(ctx.clone()).context("creating props object")?;
             props.set("kind", node.kind())?;
             props.set("tsKind", node.kind())?;
             props.set("text", node_text)?;
@@ -276,11 +291,9 @@ pub fn run_js_transform(
                 None => props.set("parameters", Value::new_null(ctx.clone()))?,
             }
 
-            let node_obj: Value = make_node.call((props,))
-                .context("calling __makeNode")?;
+            let node_obj: Value = make_node.call((props,)).context("calling __makeNode")?;
 
-            let result: Value = func.call((node_obj,))
-                .context("calling transform_fn")?;
+            let result: Value = func.call((node_obj,)).context("calling transform_fn")?;
 
             if let Some(edit) = interpret_and_edit(&result, node, name_node, source)? {
                 edits.push(edit);
@@ -298,8 +311,8 @@ pub fn run_js_transform(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::adapters::python::PythonAdapter;
     use crate::adapters::LanguageAdapter;
+    use crate::adapters::python::PythonAdapter;
     use crate::forest::ParsedFile;
     use std::path::PathBuf;
     use tree_sitter::Parser;
@@ -328,7 +341,8 @@ mod tests {
             transform_fn,
             "test.py",
             file.adapter,
-        ).unwrap();
+        )
+        .unwrap();
         String::from_utf8(result).unwrap()
     }
 
@@ -361,10 +375,7 @@ mod tests {
 
     #[test]
     fn js_return_string() {
-        let result = js_transform(
-            "def foo():\n    pass\n",
-            r##"(node) => "# replaced\n""##,
-        );
+        let result = js_transform("def foo():\n    pass\n", r##"(node) => "# replaced\n""##);
         assert_eq!(result, "# replaced\n\n");
     }
 

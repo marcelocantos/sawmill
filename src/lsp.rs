@@ -61,9 +61,8 @@ impl LspManager {
                 continue;
             }
 
-            match LspConnection::start(cmd_parts, &lang_id, &root_uri) {
-                Ok(conn) => { connections.insert(lang_id, conn); }
-                Err(_) => {} // LSP server not available; skip.
+            if let Ok(conn) = LspConnection::start(cmd_parts, &lang_id, &root_uri) {
+                connections.insert(lang_id, conn);
             }
         }
 
@@ -82,27 +81,39 @@ impl LspManager {
             None => return Ok(()),
         };
 
-        conn.send_notification("textDocument/didOpen", serde_json::json!({
-            "textDocument": {
-                "uri": path_to_uri(path),
-                "languageId": lang_id,
-                "version": 1,
-                "text": text,
-            }
-        }))
+        conn.send_notification(
+            "textDocument/didOpen",
+            serde_json::json!({
+                "textDocument": {
+                    "uri": path_to_uri(path),
+                    "languageId": lang_id,
+                    "version": 1,
+                    "text": text,
+                }
+            }),
+        )
     }
 
     /// Get hover information (type info) at a position.
-    pub fn hover(&mut self, path: &Path, lang_id: &str, line: u32, character: u32) -> Result<Option<String>> {
+    pub fn hover(
+        &mut self,
+        path: &Path,
+        lang_id: &str,
+        line: u32,
+        character: u32,
+    ) -> Result<Option<String>> {
         let conn = match self.connections.get_mut(lang_id) {
             Some(c) => c,
             None => return Ok(None),
         };
 
-        let result = conn.send_request("textDocument/hover", serde_json::json!({
-            "textDocument": {"uri": path_to_uri(path)},
-            "position": {"line": line, "character": character},
-        }))?;
+        let result = conn.send_request(
+            "textDocument/hover",
+            serde_json::json!({
+                "textDocument": {"uri": path_to_uri(path)},
+                "position": {"line": line, "character": character},
+            }),
+        )?;
 
         if result.is_null() {
             return Ok(None);
@@ -116,42 +127,67 @@ impl LspManager {
             return Ok(Some(value.to_string()));
         }
 
-        Ok(Some(serde_json::to_string_pretty(contents).unwrap_or_default()))
+        Ok(Some(
+            serde_json::to_string_pretty(contents).unwrap_or_default(),
+        ))
     }
 
     /// Go to definition. Returns list of (file_path, line, column).
-    pub fn definition(&mut self, path: &Path, lang_id: &str, line: u32, character: u32) -> Result<Vec<LocationInfo>> {
+    pub fn definition(
+        &mut self,
+        path: &Path,
+        lang_id: &str,
+        line: u32,
+        character: u32,
+    ) -> Result<Vec<LocationInfo>> {
         let conn = match self.connections.get_mut(lang_id) {
             Some(c) => c,
             None => return Ok(Vec::new()),
         };
 
-        let result = conn.send_request("textDocument/definition", serde_json::json!({
-            "textDocument": {"uri": path_to_uri(path)},
-            "position": {"line": line, "character": character},
-        }))?;
+        let result = conn.send_request(
+            "textDocument/definition",
+            serde_json::json!({
+                "textDocument": {"uri": path_to_uri(path)},
+                "position": {"line": line, "character": character},
+            }),
+        )?;
 
         parse_location_infos(&result, &self.root)
     }
 
     /// Find all references. Returns list of (file_path, line, column).
-    pub fn references(&mut self, path: &Path, lang_id: &str, line: u32, character: u32) -> Result<Vec<LocationInfo>> {
+    pub fn references(
+        &mut self,
+        path: &Path,
+        lang_id: &str,
+        line: u32,
+        character: u32,
+    ) -> Result<Vec<LocationInfo>> {
         let conn = match self.connections.get_mut(lang_id) {
             Some(c) => c,
             None => return Ok(Vec::new()),
         };
 
-        let result = conn.send_request("textDocument/references", serde_json::json!({
-            "textDocument": {"uri": path_to_uri(path)},
-            "position": {"line": line, "character": character},
-            "context": {"includeDeclaration": true},
-        }))?;
+        let result = conn.send_request(
+            "textDocument/references",
+            serde_json::json!({
+                "textDocument": {"uri": path_to_uri(path)},
+                "position": {"line": line, "character": character},
+                "context": {"includeDeclaration": true},
+            }),
+        )?;
 
         parse_location_infos(&result, &self.root)
     }
 
     /// Get diagnostics by sending modified content and collecting responses.
-    pub fn get_diagnostics(&mut self, path: &Path, lang_id: &str, text: &str) -> Result<Vec<String>> {
+    pub fn get_diagnostics(
+        &mut self,
+        path: &Path,
+        lang_id: &str,
+        text: &str,
+    ) -> Result<Vec<String>> {
         let conn = match self.connections.get_mut(lang_id) {
             Some(c) => c,
             None => return Ok(Vec::new()),
@@ -160,10 +196,13 @@ impl LspManager {
         let uri = path_to_uri(path);
 
         // Send didChange.
-        conn.send_notification("textDocument/didChange", serde_json::json!({
-            "textDocument": {"uri": &uri, "version": 99},
-            "contentChanges": [{"text": text}],
-        }))?;
+        conn.send_notification(
+            "textDocument/didChange",
+            serde_json::json!({
+                "textDocument": {"uri": &uri, "version": 99},
+                "contentChanges": [{"text": text}],
+            }),
+        )?;
 
         // Read responses briefly, collecting diagnostics.
         let mut errors = Vec::new();
@@ -172,15 +211,21 @@ impl LspManager {
                 Some(msg) => {
                     if msg["method"].as_str() == Some("textDocument/publishDiagnostics") {
                         let params = &msg["params"];
-                        if params["uri"].as_str() == Some(&uri) {
-                            if let Some(diags) = params["diagnostics"].as_array() {
-                                for d in diags {
-                                    let severity = d["severity"].as_u64().unwrap_or(1);
-                                    if severity <= 2 {
-                                        let message = d["message"].as_str().unwrap_or("unknown");
-                                        let line = d["range"]["start"]["line"].as_u64().unwrap_or(0) + 1;
-                                        errors.push(format!("{}:{}: {}", path.display(), line, message));
-                                    }
+                        if params["uri"].as_str() == Some(&uri)
+                            && let Some(diags) = params["diagnostics"].as_array()
+                        {
+                            for d in diags {
+                                let severity = d["severity"].as_u64().unwrap_or(1);
+                                if severity <= 2 {
+                                    let message = d["message"].as_str().unwrap_or("unknown");
+                                    let line =
+                                        d["range"]["start"]["line"].as_u64().unwrap_or(0) + 1;
+                                    errors.push(format!(
+                                        "{}:{}: {}",
+                                        path.display(),
+                                        line,
+                                        message
+                                    ));
                                 }
                             }
                         }
@@ -216,7 +261,13 @@ pub struct LocationInfo {
 
 impl std::fmt::Display for LocationInfo {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}:{}:{}", self.path.display(), self.line + 1, self.column + 1)
+        write!(
+            f,
+            "{}:{}:{}",
+            self.path.display(),
+            self.line + 1,
+            self.column + 1
+        )
     }
 }
 
@@ -237,23 +288,26 @@ impl LspConnection {
         };
 
         // Initialize.
-        let _init = conn.send_request("initialize", serde_json::json!({
-            "processId": std::process::id(),
-            "rootUri": root_uri,
-            "capabilities": {
-                "textDocument": {
-                    "hover": {"contentFormat": ["plaintext"]},
-                    "definition": {},
-                    "references": {},
-                    "implementation": {},
-                    "publishDiagnostics": {},
-                    "synchronization": {
-                        "didSave": true,
-                        "dynamicRegistration": false,
+        let _init = conn.send_request(
+            "initialize",
+            serde_json::json!({
+                "processId": std::process::id(),
+                "rootUri": root_uri,
+                "capabilities": {
+                    "textDocument": {
+                        "hover": {"contentFormat": ["plaintext"]},
+                        "definition": {},
+                        "references": {},
+                        "implementation": {},
+                        "publishDiagnostics": {},
+                        "synchronization": {
+                            "didSave": true,
+                            "dynamicRegistration": false,
+                        },
                     },
                 },
-            },
-        }))?;
+            }),
+        )?;
 
         conn.send_notification("initialized", serde_json::json!({}))?;
 
@@ -275,7 +329,10 @@ impl LspConnection {
             let msg = self.read_message()?;
             if msg.get("id").and_then(|v| v.as_i64()) == Some(id) {
                 if let Some(error) = msg.get("error") {
-                    bail!("LSP error: {}", serde_json::to_string(error).unwrap_or_default());
+                    bail!(
+                        "LSP error: {}",
+                        serde_json::to_string(error).unwrap_or_default()
+                    );
                 }
                 return Ok(msg.get("result").cloned().unwrap_or(Value::Null));
             }
@@ -293,7 +350,10 @@ impl LspConnection {
 
     fn write_message(&mut self, msg: &Value) -> Result<()> {
         let body = serde_json::to_string(msg).context("serialising LSP message")?;
-        let stdin = self.process.stdin.as_mut()
+        let stdin = self
+            .process
+            .stdin
+            .as_mut()
             .context("LSP stdin unavailable")?;
         write!(stdin, "Content-Length: {}\r\n\r\n{}", body.len(), body)
             .context("writing to LSP")?;
@@ -302,7 +362,10 @@ impl LspConnection {
     }
 
     fn read_message(&mut self) -> Result<Value> {
-        let stdout = self.process.stdout.as_mut()
+        let stdout = self
+            .process
+            .stdout
+            .as_mut()
             .context("LSP stdout unavailable")?;
 
         // Read headers to find Content-Length.
@@ -354,7 +417,9 @@ impl LspConnection {
 
 fn read_byte(reader: &mut dyn Read) -> Result<u8> {
     let mut buf = [0u8; 1];
-    reader.read_exact(&mut buf).context("reading byte from LSP")?;
+    reader
+        .read_exact(&mut buf)
+        .context("reading byte from LSP")?;
     Ok(buf[0])
 }
 
@@ -372,17 +437,21 @@ fn parse_location_infos(value: &Value, _root: &Path) -> Result<Vec<LocationInfo>
 
     let mut results = Vec::new();
     for loc in &locations {
-        let uri = loc.get("uri")
+        let uri = loc
+            .get("uri")
             .or_else(|| loc.get("targetUri"))
             .and_then(|v| v.as_str());
-        let range = loc.get("range")
-            .or_else(|| loc.get("targetRange"));
+        let range = loc.get("range").or_else(|| loc.get("targetRange"));
 
         if let (Some(uri_str), Some(range_val)) = (uri, range) {
             let path = uri_to_path(uri_str).unwrap_or_else(|| PathBuf::from(uri_str));
             let line = range_val["start"]["line"].as_u64().unwrap_or(0) as u32;
             let col = range_val["start"]["character"].as_u64().unwrap_or(0) as u32;
-            results.push(LocationInfo { path, line, column: col });
+            results.push(LocationInfo {
+                path,
+                line,
+                column: col,
+            });
         }
     }
 

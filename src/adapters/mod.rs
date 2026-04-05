@@ -58,20 +58,28 @@ pub trait LanguageAdapter: Send + Sync {
     /// Tree-sitter query for fields/attributes within a struct/class.
     /// Must capture `@name` for the field name, `@type` for the type (if typed),
     /// and `@field` for the whole field node.
-    fn field_query(&self) -> &str { "" }
+    fn field_query(&self) -> &str {
+        ""
+    }
 
     /// Tree-sitter query for methods within a class/impl block.
     /// Must capture `@name` and `@method` for the whole node.
-    fn method_query(&self) -> &str { "" }
+    fn method_query(&self) -> &str {
+        ""
+    }
 
     /// Tree-sitter query for decorators/attributes on a node.
     /// Must capture `@decorator` for the whole decorator node.
-    fn decorator_query(&self) -> &str { "" }
+    fn decorator_query(&self) -> &str {
+        ""
+    }
 
     // --- Code generation templates ---
 
     /// Doc comment prefix for this language (e.g., "///" for Rust, "#" for Python).
-    fn doc_comment_prefix(&self) -> &str { "//" }
+    fn doc_comment_prefix(&self) -> &str {
+        "//"
+    }
 
     /// Format a doc comment string. Each line is prefixed with the
     /// language's doc comment prefix and appropriate indentation.
@@ -113,7 +121,14 @@ pub trait LanguageAdapter: Send + Sync {
     }
 
     /// Generate a method with a doc comment.
-    fn gen_method_with_doc(&self, name: &str, params: &str, return_type: &str, body: &str, doc: &str) -> String {
+    fn gen_method_with_doc(
+        &self,
+        name: &str,
+        params: &str,
+        return_type: &str,
+        body: &str,
+        doc: &str,
+    ) -> String {
         if doc.is_empty() {
             return self.gen_method(name, params, return_type, body);
         }

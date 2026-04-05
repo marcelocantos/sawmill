@@ -56,7 +56,8 @@ pub fn extract_template(
     let exemplar_content = std::fs::read_to_string(exemplar_path)
         .with_context(|| format!("reading exemplar: {}", exemplar_path.display()))?;
 
-    let relative_path = exemplar_path.strip_prefix(root)
+    let relative_path = exemplar_path
+        .strip_prefix(root)
         .unwrap_or(exemplar_path)
         .to_string_lossy()
         .to_string();
@@ -76,7 +77,8 @@ pub fn extract_template(
             let content = std::fs::read_to_string(&affected_path)
                 .with_context(|| format!("reading affected file: {}", affected_path.display()))?;
 
-            let rel = affected_path.strip_prefix(root)
+            let rel = affected_path
+                .strip_prefix(root)
                 .unwrap_or(&affected_path)
                 .to_string_lossy()
                 .to_string();
@@ -99,7 +101,8 @@ pub fn extract_template(
                     continue;
                 }
 
-                let rel = entry.strip_prefix(root)
+                let rel = entry
+                    .strip_prefix(root)
                     .unwrap_or(&entry)
                     .to_string_lossy()
                     .to_string();
@@ -215,10 +218,14 @@ fn case_variants(s: &str) -> Vec<String> {
     let mut variants = vec![s.to_string()];
 
     let upper = s.to_uppercase();
-    if upper != s { variants.push(upper); }
+    if upper != s {
+        variants.push(upper);
+    }
 
     let lower = s.to_lowercase();
-    if lower != s { variants.push(lower); }
+    if lower != s {
+        variants.push(lower);
+    }
 
     // Capitalize first letter.
     let capitalized = capitalize(s);
@@ -274,13 +281,17 @@ pub fn substitute_in_json(json: &str, params: &HashMap<String, String>) -> Strin
 
 /// Convert an ExemplarTemplate to a recipe format (for storage via the existing recipe system).
 pub fn template_to_recipe_steps(template: &ExemplarTemplate) -> serde_json::Value {
-    let steps: Vec<serde_json::Value> = template.files.iter().map(|ft| {
-        serde_json::json!({
-            "action": "create_file",
-            "path": ft.path_template,
-            "content": ft.content_template,
+    let steps: Vec<serde_json::Value> = template
+        .files
+        .iter()
+        .map(|ft| {
+            serde_json::json!({
+                "action": "create_file",
+                "path": ft.path_template,
+                "content": ft.content_template,
+            })
         })
-    }).collect();
+        .collect();
 
     serde_json::json!(steps)
 }
@@ -299,8 +310,14 @@ mod tests {
         let result = templatize(input, &params);
 
         assert!(result.contains("$name"), "should replace 'users': {result}");
-        assert!(result.contains("$entity"), "should replace 'User': {result}");
-        assert!(!result.contains("users"), "should not contain original: {result}");
+        assert!(
+            result.contains("$entity"),
+            "should replace 'User': {result}"
+        );
+        assert!(
+            !result.contains("users"),
+            "should not contain original: {result}"
+        );
     }
 
     #[test]
@@ -325,7 +342,10 @@ mod tests {
         let template = "fn list_$name() -> Vec<$entity> { get_$name() }";
         let result = substitute(template, &params);
 
-        assert_eq!(result, "fn list_products() -> Vec<Product> { get_products() }");
+        assert_eq!(
+            result,
+            "fn list_products() -> Vec<Product> { get_products() }"
+        );
     }
 
     #[test]
@@ -357,11 +377,29 @@ mod tests {
 
         let result = substitute(&template, &new_params);
 
-        assert!(result.contains("OrderHandler"), "should have OrderHandler: {result}");
-        assert!(result.contains("list_orders"), "should have list_orders: {result}");
-        assert!(result.contains("Vec<Order>"), "should have Vec<Order>: {result}");
-        assert!(result.contains("get_orders"), "should have get_orders: {result}");
-        assert!(!result.contains("User"), "should not contain User: {result}");
-        assert!(!result.contains("users"), "should not contain users: {result}");
+        assert!(
+            result.contains("OrderHandler"),
+            "should have OrderHandler: {result}"
+        );
+        assert!(
+            result.contains("list_orders"),
+            "should have list_orders: {result}"
+        );
+        assert!(
+            result.contains("Vec<Order>"),
+            "should have Vec<Order>: {result}"
+        );
+        assert!(
+            result.contains("get_orders"),
+            "should have get_orders: {result}"
+        );
+        assert!(
+            !result.contains("User"),
+            "should not contain User: {result}"
+        );
+        assert!(
+            !result.contains("users"),
+            "should not contain users: {result}"
+        );
     }
 }

@@ -126,10 +126,7 @@ globalThis.__makeNode = function(props) {
 "#;
 
 /// Execute a codegen program against the forest (without LSP).
-pub fn run_codegen(
-    forest: &Forest,
-    program: &str,
-) -> Result<Vec<FileChange>> {
+pub fn run_codegen(forest: &Forest, program: &str) -> Result<Vec<FileChange>> {
     run_codegen_inner(forest, program, None)
 }
 
@@ -163,11 +160,16 @@ impl LspProxy {
         let lsp = unsafe { &mut *self.ptr };
         let path = std::path::PathBuf::from(file);
         match lsp.definition(&path, lang_id, line, col) {
-            Ok(locs) => locs.iter().map(|l| serde_json::json!({
-                "file": l.path.to_string_lossy(),
-                "line": l.line + 1,
-                "column": l.column + 1,
-            })).collect(),
+            Ok(locs) => locs
+                .iter()
+                .map(|l| {
+                    serde_json::json!({
+                        "file": l.path.to_string_lossy(),
+                        "line": l.line + 1,
+                        "column": l.column + 1,
+                    })
+                })
+                .collect(),
             Err(_) => Vec::new(),
         }
     }
@@ -176,11 +178,16 @@ impl LspProxy {
         let lsp = unsafe { &mut *self.ptr };
         let path = std::path::PathBuf::from(file);
         match lsp.references(&path, lang_id, line, col) {
-            Ok(locs) => locs.iter().map(|l| serde_json::json!({
-                "file": l.path.to_string_lossy(),
-                "line": l.line + 1,
-                "column": l.column + 1,
-            })).collect(),
+            Ok(locs) => locs
+                .iter()
+                .map(|l| {
+                    serde_json::json!({
+                        "file": l.path.to_string_lossy(),
+                        "line": l.line + 1,
+                        "column": l.column + 1,
+                    })
+                })
+                .collect(),
             Err(_) => Vec::new(),
         }
     }
@@ -200,130 +207,220 @@ fn run_codegen_inner(
     program: &str,
     lsp: Option<&mut crate::lsp::LspManager>,
 ) -> Result<Vec<FileChange>> {
-    let runtime = JsRuntime::new()
-        .context("creating QuickJS runtime")?;
+    let runtime = JsRuntime::new().context("creating QuickJS runtime")?;
     runtime.set_memory_limit(2 * 1024 * 1024 * 1024);
     runtime.set_max_stack_size(8 * 1024 * 1024);
 
-    let context = JsContext::full(&runtime)
-        .context("creating QuickJS context")?;
+    let context = JsContext::full(&runtime).context("creating QuickJS context")?;
 
     let collector = Rc::new(RefCell::new(EditCollector::new()));
 
     // Build file→langId map for LSP dispatch.
-    let lang_map: HashMap<String, String> = forest.files.iter()
-        .map(|f| (
-            f.path.to_string_lossy().to_string(),
-            f.adapter.lsp_language_id().to_string(),
-        ))
+    let lang_map: HashMap<String, String> = forest
+        .files
+        .iter()
+        .map(|f| {
+            (
+                f.path.to_string_lossy().to_string(),
+                f.adapter.lsp_language_id().to_string(),
+            )
+        })
         .collect();
 
     // Create LSP proxy if available.
-    let lsp_proxy: Option<Rc<LspProxy>> = lsp.map(|l| {
-        Rc::new(LspProxy { ptr: l as *mut _ })
-    });
+    let lsp_proxy: Option<Rc<LspProxy>> = lsp.map(|l| Rc::new(LspProxy { ptr: l as *mut _ }));
 
     let changes = context.with(|ctx| -> Result<Vec<FileChange>> {
         // Inject helpers.
-        let _: Value = ctx.eval(CODEGEN_HELPERS.as_bytes())
+        let _: Value = ctx
+            .eval(CODEGEN_HELPERS.as_bytes())
             .context("injecting codegen helpers")?;
 
         // Register __editFile callback.
         let collector_ref = collector.clone();
-        ctx.globals().set("__editFile", Function::new(ctx.clone(),
-            move |file: String, start: usize, end: usize, replacement: String| {
-                collector_ref.borrow_mut().add_edit(&file, Edit {
-                    start,
-                    end,
-                    replacement,
-                });
-            },
-        ).context("creating __editFile")?).context("setting __editFile")?;
+        ctx.globals()
+            .set(
+                "__editFile",
+                Function::new(
+                    ctx.clone(),
+                    move |file: String, start: usize, end: usize, replacement: String| {
+                        collector_ref.borrow_mut().add_edit(
+                            &file,
+                            Edit {
+                                start,
+                                end,
+                                replacement,
+                            },
+                        );
+                    },
+                )
+                .context("creating __editFile")?,
+            )
+            .context("setting __editFile")?;
 
         // Register __addFile callback.
         let collector_ref = collector.clone();
-        ctx.globals().set("__addFile", Function::new(ctx.clone(),
-            move |path: String, content: String| {
-                collector_ref.borrow_mut().add_new_file(&path, &content);
-            },
-        ).context("creating __addFile")?).context("setting __addFile")?;
+        ctx.globals()
+            .set(
+                "__addFile",
+                Function::new(ctx.clone(), move |path: String, content: String| {
+                    collector_ref.borrow_mut().add_new_file(&path, &content);
+                })
+                .context("creating __addFile")?,
+            )
+            .context("setting __addFile")?;
 
         // Register code generation callbacks.
         // These dispatch to the appropriate language adapter.
-        ctx.globals().set("__genField", Function::new(ctx.clone(),
-            |lang_id: String, name: String, type_name: String, doc: Option<String>| -> String {
-                let doc = doc.unwrap_or_default();
-                gen_for_lang(&lang_id, |a| a.gen_field_with_doc(&name, &type_name, &doc))
-            },
-        ).context("creating __genField")?).context("setting __genField")?;
+        ctx.globals()
+            .set(
+                "__genField",
+                Function::new(
+                    ctx.clone(),
+                    |lang_id: String,
+                     name: String,
+                     type_name: String,
+                     doc: Option<String>|
+                     -> String {
+                        let doc = doc.unwrap_or_default();
+                        gen_for_lang(&lang_id, |a| a.gen_field_with_doc(&name, &type_name, &doc))
+                    },
+                )
+                .context("creating __genField")?,
+            )
+            .context("setting __genField")?;
 
-        ctx.globals().set("__genMethod", Function::new(ctx.clone(),
-            |lang_id: String, name: String, params: String, return_type: String, body: String, doc: Option<String>| -> String {
-                let doc = doc.unwrap_or_default();
-                gen_for_lang(&lang_id, |a| a.gen_method_with_doc(&name, &params, &return_type, &body, &doc))
-            },
-        ).context("creating __genMethod")?).context("setting __genMethod")?;
+        ctx.globals()
+            .set(
+                "__genMethod",
+                Function::new(
+                    ctx.clone(),
+                    |lang_id: String,
+                     name: String,
+                     params: String,
+                     return_type: String,
+                     body: String,
+                     doc: Option<String>|
+                     -> String {
+                        let doc = doc.unwrap_or_default();
+                        gen_for_lang(&lang_id, |a| {
+                            a.gen_method_with_doc(&name, &params, &return_type, &body, &doc)
+                        })
+                    },
+                )
+                .context("creating __genMethod")?,
+            )
+            .context("setting __genMethod")?;
 
-        ctx.globals().set("__genImport", Function::new(ctx.clone(),
-            |lang_id: String, path: String| -> String {
-                gen_for_lang(&lang_id, |a| a.gen_import(&path))
-            },
-        ).context("creating __genImport")?).context("setting __genImport")?;
+        ctx.globals()
+            .set(
+                "__genImport",
+                Function::new(ctx.clone(), |lang_id: String, path: String| -> String {
+                    gen_for_lang(&lang_id, |a| a.gen_import(&path))
+                })
+                .context("creating __genImport")?,
+            )
+            .context("setting __genImport")?;
 
         // Register LSP callbacks if available.
         if let Some(proxy) = &lsp_proxy {
             let p = proxy.clone();
             let lm = lang_map.clone();
-            ctx.globals().set("__lspHover", Function::new(ctx.clone(),
-                move |file: String, line: u32, col: u32| -> Option<String> {
-                    let lang_id = lm.get(&file).map(|s| s.as_str()).unwrap_or("");
-                    p.hover(&file, lang_id, line.saturating_sub(1), col.saturating_sub(1))
-                },
-            ).context("creating __lspHover")?).context("setting __lspHover")?;
+            ctx.globals()
+                .set(
+                    "__lspHover",
+                    Function::new(
+                        ctx.clone(),
+                        move |file: String, line: u32, col: u32| -> Option<String> {
+                            let lang_id = lm.get(&file).map(|s| s.as_str()).unwrap_or("");
+                            p.hover(
+                                &file,
+                                lang_id,
+                                line.saturating_sub(1),
+                                col.saturating_sub(1),
+                            )
+                        },
+                    )
+                    .context("creating __lspHover")?,
+                )
+                .context("setting __lspHover")?;
 
             let p = proxy.clone();
             let lm = lang_map.clone();
-            ctx.globals().set("__lspDefinition", Function::new(ctx.clone(),
-                move |file: String, line: u32, col: u32| -> String {
-                    let lang_id = lm.get(&file).map(|s| s.as_str()).unwrap_or("");
-                    let locs = p.definition(&file, lang_id, line.saturating_sub(1), col.saturating_sub(1));
-                    serde_json::to_string(&locs).unwrap_or("[]".to_string())
-                },
-            ).context("creating __lspDefinition")?).context("setting __lspDefinition")?;
+            ctx.globals()
+                .set(
+                    "__lspDefinition",
+                    Function::new(
+                        ctx.clone(),
+                        move |file: String, line: u32, col: u32| -> String {
+                            let lang_id = lm.get(&file).map(|s| s.as_str()).unwrap_or("");
+                            let locs = p.definition(
+                                &file,
+                                lang_id,
+                                line.saturating_sub(1),
+                                col.saturating_sub(1),
+                            );
+                            serde_json::to_string(&locs).unwrap_or("[]".to_string())
+                        },
+                    )
+                    .context("creating __lspDefinition")?,
+                )
+                .context("setting __lspDefinition")?;
 
             let p = proxy.clone();
             let lm = lang_map.clone();
-            ctx.globals().set("__lspReferences", Function::new(ctx.clone(),
-                move |file: String, line: u32, col: u32| -> String {
-                    let lang_id = lm.get(&file).map(|s| s.as_str()).unwrap_or("");
-                    let locs = p.references(&file, lang_id, line.saturating_sub(1), col.saturating_sub(1));
-                    serde_json::to_string(&locs).unwrap_or("[]".to_string())
-                },
-            ).context("creating __lspReferences")?).context("setting __lspReferences")?;
+            ctx.globals()
+                .set(
+                    "__lspReferences",
+                    Function::new(
+                        ctx.clone(),
+                        move |file: String, line: u32, col: u32| -> String {
+                            let lang_id = lm.get(&file).map(|s| s.as_str()).unwrap_or("");
+                            let locs = p.references(
+                                &file,
+                                lang_id,
+                                line.saturating_sub(1),
+                                col.saturating_sub(1),
+                            );
+                            serde_json::to_string(&locs).unwrap_or("[]".to_string())
+                        },
+                    )
+                    .context("creating __lspReferences")?,
+                )
+                .context("setting __lspReferences")?;
 
             let p = proxy.clone();
             let lm = lang_map.clone();
-            ctx.globals().set("__lspDiagnostics", Function::new(ctx.clone(),
-                move |file: String, text: String| -> String {
-                    let lang_id = lm.get(&file).map(|s| s.as_str()).unwrap_or("");
-                    let diags = p.diagnostics_for(&file, lang_id, &text);
-                    serde_json::to_string(&diags).unwrap_or("[]".to_string())
-                },
-            ).context("creating __lspDiagnostics")?).context("setting __lspDiagnostics")?;
+            ctx.globals()
+                .set(
+                    "__lspDiagnostics",
+                    Function::new(ctx.clone(), move |file: String, text: String| -> String {
+                        let lang_id = lm.get(&file).map(|s| s.as_str()).unwrap_or("");
+                        let diags = p.diagnostics_for(&file, lang_id, &text);
+                        serde_json::to_string(&diags).unwrap_or("[]".to_string())
+                    })
+                    .context("creating __lspDiagnostics")?,
+                )
+                .context("setting __lspDiagnostics")?;
         }
 
         // Build ctx object.
-        let ctx_obj = rquickjs::Object::new(ctx.clone())
-            .context("creating ctx object")?;
+        let ctx_obj = rquickjs::Object::new(ctx.clone()).context("creating ctx object")?;
 
         // ctx.files() — list all files in the forest.
-        let file_paths: Vec<String> = forest.files.iter()
+        let file_paths: Vec<String> = forest
+            .files
+            .iter()
             .map(|f| f.path.to_string_lossy().to_string())
             .collect();
         let file_paths_json = serde_json::to_string(&file_paths).unwrap_or_default();
-        ctx_obj.set("files", ctx.eval::<Value, _>(
-            format!("(function() {{ return {file_paths_json}; }})()")
-        ).unwrap_or(Value::new_null(ctx.clone()))).context("setting ctx.files")?;
+        ctx_obj
+            .set(
+                "files",
+                ctx.eval::<Value, _>(format!("(function() {{ return {file_paths_json}; }})()"))
+                    .unwrap_or(Value::new_null(ctx.clone())),
+            )
+            .context("setting ctx.files")?;
 
         let all_symbols = build_all_symbol_json(forest);
         let all_files_json = build_all_files_json(forest);
@@ -432,18 +529,22 @@ fn run_codegen_inner(
             "#
         );
 
-        let setup_fn: Function = ctx.eval(setup_code.as_bytes())
+        let setup_fn: Function = ctx
+            .eval(setup_code.as_bytes())
             .context("compiling ctx setup")?;
-        setup_fn.call::<_, ()>((ctx_obj.clone(),))
+        setup_fn
+            .call::<_, ()>((ctx_obj.clone(),))
             .context("running ctx setup")?;
 
         // Set ctx as global.
-        ctx.globals().set("ctx", ctx_obj)
+        ctx.globals()
+            .set("ctx", ctx_obj)
             .context("setting global ctx")?;
 
         // Execute the user's program.
         let wrapped = format!("(function(ctx) {{ {program} }})(ctx)");
-        let _: Value = ctx.eval(wrapped.as_bytes())
+        let _: Value = ctx
+            .eval(wrapped.as_bytes())
             .context("executing codegen program")?;
 
         // Collect results.
@@ -488,45 +589,76 @@ fn run_codegen_inner(
 
 /// Run a convention check program against the forest.
 /// The program should return an array of violation strings, or an empty array.
-pub fn run_convention_check(
-    forest: &Forest,
-    check_program: &str,
-) -> Result<Vec<String>> {
-    let runtime = JsRuntime::new()
-        .context("creating QuickJS runtime")?;
+pub fn run_convention_check(forest: &Forest, check_program: &str) -> Result<Vec<String>> {
+    let runtime = JsRuntime::new().context("creating QuickJS runtime")?;
     runtime.set_memory_limit(2 * 1024 * 1024 * 1024);
     runtime.set_max_stack_size(8 * 1024 * 1024);
 
-    let context = JsContext::full(&runtime)
-        .context("creating QuickJS context")?;
+    let context = JsContext::full(&runtime).context("creating QuickJS context")?;
 
     context.with(|ctx| -> Result<Vec<String>> {
-        let _: Value = ctx.eval(CODEGEN_HELPERS.as_bytes())
+        let _: Value = ctx
+            .eval(CODEGEN_HELPERS.as_bytes())
             .context("injecting helpers")?;
 
         // We don't need edit/addFile callbacks for checks — just dummy them.
-        ctx.globals().set("__editFile", Function::new(ctx.clone(),
-            |_: String, _: usize, _: usize, _: String| {},
-        ).context("creating __editFile")?).context("setting __editFile")?;
-        ctx.globals().set("__addFile", Function::new(ctx.clone(),
-            |_: String, _: String| {},
-        ).context("creating __addFile")?).context("setting __addFile")?;
-        ctx.globals().set("__genField", Function::new(ctx.clone(),
-            |_: String, _: String, _: String, _: Option<String>| -> String { String::new() },
-        ).context("creating __genField")?).context("setting __genField")?;
-        ctx.globals().set("__genMethod", Function::new(ctx.clone(),
-            |_: String, _: String, _: String, _: String, _: String, _: Option<String>| -> String { String::new() },
-        ).context("creating __genMethod")?).context("setting __genMethod")?;
-        ctx.globals().set("__genImport", Function::new(ctx.clone(),
-            |_: String, _: String| -> String { String::new() },
-        ).context("creating __genImport")?).context("setting __genImport")?;
+        ctx.globals()
+            .set(
+                "__editFile",
+                Function::new(ctx.clone(), |_: String, _: usize, _: usize, _: String| {})
+                    .context("creating __editFile")?,
+            )
+            .context("setting __editFile")?;
+        ctx.globals()
+            .set(
+                "__addFile",
+                Function::new(ctx.clone(), |_: String, _: String| {})
+                    .context("creating __addFile")?,
+            )
+            .context("setting __addFile")?;
+        ctx.globals()
+            .set(
+                "__genField",
+                Function::new(
+                    ctx.clone(),
+                    |_: String, _: String, _: String, _: Option<String>| -> String {
+                        String::new()
+                    },
+                )
+                .context("creating __genField")?,
+            )
+            .context("setting __genField")?;
+        ctx.globals()
+            .set(
+                "__genMethod",
+                Function::new(
+                    ctx.clone(),
+                    |_: String,
+                     _: String,
+                     _: String,
+                     _: String,
+                     _: String,
+                     _: Option<String>|
+                     -> String { String::new() },
+                )
+                .context("creating __genMethod")?,
+            )
+            .context("setting __genMethod")?;
+        ctx.globals()
+            .set(
+                "__genImport",
+                Function::new(ctx.clone(), |_: String, _: String| -> String {
+                    String::new()
+                })
+                .context("creating __genImport")?,
+            )
+            .context("setting __genImport")?;
 
         let all_symbols = build_all_symbol_json(forest);
         let all_files_json = build_all_files_json(forest);
 
         // Build ctx with query capabilities (same as codegen).
-        let ctx_obj = rquickjs::Object::new(ctx.clone())
-            .context("creating ctx object")?;
+        let ctx_obj = rquickjs::Object::new(ctx.clone()).context("creating ctx object")?;
 
         let setup_code = format!(
             r#"
@@ -566,17 +698,21 @@ pub fn run_convention_check(
             "#
         );
 
-        let setup_fn: Function = ctx.eval(setup_code.as_bytes())
+        let setup_fn: Function = ctx
+            .eval(setup_code.as_bytes())
             .context("compiling check setup")?;
-        setup_fn.call::<_, ()>((ctx_obj.clone(),))
+        setup_fn
+            .call::<_, ()>((ctx_obj.clone(),))
             .context("running check setup")?;
 
-        ctx.globals().set("ctx", ctx_obj)
+        ctx.globals()
+            .set("ctx", ctx_obj)
             .context("setting global ctx")?;
 
         // Execute the check program. It should return an array of strings.
         let wrapped = format!("(function(ctx) {{ {check_program} }})(ctx)");
-        let result: Value = ctx.eval(wrapped.as_bytes())
+        let result: Value = ctx
+            .eval(wrapped.as_bytes())
             .context("executing convention check")?;
 
         // Parse the result as an array of strings.
@@ -587,7 +723,7 @@ pub fn run_convention_check(
         if let Some(arr) = result.as_array() {
             let mut violations = Vec::new();
             for i in 0..arr.len() {
-                if let Ok(s) = arr.get::<String>(i as usize) {
+                if let Ok(s) = arr.get::<String>(i) {
                     violations.push(s);
                 }
             }
@@ -608,7 +744,10 @@ pub fn run_convention_check(
 }
 
 /// Dispatch a code generation call to the appropriate language adapter.
-fn gen_for_lang(lang_id: &str, f: impl FnOnce(&dyn crate::adapters::LanguageAdapter) -> String) -> String {
+fn gen_for_lang(
+    lang_id: &str,
+    f: impl FnOnce(&dyn crate::adapters::LanguageAdapter) -> String,
+) -> String {
     let adapter: Option<&dyn crate::adapters::LanguageAdapter> = match lang_id {
         "python" => Some(&crate::adapters::python::PythonAdapter),
         "rust" => Some(&crate::adapters::rust::RustAdapter),
@@ -630,8 +769,8 @@ fn build_all_symbol_json(forest: &Forest) -> String {
 
         for sym in &symbols {
             let end = sym.end_byte.min(file.original_source.len());
-            let text = std::str::from_utf8(&file.original_source[sym.start_byte..end])
-                .unwrap_or("");
+            let text =
+                std::str::from_utf8(&file.original_source[sym.start_byte..end]).unwrap_or("");
 
             // Always use the name byte range from the symbol (captured from query).
             let mut entry = serde_json::json!({
@@ -709,8 +848,8 @@ fn extract_preceding_comment(node: tree_sitter::Node, source: &[u8]) -> Option<S
     loop {
         let kind = prev.kind();
         if kind == "comment" || kind == "line_comment" || kind == "block_comment" {
-            let text = std::str::from_utf8(&source[prev.start_byte()..prev.end_byte()])
-                .unwrap_or("");
+            let text =
+                std::str::from_utf8(&source[prev.start_byte()..prev.end_byte()]).unwrap_or("");
             // Strip common prefixes.
             let stripped = text
                 .trim_start_matches("///")
@@ -751,7 +890,11 @@ fn extract_fields(file: &ParsedFile, node_start: usize, node_end: usize) -> Vec<
     let name_idx = query.capture_index_for_name("name");
     let type_idx = query.capture_index_for_name("type");
 
-    let node = match file.tree.root_node().descendant_for_byte_range(node_start, node_end) {
+    let node = match file
+        .tree
+        .root_node()
+        .descendant_for_byte_range(node_start, node_end)
+    {
         Some(n) => n,
         None => return Vec::new(),
     };
@@ -763,21 +906,24 @@ fn extract_fields(file: &ParsedFile, node_start: usize, node_end: usize) -> Vec<
 
     let mut fields = Vec::new();
     while let Some(m) = matches.next() {
-        let name = name_idx.and_then(|idx|
-            m.captures.iter().find(|c| c.index == idx)
-                .map(|c| std::str::from_utf8(&file.original_source[c.node.start_byte()..c.node.end_byte()]).unwrap_or(""))
-        );
-        let type_text = type_idx.and_then(|idx|
-            m.captures.iter().find(|c| c.index == idx)
-                .map(|c| std::str::from_utf8(&file.original_source[c.node.start_byte()..c.node.end_byte()]).unwrap_or(""))
-        );
+        let name = name_idx.and_then(|idx| {
+            m.captures.iter().find(|c| c.index == idx).map(|c| {
+                std::str::from_utf8(&file.original_source[c.node.start_byte()..c.node.end_byte()])
+                    .unwrap_or("")
+            })
+        });
+        let type_text = type_idx.and_then(|idx| {
+            m.captures.iter().find(|c| c.index == idx).map(|c| {
+                std::str::from_utf8(&file.original_source[c.node.start_byte()..c.node.end_byte()])
+                    .unwrap_or("")
+            })
+        });
 
         if let Some(name) = name {
             // Look for a doc comment on the preceding sibling.
             let field_idx = query.capture_index_for_name("field");
-            let field_node = field_idx.and_then(|idx|
-                m.captures.iter().find(|c| c.index == idx).map(|c| c.node)
-            );
+            let field_node = field_idx
+                .and_then(|idx| m.captures.iter().find(|c| c.index == idx).map(|c| c.node));
             let doc = field_node.and_then(|n| extract_preceding_comment(n, &file.original_source));
 
             let mut entry = serde_json::json!({
@@ -795,7 +941,11 @@ fn extract_fields(file: &ParsedFile, node_start: usize, node_end: usize) -> Vec<
 }
 
 /// Extract methods from a type node using the adapter's method query.
-fn extract_methods(file: &ParsedFile, node_start: usize, node_end: usize) -> Vec<serde_json::Value> {
+fn extract_methods(
+    file: &ParsedFile,
+    node_start: usize,
+    node_end: usize,
+) -> Vec<serde_json::Value> {
     let method_query_str = file.adapter.method_query();
     if method_query_str.is_empty() {
         return Vec::new();
@@ -809,7 +959,11 @@ fn extract_methods(file: &ParsedFile, node_start: usize, node_end: usize) -> Vec
     let name_idx = query.capture_index_for_name("name");
     let method_idx = query.capture_index_for_name("method");
 
-    let node = match file.tree.root_node().descendant_for_byte_range(node_start, node_end) {
+    let node = match file
+        .tree
+        .root_node()
+        .descendant_for_byte_range(node_start, node_end)
+    {
         Some(n) => n,
         None => return Vec::new(),
     };
@@ -820,16 +974,19 @@ fn extract_methods(file: &ParsedFile, node_start: usize, node_end: usize) -> Vec
 
     let mut methods = Vec::new();
     while let Some(m) = matches.next() {
-        let name = name_idx.and_then(|idx|
-            m.captures.iter().find(|c| c.index == idx)
-                .map(|c| std::str::from_utf8(&file.original_source[c.node.start_byte()..c.node.end_byte()]).unwrap_or(""))
-        );
-        let method_node = method_idx.and_then(|idx|
-            m.captures.iter().find(|c| c.index == idx).map(|c| c.node)
-        );
+        let name = name_idx.and_then(|idx| {
+            m.captures.iter().find(|c| c.index == idx).map(|c| {
+                std::str::from_utf8(&file.original_source[c.node.start_byte()..c.node.end_byte()])
+                    .unwrap_or("")
+            })
+        });
+        let method_node =
+            method_idx.and_then(|idx| m.captures.iter().find(|c| c.index == idx).map(|c| c.node));
 
         if let (Some(name), Some(mnode)) = (name, method_node) {
-            let text = std::str::from_utf8(&file.original_source[mnode.start_byte()..mnode.end_byte()]).unwrap_or("");
+            let text =
+                std::str::from_utf8(&file.original_source[mnode.start_byte()..mnode.end_byte()])
+                    .unwrap_or("");
             methods.push(serde_json::json!({
                 "name": name,
                 "startByte": mnode.start_byte(),
@@ -845,7 +1002,10 @@ fn extract_methods(file: &ParsedFile, node_start: usize, node_end: usize) -> Vec
 
 /// Find detailed node info (name range, body range) for a node at given byte range.
 fn find_node_info(file: &ParsedFile, start: usize, end: usize) -> Option<NodeInfo> {
-    let node = file.tree.root_node().descendant_for_byte_range(start, end)?;
+    let node = file
+        .tree
+        .root_node()
+        .descendant_for_byte_range(start, end)?;
 
     let body_node = node.child_by_field_name("body");
     let params_node = node.child_by_field_name("parameters");
@@ -858,14 +1018,16 @@ fn find_node_info(file: &ParsedFile, start: usize, end: usize) -> Option<NodeInf
     Some(NodeInfo {
         body_start: body_node.map(|n| n.start_byte()),
         body_end: body_node.map(|n| n.end_byte()),
-        body_text: body_node.map(|n|
+        body_text: body_node.map(|n| {
             std::str::from_utf8(&file.original_source[n.start_byte()..n.end_byte()])
-                .unwrap_or("").to_string()
-        ),
-        params_text: params_node.map(|n|
+                .unwrap_or("")
+                .to_string()
+        }),
+        params_text: params_node.map(|n| {
             std::str::from_utf8(&file.original_source[n.start_byte()..n.end_byte()])
-                .unwrap_or("").to_string()
-        ),
+                .unwrap_or("")
+                .to_string()
+        }),
     })
 }
 
@@ -875,7 +1037,9 @@ pub fn validate_changes(changes: &[FileChange]) -> Vec<String> {
     let mut errors = Vec::new();
 
     for change in changes {
-        let ext = change.path.extension()
+        let ext = change
+            .path
+            .extension()
             .and_then(|e| e.to_str())
             .unwrap_or("");
 
@@ -914,14 +1078,12 @@ pub fn validate_changes(changes: &[FileChange]) -> Vec<String> {
 /// combining with unchanged files' existing symbols from the forest.
 /// Only reports issues for symbols that *existed* before the changes,
 /// avoiding false positives for built-ins and external functions.
-pub fn structural_checks(
-    forest: &Forest,
-    changes: &[FileChange],
-) -> Vec<String> {
+pub fn structural_checks(forest: &Forest, changes: &[FileChange]) -> Vec<String> {
     use std::collections::{HashMap, HashSet};
 
     // Build a map of changed file paths for quick lookup.
-    let changed_paths: HashMap<String, &FileChange> = changes.iter()
+    let changed_paths: HashMap<String, &FileChange> = changes
+        .iter()
         .map(|c| (c.path.to_string_lossy().to_string(), c))
         .collect();
 
@@ -937,7 +1099,11 @@ pub fn structural_checks(
 
     // Helper: parse new_source from a FileChange into a temporary ParsedFile.
     let parse_change = |change: &FileChange| -> Option<ParsedFile> {
-        let ext = change.path.extension().and_then(|e| e.to_str()).unwrap_or("");
+        let ext = change
+            .path
+            .extension()
+            .and_then(|e| e.to_str())
+            .unwrap_or("");
         let adapter = crate::adapters::adapter_for_extension(ext)?;
         let mut parser = tree_sitter::Parser::new();
         parser.set_language(&adapter.language()).ok()?;
@@ -969,7 +1135,9 @@ pub fn structural_checks(
         };
         for sym in syms {
             match sym.kind.as_str() {
-                "function" | "type" => { post_functions.insert(sym.name.clone()); }
+                "function" | "type" => {
+                    post_functions.insert(sym.name.clone());
+                }
                 "call" => post_calls.push(sym),
                 _ => {}
             }
@@ -979,13 +1147,19 @@ pub fn structural_checks(
     // Also handle brand-new files (not yet in the forest) from the changes list.
     for change in changes {
         let file_key = change.path.to_string_lossy().to_string();
-        if forest.files.iter().any(|f| f.path.to_string_lossy() == file_key) {
+        if forest
+            .files
+            .iter()
+            .any(|f| f.path.to_string_lossy() == file_key)
+        {
             continue; // already handled above
         }
         if let Some(tmp) = parse_change(change) {
             for sym in index::extract_symbols(&tmp) {
                 match sym.kind.as_str() {
-                    "function" | "type" => { post_functions.insert(sym.name.clone()); }
+                    "function" | "type" => {
+                        post_functions.insert(sym.name.clone());
+                    }
                     "call" => post_calls.push(sym),
                     _ => {}
                 }
@@ -994,7 +1168,8 @@ pub fn structural_checks(
     }
 
     // Symbols removed by the changes: existed pre-change, missing post-change.
-    let removed: HashSet<&String> = pre_functions.iter()
+    let removed: HashSet<&String> = pre_functions
+        .iter()
         .filter(|name| !post_functions.contains(*name))
         .collect();
 
@@ -1004,9 +1179,7 @@ pub fn structural_checks(
         if removed.contains(&call.name) {
             warnings.push(format!(
                 "Removed symbol `{}` still referenced at {}:{}",
-                call.name,
-                call.file_path,
-                call.start_line,
+                call.name, call.file_path, call.start_line,
             ));
         }
     }
@@ -1017,8 +1190,8 @@ pub fn structural_checks(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::adapters::python::PythonAdapter;
     use crate::adapters::LanguageAdapter;
+    use crate::adapters::python::PythonAdapter;
     use std::path::PathBuf;
     use tree_sitter::Parser;
 
@@ -1049,7 +1222,9 @@ mod tests {
             ("b.py", "foo()\n"),
         ]);
 
-        let changes = run_codegen(&forest, r#"
+        let changes = run_codegen(
+            &forest,
+            r#"
             var fns = ctx.findFunction("foo");
             for (var i = 0; i < fns.length; i++) {
                 fns[i].replaceName("bar");
@@ -1058,69 +1233,97 @@ mod tests {
             for (var i = 0; i < refs.length; i++) {
                 refs[i].replaceName("bar");
             }
-        "#).unwrap();
+        "#,
+        )
+        .unwrap();
 
         assert_eq!(changes.len(), 2);
-        let a_change = changes.iter().find(|c| c.path == PathBuf::from("a.py")).unwrap();
-        assert_eq!(String::from_utf8_lossy(&a_change.new_source), "def bar():\n    pass\n");
+        let a_change = changes
+            .iter()
+            .find(|c| c.path == PathBuf::from("a.py"))
+            .unwrap();
+        assert_eq!(
+            String::from_utf8_lossy(&a_change.new_source),
+            "def bar():\n    pass\n"
+        );
 
-        let b_change = changes.iter().find(|c| c.path == PathBuf::from("b.py")).unwrap();
+        let b_change = changes
+            .iter()
+            .find(|c| c.path == PathBuf::from("b.py"))
+            .unwrap();
         assert_eq!(String::from_utf8_lossy(&b_change.new_source), "bar()\n");
     }
 
     #[test]
     fn codegen_query_with_glob() {
-        let forest = make_forest(vec![
-            ("test.py", "def test_a():\n    pass\n\ndef test_b():\n    pass\n\ndef helper():\n    pass\n"),
-        ]);
+        let forest = make_forest(vec![(
+            "test.py",
+            "def test_a():\n    pass\n\ndef test_b():\n    pass\n\ndef helper():\n    pass\n",
+        )]);
 
-        let changes = run_codegen(&forest, r#"
+        let changes = run_codegen(
+            &forest,
+            r#"
             var tests = ctx.query({kind: "function", name: "test_*"});
             for (var i = 0; i < tests.length; i++) {
                 tests[i].remove();
             }
-        "#).unwrap();
+        "#,
+        )
+        .unwrap();
 
         assert_eq!(changes.len(), 1);
         let result = String::from_utf8_lossy(&changes[0].new_source);
         assert!(result.contains("helper"), "helper should remain: {result}");
-        assert!(!result.contains("test_a"), "test_a should be removed: {result}");
+        assert!(
+            !result.contains("test_a"),
+            "test_a should be removed: {result}"
+        );
     }
 
     #[test]
     fn codegen_add_new_file() {
-        let forest = make_forest(vec![
-            ("main.py", "pass\n"),
-        ]);
+        let forest = make_forest(vec![("main.py", "pass\n")]);
 
-        let changes = run_codegen(&forest, r##"
+        let changes = run_codegen(
+            &forest,
+            r##"
             ctx.addFile("new_module.py", "# Generated\ndef generated():\n    pass\n");
-        "##).unwrap();
+        "##,
+        )
+        .unwrap();
 
-        let new_file = changes.iter().find(|c| c.path == PathBuf::from("new_module.py"));
+        let new_file = changes
+            .iter()
+            .find(|c| c.path == PathBuf::from("new_module.py"));
         assert!(new_file.is_some(), "new file should be created");
         assert!(String::from_utf8_lossy(&new_file.unwrap().new_source).contains("Generated"));
     }
 
     #[test]
     fn codegen_read_file() {
-        let forest = make_forest(vec![
-            ("config.py", "DB_HOST = 'localhost'\n"),
-        ]);
+        let forest = make_forest(vec![("config.py", "DB_HOST = 'localhost'\n")]);
 
-        let changes = run_codegen(&forest, r#"
+        let changes = run_codegen(
+            &forest,
+            r#"
             var content = ctx.readFile("config.py");
             if (content && content.includes("localhost")) {
                 ctx.addFile("warning.txt", "Config uses localhost!\n");
             }
-        "#).unwrap();
+        "#,
+        )
+        .unwrap();
 
-        let warning = changes.iter().find(|c| c.path == PathBuf::from("warning.txt"));
+        let warning = changes
+            .iter()
+            .find(|c| c.path == PathBuf::from("warning.txt"));
         assert!(warning.is_some(), "warning file should be created");
     }
 
     fn make_rust_forest(files: Vec<(&str, &str)>) -> Forest {
-        let adapter: &'static dyn crate::adapters::LanguageAdapter = &crate::adapters::rust::RustAdapter;
+        let adapter: &'static dyn crate::adapters::LanguageAdapter =
+            &crate::adapters::rust::RustAdapter;
         let mut parsed = Vec::new();
         for (path, source) in files {
             let source_bytes = source.as_bytes().to_vec();
@@ -1139,11 +1342,14 @@ mod tests {
 
     #[test]
     fn codegen_fields_and_methods() {
-        let forest = make_rust_forest(vec![
-            ("lib.rs", "struct User {\n    name: String,\n    age: u32,\n}\n"),
-        ]);
+        let forest = make_rust_forest(vec![(
+            "lib.rs",
+            "struct User {\n    name: String,\n    age: u32,\n}\n",
+        )]);
 
-        let changes = run_codegen(&forest, r#"
+        let changes = run_codegen(
+            &forest,
+            r#"
             var types = ctx.findType("User");
             if (types.length > 0) {
                 var user = types[0];
@@ -1152,72 +1358,101 @@ mod tests {
                 var fieldNames = fields.map(function(f) { return f.name; }).join(", ");
                 user.insertBefore("// Fields: " + fieldNames);
             }
-        "#).unwrap();
+        "#,
+        )
+        .unwrap();
 
         assert_eq!(changes.len(), 1);
         let result = String::from_utf8_lossy(&changes[0].new_source);
-        assert!(result.contains("// Fields: name, age"), "should list fields: {result}");
+        assert!(
+            result.contains("// Fields: name, age"),
+            "should list fields: {result}"
+        );
     }
 
     #[test]
     fn codegen_add_field() {
-        let forest = make_rust_forest(vec![
-            ("lib.rs", "struct User {\n    name: String,\n}\n"),
-        ]);
+        let forest = make_rust_forest(vec![("lib.rs", "struct User {\n    name: String,\n}\n")]);
 
-        let changes = run_codegen(&forest, r#"
+        let changes = run_codegen(
+            &forest,
+            r#"
             var types = ctx.findType("User");
             if (types.length > 0) {
                 types[0].addField("email", "String");
             }
-        "#).unwrap();
+        "#,
+        )
+        .unwrap();
 
         assert_eq!(changes.len(), 1);
         let result = String::from_utf8_lossy(&changes[0].new_source);
-        assert!(result.contains("email: String"), "should contain new field: {result}");
+        assert!(
+            result.contains("email: String"),
+            "should contain new field: {result}"
+        );
     }
 
     #[test]
     fn codegen_gen_import() {
-        let forest = make_rust_forest(vec![
-            ("lib.rs", "fn main() {}\n"),
-        ]);
+        let forest = make_rust_forest(vec![("lib.rs", "fn main() {}\n")]);
 
-        let changes = run_codegen(&forest, r#"
+        let changes = run_codegen(
+            &forest,
+            r#"
             ctx.addImport("lib.rs", "std::collections::HashMap");
-        "#).unwrap();
+        "#,
+        )
+        .unwrap();
 
         assert_eq!(changes.len(), 1);
         let result = String::from_utf8_lossy(&changes[0].new_source);
-        assert!(result.contains("use std::collections::HashMap;"), "should contain import: {result}");
+        assert!(
+            result.contains("use std::collections::HashMap;"),
+            "should contain import: {result}"
+        );
     }
 
     #[test]
     fn codegen_add_field_with_doc() {
-        let forest = make_rust_forest(vec![
-            ("lib.rs", "struct User {\n    /// The user's name.\n    name: String,\n}\n"),
-        ]);
+        let forest = make_rust_forest(vec![(
+            "lib.rs",
+            "struct User {\n    /// The user's name.\n    name: String,\n}\n",
+        )]);
 
-        let changes = run_codegen(&forest, r#"
+        let changes = run_codegen(
+            &forest,
+            r#"
             var types = ctx.findType("User");
             if (types.length > 0) {
                 types[0].addField("email", "String", "The user's email address.");
             }
-        "#).unwrap();
+        "#,
+        )
+        .unwrap();
 
         assert_eq!(changes.len(), 1);
         let result = String::from_utf8_lossy(&changes[0].new_source);
-        assert!(result.contains("/// The user's email address."), "should contain doc comment: {result}");
-        assert!(result.contains("email: String"), "should contain field: {result}");
+        assert!(
+            result.contains("/// The user's email address."),
+            "should contain doc comment: {result}"
+        );
+        assert!(
+            result.contains("email: String"),
+            "should contain field: {result}"
+        );
     }
 
     #[test]
     fn codegen_read_field_docs() {
-        let forest = make_rust_forest(vec![
-            ("lib.rs", "struct User {\n    /// The user's name.\n    name: String,\n    age: u32,\n}\n"),
-        ]);
+        let forest = make_rust_forest(vec![(
+            "lib.rs",
+            "struct User {\n    /// The user's name.\n    name: String,\n    age: u32,\n}\n",
+        )]);
 
-        let changes = run_codegen(&forest, r#"
+        let changes = run_codegen(
+            &forest,
+            r#"
             var types = ctx.findType("User");
             if (types.length > 0) {
                 var fields = types[0].fields();
@@ -1227,13 +1462,23 @@ mod tests {
                 }
                 ctx.addFile("fields.txt", docs.join("\n") + "\n");
             }
-        "#).unwrap();
+        "#,
+        )
+        .unwrap();
 
-        let fields_file = changes.iter().find(|c| c.path == PathBuf::from("fields.txt"));
+        let fields_file = changes
+            .iter()
+            .find(|c| c.path == PathBuf::from("fields.txt"));
         assert!(fields_file.is_some(), "fields.txt should be created");
         let content = String::from_utf8_lossy(&fields_file.unwrap().new_source);
-        assert!(content.contains("name:The user's name."), "should have name doc: {content}");
-        assert!(content.contains("age:none"), "age should have no doc: {content}");
+        assert!(
+            content.contains("name:The user's name."),
+            "should have name doc: {content}"
+        );
+        assert!(
+            content.contains("age:none"),
+            "age should have no doc: {content}"
+        );
     }
 
     #[test]
@@ -1265,7 +1510,10 @@ mod tests {
         }];
 
         let warnings = structural_checks(&forest, &changes);
-        assert!(!warnings.is_empty(), "should detect removed symbol still referenced: {warnings:?}");
+        assert!(
+            !warnings.is_empty(),
+            "should detect removed symbol still referenced: {warnings:?}"
+        );
         assert!(
             warnings.iter().any(|w| w.contains("compute")),
             "warning should mention `compute`: {warnings:?}"
@@ -1292,7 +1540,10 @@ mod tests {
         }];
 
         let warnings = structural_checks(&forest, &changes);
-        assert!(!warnings.is_empty(), "should detect that `foo` was removed but still called: {warnings:?}");
+        assert!(
+            !warnings.is_empty(),
+            "should detect that `foo` was removed but still called: {warnings:?}"
+        );
         assert!(
             warnings.iter().any(|w| w.contains("foo")),
             "warning should mention `foo`: {warnings:?}"

@@ -8,9 +8,9 @@ use std::sync::Mutex;
 use rmcp::handler::server::router::tool::ToolRouter;
 use rmcp::handler::server::wrapper::Parameters;
 use rmcp::model::{ServerCapabilities, ServerInfo};
-use rmcp::{schemars, tool, tool_handler, tool_router, ServerHandler, ServiceExt};
-use tree_sitter::{Parser, Query, QueryCursor};
+use rmcp::{ServerHandler, ServiceExt, schemars, tool, tool_handler, tool_router};
 use streaming_iterator::StreamingIterator;
+use tree_sitter::{Parser, Query, QueryCursor};
 
 use crate::codegen;
 use crate::exemplar;
@@ -135,7 +135,6 @@ struct TransformParams {
     path: String,
 
     // --- Matching (pick one) ---
-
     /// Abstract node kind: "function", "class", "call", "import".
     #[serde(default)]
     kind: Option<String>,
@@ -153,7 +152,6 @@ struct TransformParams {
     capture: Option<String>,
 
     // --- Action (pick one: action or transform_fn) ---
-
     /// Action to perform: "replace", "wrap", "unwrap", "prepend_statement",
     /// "append_statement", "remove", "replace_name", "replace_body".
     /// Omit if using transform_fn.
@@ -197,6 +195,7 @@ struct CodegenParams {
     /// - ctx.readFile(path) → file content string or null
     /// - ctx.addFile(path, content) → create a new file
     /// - ctx.editFile(path, startByte, endByte, replacement) → raw byte-range edit
+    ///
     /// Nodes have methods: replaceText, replaceBody, replaceName, remove, insertBefore, insertAfter
     program: String,
 
@@ -218,7 +217,9 @@ struct ApplyParams {
 #[derive(serde::Deserialize, schemars::JsonSchema)]
 struct UndoParams {}
 
-fn default_true() -> bool { true }
+fn default_true() -> bool {
+    true
+}
 
 #[derive(serde::Deserialize, schemars::JsonSchema)]
 struct TransformBatchParams {
@@ -514,7 +515,11 @@ impl CanopyServer {
             return format!("No definitions of '{}' found.", params.symbol);
         }
 
-        let mut output = format!("{} definition(s) of '{}':\n\n", all_results.len(), params.symbol);
+        let mut output = format!(
+            "{} definition(s) of '{}':\n\n",
+            all_results.len(),
+            params.symbol
+        );
         for r in &all_results {
             output.push_str(&format!(
                 "{}:{}:{} [{}]\n  {}\n\n",
@@ -645,7 +650,9 @@ impl CanopyServer {
             "prepend_statement" => {
                 let code = match params.code {
                     Some(c) => c,
-                    None => return "Error: 'prepend_statement' action requires 'code'.".to_string(),
+                    None => {
+                        return "Error: 'prepend_statement' action requires 'code'.".to_string();
+                    }
                 };
                 transform::Action::PrependStatement { code }
             }
@@ -712,12 +719,8 @@ impl CanopyServer {
         // We'll thread state manually through the loop.
 
         for (i, transform_val) in params.transforms.iter().enumerate() {
-            let step_result = apply_one_batch_step(
-                &path,
-                transform_val,
-                params.format,
-                &mut accumulated,
-            );
+            let step_result =
+                apply_one_batch_step(&path, transform_val, params.format, &mut accumulated);
             if let Err(e) = step_result {
                 return format!("Error in transform[{i}]: {e}");
             }
@@ -730,14 +733,21 @@ impl CanopyServer {
         // Build combined FileChanges.
         let changes: Vec<FileChange> = accumulated
             .into_iter()
-            .map(|(path, (original, new_source))| FileChange { path, original, new_source })
+            .map(|(path, (original, new_source))| FileChange {
+                path,
+                original,
+                new_source,
+            })
             .collect();
 
         let diff: String = changes.iter().map(|c| c.diff()).collect();
         let file_count = changes.len();
         let description = format!("transform_batch ({} step(s))", params.transforms.len());
 
-        *self.pending.lock().unwrap() = Some(PendingChanges { changes, description });
+        *self.pending.lock().unwrap() = Some(PendingChanges {
+            changes,
+            description,
+        });
 
         format!(
             "{diff}\n---\n{file_count} file(s) changed. Call `apply` with confirm=true to write to disk."
@@ -756,7 +766,11 @@ impl CanopyServer {
         };
 
         // Build the parameter text to insert.
-        let param_text = build_param_text(&params.param_name, params.param_type.as_deref(), params.default_value.as_deref());
+        let param_text = build_param_text(
+            &params.param_name,
+            params.param_type.as_deref(),
+            params.default_value.as_deref(),
+        );
 
         let mut changes: Vec<FileChange> = Vec::new();
 
@@ -779,14 +793,23 @@ impl CanopyServer {
         }
 
         if changes.is_empty() {
-            return format!("Function '{}' not found or parameter list not modifiable.", params.function);
+            return format!(
+                "Function '{}' not found or parameter list not modifiable.",
+                params.function
+            );
         }
 
         let diff: String = changes.iter().map(|c| c.diff()).collect();
         let file_count = changes.len();
-        let description = format!("add_parameter '{}' to '{}'", params.param_name, params.function);
+        let description = format!(
+            "add_parameter '{}' to '{}'",
+            params.param_name, params.function
+        );
 
-        *self.pending.lock().unwrap() = Some(PendingChanges { changes, description });
+        *self.pending.lock().unwrap() = Some(PendingChanges {
+            changes,
+            description,
+        });
 
         format!(
             "{diff}\n---\n{file_count} file(s) changed. Call `apply` with confirm=true to write to disk."
@@ -833,9 +856,15 @@ impl CanopyServer {
 
         let diff: String = changes.iter().map(|c| c.diff()).collect();
         let file_count = changes.len();
-        let description = format!("remove_parameter '{}' from '{}'", params.param_name, params.function);
+        let description = format!(
+            "remove_parameter '{}' from '{}'",
+            params.param_name, params.function
+        );
 
-        *self.pending.lock().unwrap() = Some(PendingChanges { changes, description });
+        *self.pending.lock().unwrap() = Some(PendingChanges {
+            changes,
+            description,
+        });
 
         format!(
             "{diff}\n---\n{file_count} file(s) changed. Call `apply` with confirm=true to write to disk."
@@ -861,7 +890,9 @@ impl CanopyServer {
             root.join(&exemplar_path)
         };
 
-        let also_affects: Vec<String> = params.also_affects.iter()
+        let also_affects: Vec<String> = params
+            .also_affects
+            .iter()
             .map(|p| {
                 let ap = PathBuf::from(p);
                 if ap.is_absolute() {
@@ -873,10 +904,15 @@ impl CanopyServer {
             .collect();
 
         // Convert back to paths relative to root for the also_affects.
-        let also_refs: Vec<String> = also_affects.iter()
-            .map(|p| PathBuf::from(p).strip_prefix(&root)
-                .unwrap_or(Path::new(p))
-                .to_string_lossy().to_string())
+        let also_refs: Vec<String> = also_affects
+            .iter()
+            .map(|p| {
+                PathBuf::from(p)
+                    .strip_prefix(&root)
+                    .unwrap_or(Path::new(p))
+                    .to_string_lossy()
+                    .to_string()
+            })
             .collect();
         let _ = also_refs;
 
@@ -906,8 +942,11 @@ impl CanopyServer {
                 );
                 output.push_str(&format!("Parameters: [{}]\n", param_names.join(", ")));
                 for ft in &template.files {
-                    output.push_str(&format!("  {} → template ({} bytes)\n",
-                        ft.path_template, ft.content_template.len()));
+                    output.push_str(&format!(
+                        "  {} → template ({} bytes)\n",
+                        ft.path_template,
+                        ft.content_template.len()
+                    ));
                 }
                 output.push_str("\nUse `instantiate` with this pattern name to create new code.");
                 output
@@ -923,7 +962,12 @@ impl CanopyServer {
     fn teach_recipe(&self, Parameters(params): Parameters<TeachRecipeParams>) -> String {
         let model_lock = self.model.lock().unwrap();
         if let Some(model) = &*model_lock {
-            match model.save_recipe(&params.name, &params.description, &params.params, &params.steps) {
+            match model.save_recipe(
+                &params.name,
+                &params.description,
+                &params.params,
+                &params.steps,
+            ) {
                 Ok(()) => format!(
                     "Recipe '{}' saved with parameters: [{}]",
                     params.name,
@@ -972,7 +1016,8 @@ impl CanopyServer {
 
         // Check if these are create_file steps (from teach_by_example).
         if let Some(steps_arr) = substituted_steps.as_array() {
-            let is_create_file = steps_arr.iter()
+            let is_create_file = steps_arr
+                .iter()
                 .all(|s| s["action"].as_str() == Some("create_file"));
 
             if is_create_file {
@@ -1036,7 +1081,11 @@ impl CanopyServer {
                 Ok(recipes) => {
                     let mut output = format!("{} recipe(s):\n\n", recipes.len());
                     for (name, desc) in &recipes {
-                        let desc_str = if desc.is_empty() { "" } else { &format!(" — {desc}") };
+                        let desc_str = if desc.is_empty() {
+                            ""
+                        } else {
+                            &format!(" — {desc}")
+                        };
                         output.push_str(&format!("  {name}{desc_str}\n"));
                     }
                     output
@@ -1103,7 +1152,11 @@ impl CanopyServer {
             }
         }
 
-        format!("{} convention(s) checked:\n{}", conventions.len(), all_violations.join("\n"))
+        format!(
+            "{} convention(s) checked:\n{}",
+            conventions.len(),
+            all_violations.join("\n")
+        )
     }
 
     #[tool(
@@ -1118,7 +1171,11 @@ impl CanopyServer {
                 Ok(convs) => {
                     let mut output = format!("{} convention(s):\n\n", convs.len());
                     for (name, desc, _) in &convs {
-                        let desc_str = if desc.is_empty() { "" } else { &format!(" — {desc}") };
+                        let desc_str = if desc.is_empty() {
+                            ""
+                        } else {
+                            &format!(" — {desc}")
+                        };
                         output.push_str(&format!("  {name}{desc_str}\n"));
                     }
                     output
@@ -1311,7 +1368,9 @@ impl CanopyServer {
             all_warnings.extend(codegen::structural_checks(&forest, &changes));
             let errors = all_warnings;
             if !errors.is_empty() {
-                let mut output = "WARNING: pre-flight checks detected issues after transformation:\n".to_string();
+                let mut output =
+                    "WARNING: pre-flight checks detected issues after transformation:\n"
+                        .to_string();
                 for err in &errors {
                     output.push_str(&format!("  - {err}\n"));
                 }
@@ -1325,14 +1384,17 @@ impl CanopyServer {
 
         // Format if requested.
         let final_changes: Vec<FileChange> = if params.format {
-            changes.into_iter().map(|mut c| {
-                if let Some(ext) = c.path.extension().and_then(|e| e.to_str()) {
-                    if let Some(adapter) = crate::adapters::adapter_for_extension(ext) {
+            changes
+                .into_iter()
+                .map(|mut c| {
+                    if let Some(ext) = c.path.extension().and_then(|e| e.to_str())
+                        && let Some(adapter) = crate::adapters::adapter_for_extension(ext)
+                    {
                         c.new_source = rewrite::format_source(&c.new_source, adapter);
                     }
-                }
-                c
-            }).collect()
+                    c
+                })
+                .collect()
         } else {
             changes
         };
@@ -1369,10 +1431,8 @@ impl CanopyServer {
                 match crate::forest::apply_with_backup(&p.changes) {
                     Ok(backup_paths) => {
                         // Store backups for undo.
-                        *self.last_backups.lock().unwrap() = Some((
-                            backup_paths,
-                            p.description.clone(),
-                        ));
+                        *self.last_backups.lock().unwrap() =
+                            Some((backup_paths, p.description.clone()));
 
                         let mut output = format!(
                             "Applied {} to {file_count} file(s). Backups created — use `undo` to revert.",
@@ -1402,14 +1462,12 @@ impl CanopyServer {
         let backups = self.last_backups.lock().unwrap().take();
         match backups {
             None => "No changes to undo.".to_string(),
-            Some((paths, description)) => {
-                match crate::forest::undo_from_backups(&paths) {
-                    Ok(restored) => {
-                        format!("Undone {description}: {restored} file(s) restored.")
-                    }
-                    Err(e) => format!("Error during undo: {e}"),
+            Some((paths, description)) => match crate::forest::undo_from_backups(&paths) {
+                Ok(restored) => {
+                    format!("Undone {description}: {restored} file(s) restored.")
                 }
-            }
+                Err(e) => format!("Error during undo: {e}"),
+            },
         }
     }
 }
@@ -1460,7 +1518,10 @@ impl CanopyServer {
             if abs_path.starts_with(&model_root) {
                 // Filter forest to files under the requested path.
                 return Ok(Forest {
-                    files: model.forest.files.iter()
+                    files: model
+                        .forest
+                        .files
+                        .iter()
                         .filter(|f| f.path.starts_with(&abs_path))
                         .cloned()
                         .collect(),
@@ -1522,7 +1583,7 @@ impl CanopyServer {
 /// step we update the "current bytes" for changed files, keeping the original
 /// bytes (for the final diff) fixed at what they were before this entire batch.
 fn apply_one_batch_step(
-    root_path: &PathBuf,
+    root_path: &Path,
     transform_val: &serde_json::Value,
     format: bool,
     accumulated: &mut HashMap<PathBuf, (Vec<u8>, Vec<u8>)>,
@@ -1530,11 +1591,13 @@ fn apply_one_batch_step(
     // Determine whether this is a rename or a match/act transform.
     if let Some(rename_obj) = transform_val.get("rename") {
         // Rename step.
-        let from = rename_obj.get("from")
+        let from = rename_obj
+            .get("from")
             .and_then(|v| v.as_str())
             .ok_or_else(|| anyhow::anyhow!("rename step missing 'from'"))?
             .to_string();
-        let to = rename_obj.get("to")
+        let to = rename_obj
+            .get("to")
             .and_then(|v| v.as_str())
             .ok_or_else(|| anyhow::anyhow!("rename step missing 'to'"))?
             .to_string();
@@ -1545,25 +1608,59 @@ fn apply_one_batch_step(
         merge_changes(accumulated, step_changes);
     } else {
         // Match/act transform step. Parse it as TransformParams fields.
-        let obj = transform_val.as_object()
+        let obj = transform_val
+            .as_object()
             .ok_or_else(|| anyhow::anyhow!("transform element must be an object"))?;
 
-        let raw_query = obj.get("raw_query").and_then(|v| v.as_str()).map(|s| s.to_string());
-        let capture   = obj.get("capture").and_then(|v| v.as_str()).map(|s| s.to_string());
-        let kind      = obj.get("kind").and_then(|v| v.as_str()).map(|s| s.to_string());
-        let name      = obj.get("name").and_then(|v| v.as_str()).map(|s| s.to_string());
-        let file_f    = obj.get("file").and_then(|v| v.as_str()).map(|s| s.to_string());
-        let action_s  = obj.get("action").and_then(|v| v.as_str())
+        let raw_query = obj
+            .get("raw_query")
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string());
+        let capture = obj
+            .get("capture")
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string());
+        let kind = obj
+            .get("kind")
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string());
+        let name = obj
+            .get("name")
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string());
+        let file_f = obj
+            .get("file")
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string());
+        let action_s = obj
+            .get("action")
+            .and_then(|v| v.as_str())
             .ok_or_else(|| anyhow::anyhow!("transform step missing 'action'"))?
             .to_string();
-        let code      = obj.get("code").and_then(|v| v.as_str()).map(|s| s.to_string());
-        let before    = obj.get("before").and_then(|v| v.as_str()).map(|s| s.to_string());
-        let after     = obj.get("after").and_then(|v| v.as_str()).map(|s| s.to_string());
+        let code = obj
+            .get("code")
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string());
+        let before = obj
+            .get("before")
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string());
+        let after = obj
+            .get("after")
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string());
 
         let match_spec = if let Some(rq) = raw_query {
-            transform::Match::Raw { raw_query: rq, capture }
+            transform::Match::Raw {
+                raw_query: rq,
+                capture,
+            }
         } else if let Some(k) = kind {
-            transform::Match::Abstract { kind: k, name, file: file_f }
+            transform::Match::Abstract {
+                kind: k,
+                name,
+                file: file_f,
+            }
         } else {
             anyhow::bail!("transform step must specify 'kind' or 'raw_query'");
         };
@@ -1582,7 +1679,7 @@ fn apply_one_batch_step(
 /// Files that have been modified in `accumulated` are served from memory;
 /// everything else is read from disk.
 fn build_current_forest(
-    root_path: &PathBuf,
+    root_path: &Path,
     accumulated: &HashMap<PathBuf, (Vec<u8>, Vec<u8>)>,
 ) -> anyhow::Result<Forest> {
     // Start with a fresh parse of what's on disk.
@@ -1637,11 +1734,13 @@ fn parse_action(
         }),
         "unwrap" => Ok(transform::Action::Unwrap),
         "prepend_statement" => {
-            let c = code.ok_or_else(|| anyhow::anyhow!("'prepend_statement' action requires 'code'"))?;
+            let c =
+                code.ok_or_else(|| anyhow::anyhow!("'prepend_statement' action requires 'code'"))?;
             Ok(transform::Action::PrependStatement { code: c })
         }
         "append_statement" => {
-            let c = code.ok_or_else(|| anyhow::anyhow!("'append_statement' action requires 'code'"))?;
+            let c =
+                code.ok_or_else(|| anyhow::anyhow!("'append_statement' action requires 'code'"))?;
             Ok(transform::Action::AppendStatement { code: c })
         }
         "remove" => Ok(transform::Action::Remove),
@@ -1694,7 +1793,7 @@ fn add_param_in_file(
     let source = &file.original_source;
     // The text inside the parens (excluding the parens themselves).
     let inner_start = list_start + 1; // skip '('
-    let inner_end = list_end - 1;     // before ')'
+    let inner_end = list_end - 1; // before ')'
     let inner = std::str::from_utf8(&source[inner_start..inner_end])
         .unwrap_or("")
         .trim();
@@ -1719,15 +1818,20 @@ fn add_param_in_file(
                 });
                 match found {
                     Some(idx) => idx + 1,
-                    None => return Err(anyhow::anyhow!(
-                        "parameter '{after_name}' not found in function '{func_name}'"
-                    )),
+                    None => {
+                        return Err(anyhow::anyhow!(
+                            "parameter '{after_name}' not found in function '{func_name}'"
+                        ));
+                    }
                 }
             }
             _ => return Err(anyhow::anyhow!("invalid position '{position}'")),
         };
 
-        let mut params = existing_params.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        let mut params = existing_params
+            .iter()
+            .map(|s| s.to_string())
+            .collect::<Vec<_>>();
         params.insert(insert_idx, param_text.to_string());
         params.join(", ")
     };
@@ -1787,7 +1891,10 @@ fn remove_param_in_file(
         None => return Ok(None), // Parameter not in this file's function.
     };
 
-    let mut params = existing_params.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+    let mut params = existing_params
+        .iter()
+        .map(|s| s.to_string())
+        .collect::<Vec<_>>();
     params.remove(idx);
 
     let new_inner = params.join(", ");
@@ -1807,10 +1914,7 @@ fn remove_param_in_file(
 
 /// Find the byte range of the parameter list `(...)` of the function named
 /// `func_name` in `file`. Returns `(open_paren_byte, close_paren_exclusive)`.
-fn find_param_list(
-    file: &ParsedFile,
-    func_name: &str,
-) -> anyhow::Result<Option<(usize, usize)>> {
+fn find_param_list(file: &ParsedFile, func_name: &str) -> anyhow::Result<Option<(usize, usize)>> {
     let query_str = format!(
         "({} (#eq? @name \"{func_name}\"))",
         file.adapter.function_def_query()
@@ -1818,7 +1922,8 @@ fn find_param_list(
     let query = Query::new(&file.adapter.language(), &query_str)
         .map_err(|e| anyhow::anyhow!("compiling param-list query: {e}"))?;
 
-    let func_idx = query.capture_index_for_name("func")
+    let func_idx = query
+        .capture_index_for_name("func")
         .ok_or_else(|| anyhow::anyhow!("function_def_query must capture @func"))?;
 
     let mut cursor = QueryCursor::new();
@@ -1829,7 +1934,9 @@ fn find_param_list(
     );
 
     while let Some(m) = matches.next() {
-        let func_node = m.captures.iter()
+        let func_node = m
+            .captures
+            .iter()
             .find(|c| c.index == func_idx)
             .map(|c| c.node);
 
@@ -1843,9 +1950,13 @@ fn find_param_list(
             let mut walk = node.walk();
             for child in node.children(&mut walk) {
                 let kind = child.kind();
-                if matches!(kind,
-                    "parameters" | "parameter_list" | "formal_parameters" |
-                    "parameter_clause" | "param_list"
+                if matches!(
+                    kind,
+                    "parameters"
+                        | "parameter_list"
+                        | "formal_parameters"
+                        | "parameter_clause"
+                        | "param_list"
                 ) {
                     return Ok(Some((child.start_byte(), child.end_byte())));
                 }
