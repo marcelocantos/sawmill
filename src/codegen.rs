@@ -139,27 +139,50 @@ pub fn run_codegen_with_lsp(
     run_codegen_inner(forest, program, Some(lsp))
 }
 
-/// Thread-local storage for LSP proxy during JS execution.
-/// SAFETY: Only accessed from the single thread running JS.
+/// Wraps a raw pointer to `LspManager` so it can be shared across JS
+/// callbacks within a single-threaded QuickJS execution.
+///
+/// # Why a raw pointer?
+///
+/// `run_codegen_inner` receives `Option<&mut LspManager>`. The `&mut`
+/// borrow needs to be stored in closures that are registered with the
+/// QuickJS runtime, which requires `'static`-like lifetimes that the
+/// borrow checker cannot verify. Converting to a raw pointer (via
+/// `as *mut _`) sidesteps the lifetime check while preserving the
+/// single-ownership invariant.
+///
+/// # Safety contract
+///
+/// 1. The pointer is derived from a `&mut LspManager` that outlives the
+///    `LspProxy` (enforced by lexical scoping in `run_codegen_inner`).
+/// 2. JS execution is single-threaded; no two callbacks run concurrently,
+///    so only one call to `get()` is active at a time.
+/// 3. `LspProxy` is not `Send` — it must stay on the thread that created it.
 struct LspProxy {
     ptr: *mut crate::lsp::LspManager,
 }
 
-// SAFETY: LspProxy is only used within a single-threaded JS context.
-// The raw pointer is valid for the duration of run_codegen_inner.
-unsafe impl Send for LspProxy {}
-
 impl LspProxy {
+    /// Return an exclusive reference to the wrapped `LspManager`.
+    ///
+    /// # Safety
+    ///
+    /// Safe to call when the contract documented on `LspProxy` holds:
+    /// the pointer is valid, the original `&mut` is still live, and no
+    /// other reference obtained through this method is alive.
+    fn get(&self) -> &mut crate::lsp::LspManager {
+        // SAFETY: see LspProxy safety contract.
+        unsafe { &mut *self.ptr }
+    }
+
     fn hover(&self, file: &str, lang_id: &str, line: u32, col: u32) -> Option<String> {
-        let lsp = unsafe { &mut *self.ptr };
         let path = std::path::PathBuf::from(file);
-        lsp.hover(&path, lang_id, line, col).ok().flatten()
+        self.get().hover(&path, lang_id, line, col).ok().flatten()
     }
 
     fn definition(&self, file: &str, lang_id: &str, line: u32, col: u32) -> Vec<serde_json::Value> {
-        let lsp = unsafe { &mut *self.ptr };
         let path = std::path::PathBuf::from(file);
-        match lsp.definition(&path, lang_id, line, col) {
+        match self.get().definition(&path, lang_id, line, col) {
             Ok(locs) => locs
                 .iter()
                 .map(|l| {
@@ -175,9 +198,8 @@ impl LspProxy {
     }
 
     fn references(&self, file: &str, lang_id: &str, line: u32, col: u32) -> Vec<serde_json::Value> {
-        let lsp = unsafe { &mut *self.ptr };
         let path = std::path::PathBuf::from(file);
-        match lsp.references(&path, lang_id, line, col) {
+        match self.get().references(&path, lang_id, line, col) {
             Ok(locs) => locs
                 .iter()
                 .map(|l| {
@@ -193,9 +215,8 @@ impl LspProxy {
     }
 
     fn diagnostics_for(&self, file: &str, lang_id: &str, text: &str) -> Vec<serde_json::Value> {
-        let lsp = unsafe { &mut *self.ptr };
         let path = std::path::PathBuf::from(file);
-        match lsp.get_diagnostics(&path, lang_id, text) {
+        match self.get().get_diagnostics(&path, lang_id, text) {
             Ok(diags) => diags.iter().map(|d| serde_json::json!(d)).collect(),
             Err(_) => Vec::new(),
         }
