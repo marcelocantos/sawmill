@@ -263,6 +263,28 @@ struct InstantiateParams {
 struct ListRecipesParams {}
 
 #[derive(serde::Deserialize, schemars::JsonSchema)]
+struct TeachConventionParams {
+    /// Unique name for this convention.
+    name: String,
+    /// Human-readable description (e.g., "Every public function must have a doc comment").
+    #[serde(default)]
+    description: String,
+    /// JavaScript check program. Receives a global `ctx` object (same as codegen).
+    /// Must return an array of violation strings, or an empty array if the convention is satisfied.
+    check_program: String,
+}
+
+#[derive(serde::Deserialize, schemars::JsonSchema)]
+struct CheckConventionsParams {
+    /// Path scope. Defaults to current directory.
+    #[serde(default = "default_path")]
+    path: String,
+}
+
+#[derive(serde::Deserialize, schemars::JsonSchema)]
+struct ListConventionsParams {}
+
+#[derive(serde::Deserialize, schemars::JsonSchema)]
 struct TeachByExampleParams {
     /// Unique name for this pattern.
     name: String,
@@ -1022,6 +1044,88 @@ impl PolyRefactorServer {
     }
 
     #[tool(
+        name = "teach_convention",
+        description = "Define a project convention as an enforceable rule. The check_program is JavaScript that receives a `ctx` object and must return an array of violation strings (or empty array if satisfied). Conventions are checked on `apply` and can be scanned with `check_conventions`."
+    )]
+    fn teach_convention(&self, Parameters(params): Parameters<TeachConventionParams>) -> String {
+        let model_lock = self.model.lock().unwrap();
+        if let Some(model) = &*model_lock {
+            match model.save_convention(&params.name, &params.description, &params.check_program) {
+                Ok(()) => format!("Convention '{}' saved.", params.name),
+                Err(e) => format!("Error saving convention: {e}"),
+            }
+        } else {
+            "Error: call `parse` first.".to_string()
+        }
+    }
+
+    #[tool(
+        name = "check_conventions",
+        description = "Scan the codebase for convention violations. Runs all taught convention check programs and reports any violations found."
+    )]
+    fn check_conventions(&self, Parameters(_params): Parameters<CheckConventionsParams>) -> String {
+        let model_lock = self.model.lock().unwrap();
+        let model = match &*model_lock {
+            Some(m) => m,
+            None => return "Error: call `parse` first.".to_string(),
+        };
+
+        let conventions = match model.list_conventions() {
+            Ok(c) => c,
+            Err(e) => return format!("Error loading conventions: {e}"),
+        };
+
+        if conventions.is_empty() {
+            return "No conventions defined.".to_string();
+        }
+
+        let mut all_violations = Vec::new();
+
+        for (name, description, check_program) in &conventions {
+            match codegen::run_convention_check(&model.forest, check_program) {
+                Ok(violations) if violations.is_empty() => {
+                    all_violations.push(format!("  {} — OK", name));
+                }
+                Ok(violations) => {
+                    all_violations.push(format!("  {} — {} violation(s):", name, violations.len()));
+                    for v in &violations {
+                        all_violations.push(format!("    - {v}"));
+                    }
+                }
+                Err(e) => {
+                    all_violations.push(format!("  {} — error: {e}", name));
+                }
+            }
+        }
+
+        format!("{} convention(s) checked:\n{}", conventions.len(), all_violations.join("\n"))
+    }
+
+    #[tool(
+        name = "list_conventions",
+        description = "List all taught conventions with their descriptions."
+    )]
+    fn list_conventions(&self, Parameters(_params): Parameters<ListConventionsParams>) -> String {
+        let model_lock = self.model.lock().unwrap();
+        if let Some(model) = &*model_lock {
+            match model.list_conventions() {
+                Ok(convs) if convs.is_empty() => "No conventions defined.".to_string(),
+                Ok(convs) => {
+                    let mut output = format!("{} convention(s):\n\n", convs.len());
+                    for (name, desc, _) in &convs {
+                        let desc_str = if desc.is_empty() { "" } else { &format!(" — {desc}") };
+                        output.push_str(&format!("  {name}{desc_str}\n"));
+                    }
+                    output
+                }
+                Err(e) => format!("Error: {e}"),
+            }
+        } else {
+            "Error: call `parse` first.".to_string()
+        }
+    }
+
+    #[tool(
         name = "hover",
         description = "Get type information for a symbol at a specific position using the language's LSP server. Returns type signature, documentation, etc. Requires `parse` to be called first."
     )]
@@ -1228,7 +1332,7 @@ impl PolyRefactorServer {
 
     #[tool(
         name = "apply",
-        description = "Apply the pending changes from the last transform to disk. Requires confirm=true."
+        description = "Apply the pending changes from the last transform to disk. Requires confirm=true. Checks conventions before applying and warns on violations (but still applies)."
     )]
     fn apply(&self, Parameters(params): Parameters<ApplyParams>) -> String {
         if !params.confirm {
@@ -1239,6 +1343,9 @@ impl PolyRefactorServer {
         match pending {
             None => "No pending changes to apply.".to_string(),
             Some(p) => {
+                // Check conventions before applying.
+                let convention_warnings = self.check_conventions_on_changes(&p.changes);
+
                 let mut applied = 0;
                 for change in &p.changes {
                     if let Err(e) = change.apply() {
@@ -1249,10 +1356,20 @@ impl PolyRefactorServer {
                     }
                     applied += 1;
                 }
-                format!(
+
+                let mut output = format!(
                     "Applied {} to {applied} file(s).",
                     p.description
-                )
+                );
+
+                if !convention_warnings.is_empty() {
+                    output.push_str(&format!(
+                        "\n\nConvention warnings:\n{}",
+                        convention_warnings
+                    ));
+                }
+
+                output
             }
         }
     }
@@ -1314,6 +1431,43 @@ impl PolyRefactorServer {
 
         // Fall back to parsing fresh.
         Forest::from_path(path).map_err(|e| format!("Error parsing: {e}"))
+    }
+
+    /// Run convention checks against a set of changes.
+    /// Returns a warning string (empty if no violations).
+    fn check_conventions_on_changes(&self, _changes: &[FileChange]) -> String {
+        let model_lock = self.model.lock().unwrap();
+        let model = match &*model_lock {
+            Some(m) => m,
+            None => return String::new(), // No model, skip checks.
+        };
+
+        let conventions = match model.list_conventions() {
+            Ok(c) => c,
+            Err(_) => return String::new(),
+        };
+
+        if conventions.is_empty() {
+            return String::new();
+        }
+
+        // Run checks against the current forest (which reflects pre-change state).
+        // Ideally we'd check the post-change state, but that would require
+        // re-parsing the changed files. For now, check the current state.
+        let mut warnings = Vec::new();
+        for (name, _, check_program) in &conventions {
+            match codegen::run_convention_check(&model.forest, check_program) {
+                Ok(violations) if !violations.is_empty() => {
+                    warnings.push(format!("  {} — {} violation(s):", name, violations.len()));
+                    for v in &violations {
+                        warnings.push(format!("    - {v}"));
+                    }
+                }
+                _ => {}
+            }
+        }
+
+        warnings.join("\n")
     }
 }
 

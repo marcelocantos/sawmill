@@ -79,6 +79,12 @@ impl Store {
                  description TEXT NOT NULL DEFAULT '',
                  params_json TEXT NOT NULL,
                  steps_json TEXT NOT NULL
+             );
+
+             CREATE TABLE IF NOT EXISTS conventions (
+                 name TEXT PRIMARY KEY,
+                 description TEXT NOT NULL DEFAULT '',
+                 check_program TEXT NOT NULL
              );",
         )
         .context("initialising store schema")?;
@@ -340,6 +346,48 @@ impl Store {
             "DELETE FROM recipes WHERE name = ?1",
             params![name],
         ).with_context(|| format!("deleting recipe '{name}'"))?;
+        Ok(count > 0)
+    }
+
+    // --- Conventions ---
+
+    /// Save a convention (upsert).
+    pub fn save_convention(&self, name: &str, description: &str, check_program: &str) -> Result<()> {
+        self.conn.execute(
+            "INSERT INTO conventions (name, description, check_program)
+             VALUES (?1, ?2, ?3)
+             ON CONFLICT(name) DO UPDATE SET
+                 description = excluded.description,
+                 check_program = excluded.check_program",
+            params![name, description, check_program],
+        ).with_context(|| format!("saving convention '{name}'"))?;
+        Ok(())
+    }
+
+    /// Load all conventions.
+    pub fn list_conventions(&self) -> Result<Vec<(String, String, String)>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT name, description, check_program FROM conventions ORDER BY name",
+        ).context("preparing list_conventions")?;
+
+        let rows = stmt.query_map([], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, String>(2)?,
+            ))
+        }).context("listing conventions")?;
+
+        rows.map(|r| r.context("reading convention row"))
+            .collect()
+    }
+
+    /// Delete a convention.
+    pub fn delete_convention(&self, name: &str) -> Result<bool> {
+        let count = self.conn.execute(
+            "DELETE FROM conventions WHERE name = ?1",
+            params![name],
+        ).with_context(|| format!("deleting convention '{name}'"))?;
         Ok(count > 0)
     }
 }

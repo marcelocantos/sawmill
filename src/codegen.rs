@@ -339,6 +339,127 @@ pub fn run_codegen(
     Ok(changes)
 }
 
+/// Run a convention check program against the forest.
+/// The program should return an array of violation strings, or an empty array.
+pub fn run_convention_check(
+    forest: &Forest,
+    check_program: &str,
+) -> Result<Vec<String>> {
+    let runtime = JsRuntime::new()
+        .context("creating QuickJS runtime")?;
+    runtime.set_memory_limit(2 * 1024 * 1024 * 1024);
+    runtime.set_max_stack_size(8 * 1024 * 1024);
+
+    let context = JsContext::full(&runtime)
+        .context("creating QuickJS context")?;
+
+    context.with(|ctx| -> Result<Vec<String>> {
+        let _: Value = ctx.eval(CODEGEN_HELPERS.as_bytes())
+            .context("injecting helpers")?;
+
+        // We don't need edit/addFile callbacks for checks — just dummy them.
+        ctx.globals().set("__editFile", Function::new(ctx.clone(),
+            |_: String, _: usize, _: usize, _: String| {},
+        ).context("creating __editFile")?).context("setting __editFile")?;
+        ctx.globals().set("__addFile", Function::new(ctx.clone(),
+            |_: String, _: String| {},
+        ).context("creating __addFile")?).context("setting __addFile")?;
+        ctx.globals().set("__genField", Function::new(ctx.clone(),
+            |_: String, _: String, _: String, _: Option<String>| -> String { String::new() },
+        ).context("creating __genField")?).context("setting __genField")?;
+        ctx.globals().set("__genMethod", Function::new(ctx.clone(),
+            |_: String, _: String, _: String, _: String, _: String, _: Option<String>| -> String { String::new() },
+        ).context("creating __genMethod")?).context("setting __genMethod")?;
+        ctx.globals().set("__genImport", Function::new(ctx.clone(),
+            |_: String, _: String| -> String { String::new() },
+        ).context("creating __genImport")?).context("setting __genImport")?;
+
+        let all_symbols = build_all_symbol_json(forest);
+        let all_files_json = build_all_files_json(forest);
+
+        // Build ctx with query capabilities (same as codegen).
+        let ctx_obj = rquickjs::Object::new(ctx.clone())
+            .context("creating ctx object")?;
+
+        let setup_code = format!(
+            r#"
+            (function(ctx) {{
+                var __symbols = {all_symbols};
+                var __files = {all_files_json};
+
+                ctx.findFunction = function(name) {{
+                    return __symbols.filter(function(s) {{
+                        return s.kind === "function" && s.name === name;
+                    }}).map(function(s) {{ return __makeNode(s); }});
+                }};
+                ctx.findType = function(name) {{
+                    return __symbols.filter(function(s) {{
+                        return s.kind === "type" && s.name === name;
+                    }}).map(function(s) {{ return __makeNode(s); }});
+                }};
+                ctx.query = function(opts) {{
+                    return __symbols.filter(function(s) {{
+                        if (opts.kind && s.kind !== opts.kind) return false;
+                        if (opts.name) {{
+                            if (opts.name.includes("*")) {{
+                                var regex = new RegExp("^" + opts.name.replace(/\*/g, ".*") + "$");
+                                if (!regex.test(s.name)) return false;
+                            }} else {{
+                                if (s.name !== opts.name) return false;
+                            }}
+                        }}
+                        if (opts.file && !s.file.includes(opts.file)) return false;
+                        return true;
+                    }}).map(function(s) {{ return __makeNode(s); }});
+                }};
+                ctx.readFile = function(path) {{
+                    return __files[path] || null;
+                }};
+            }})
+            "#
+        );
+
+        let setup_fn: Function = ctx.eval(setup_code.as_bytes())
+            .context("compiling check setup")?;
+        setup_fn.call::<_, ()>((ctx_obj.clone(),))
+            .context("running check setup")?;
+
+        ctx.globals().set("ctx", ctx_obj)
+            .context("setting global ctx")?;
+
+        // Execute the check program. It should return an array of strings.
+        let wrapped = format!("(function(ctx) {{ {check_program} }})(ctx)");
+        let result: Value = ctx.eval(wrapped.as_bytes())
+            .context("executing convention check")?;
+
+        // Parse the result as an array of strings.
+        if result.is_null() || result.is_undefined() {
+            return Ok(Vec::new());
+        }
+
+        if let Some(arr) = result.as_array() {
+            let mut violations = Vec::new();
+            for i in 0..arr.len() {
+                if let Ok(s) = arr.get::<String>(i as usize) {
+                    violations.push(s);
+                }
+            }
+            return Ok(violations);
+        }
+
+        // Single string.
+        if let Some(s) = result.as_string() {
+            let text = s.to_string().unwrap_or_default();
+            if text.is_empty() {
+                return Ok(Vec::new());
+            }
+            return Ok(vec![text]);
+        }
+
+        Ok(Vec::new())
+    })
+}
+
 /// Dispatch a code generation call to the appropriate language adapter.
 fn gen_for_lang(lang_id: &str, f: impl FnOnce(&dyn crate::adapters::LanguageAdapter) -> String) -> String {
     let adapter: Option<&dyn crate::adapters::LanguageAdapter> = match lang_id {

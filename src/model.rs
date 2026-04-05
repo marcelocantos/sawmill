@@ -319,6 +319,21 @@ impl CodebaseModel {
     pub fn list_recipes(&self) -> Result<Vec<(String, String)>> {
         self.store.list_recipes()
     }
+
+    /// Save a convention.
+    pub fn save_convention(&self, name: &str, description: &str, check_program: &str) -> Result<()> {
+        self.store.save_convention(name, description, check_program)
+    }
+
+    /// List all conventions.
+    pub fn list_conventions(&self) -> Result<Vec<(String, String, String)>> {
+        self.store.list_conventions()
+    }
+
+    /// Delete a convention.
+    pub fn delete_convention(&self, name: &str) -> Result<bool> {
+        self.store.delete_convention(name)
+    }
 }
 
 /// Convert index::Symbol to store::SymbolRecord.
