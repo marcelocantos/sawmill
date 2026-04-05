@@ -27,32 +27,47 @@ changes that preserve formatting, comments, and whitespace.
 - **Safe by default**: Diff preview before every write, backup/undo on
   every apply
 
-## Quick start
+## Installation
 
-### Build
+### 1. Install the binary
+
+**Homebrew** (macOS / Linux):
 
 ```bash
+brew install marcelocantos/tap/canopy
+```
+
+**From source** (requires Rust 1.85+):
+
+```bash
+cargo install --git https://github.com/marcelocantos/canopy
+```
+
+Or clone and build:
+
+```bash
+git clone https://github.com/marcelocantos/canopy.git
+cd canopy
 cargo build --release
+# binary is at target/release/canopy
 ```
 
-The binary is at `target/release/canopy`.
+### 2. Register the MCP server
 
-### CLI usage
+Canopy communicates over stdio. Register it with your MCP client so it
+starts automatically.
+
+**Claude Code** (one command — installs globally for all projects):
 
 ```bash
-# Parse and summarise a codebase
-canopy parse src/
-
-# Rename a symbol (prints diff)
-canopy rename old_name new_name --path src/
-
-# Run as MCP server
-canopy serve
+claude mcp add --scope user canopy -- canopy serve
 ```
 
-### MCP server configuration
+This writes the server entry to `~/.claude.json`. Restart Claude Code
+to pick up the new server.
 
-Add to your MCP client config (e.g. `.mcp.json`):
+**Other MCP clients** — add to your client's MCP configuration file
+(e.g. `.mcp.json` for project scope, or the client's global config):
 
 ```json
 {
@@ -63,6 +78,24 @@ Add to your MCP client config (e.g. `.mcp.json`):
     }
   }
 }
+```
+
+### 3. Verify
+
+In a new session, call the `parse` tool on your project root. If
+canopy is running, it will respond with a file/language summary.
+
+## CLI usage
+
+```bash
+# Parse and summarise a codebase
+canopy parse src/
+
+# Rename a symbol (prints diff)
+canopy rename old_name new_name --path src/
+
+# Run as MCP server (used by MCP clients — you don't need to run this manually)
+canopy serve
 ```
 
 ## MCP tools
@@ -131,9 +164,28 @@ AI Agent ──MCP──▶ Canopy Server
 
 ## For AI agents
 
-If you use an agentic coding tool (Claude Code, Cursor, etc.), include
-[`agents-guide.md`](agents-guide.md) in your project context for a
-reference on how to use canopy effectively. You can also run:
+### Installing canopy (agent instructions)
+
+If a user asks you to install canopy, follow these steps:
+
+1. **Install the binary.** Run `brew install marcelocantos/tap/canopy`.
+   If Homebrew is not available, use
+   `cargo install --git https://github.com/marcelocantos/canopy`.
+
+2. **Register the MCP server.** For Claude Code, run:
+   ```bash
+   claude mcp add --scope user canopy -- canopy serve
+   ```
+   For other MCP clients, add the JSON entry shown in the Installation
+   section above to the client's MCP configuration.
+
+3. **Tell the user** they need to restart their agent session (or start
+   a new one) for the MCP server to become available.
+
+### Using canopy
+
+See [`agents-guide.md`](agents-guide.md) for a full reference on
+canopy's tools, workflows, and gotchas. You can also run:
 
 ```bash
 canopy --help-agent

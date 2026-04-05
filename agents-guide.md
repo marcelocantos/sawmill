@@ -13,9 +13,28 @@ preserve formatting, comments, and whitespace.
 
 Supported languages: Python, TypeScript, Rust, Go, C/C++.
 
-## MCP Server Setup
+## Installation
 
-Add to `.mcp.json` (project scope) or `~/.claude.json` (user scope):
+Install the binary, then register the MCP server.
+
+**Step 1 — Install:**
+
+```bash
+brew install marcelocantos/tap/canopy
+```
+
+If Homebrew is not available: `cargo install --git https://github.com/marcelocantos/canopy`
+
+**Step 2 — Register the MCP server:**
+
+For Claude Code (global install — available in all projects):
+
+```bash
+claude mcp add --scope user canopy -- canopy serve
+```
+
+For other MCP clients, add to the client's MCP configuration
+(e.g. `.mcp.json` for project scope):
 
 ```json
 {
@@ -28,7 +47,8 @@ Add to `.mcp.json` (project scope) or `~/.claude.json` (user scope):
 }
 ```
 
-Canopy communicates over stdio. No port configuration needed.
+**Step 3:** Restart the agent session. MCP servers are loaded at
+session start — canopy won't be available until the next session.
 
 ## Recommended Workflow
 
