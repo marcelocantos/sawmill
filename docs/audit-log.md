@@ -21,3 +21,11 @@ maintenance activities. Append-only — newest entries at the bottom.
   - CI multi-OS testing (low) — macOS CI job would increase confidence for cross-platform release
   - HOMEBREW_TAP_TOKEN secret (low) — carried from open-source audit
   - Cargo.lock not committed (info) — recommended for binary crates
+
+## 2026-04-06 — /release v0.2.0
+
+- **Commit**: `70570ae`
+- **Outcome**: Released v0.2.0 (darwin-arm64, linux-amd64, linux-arm64). Added agent prompt generation (Frontier K). Fixed convention checking (post-change state), LSP timeout, path handling in undo, stdio safety, unsafe consolidation. CI now tests on macOS + Ubuntu. Homebrew formula updated.
+- **Deferred**:
+  - HOMEBREW_TAP_TOKEN secret not yet set — Homebrew formula push may fail until configured
+  - mcp.rs module split (low) — cosmetic, tracked in docs/TODO.md
