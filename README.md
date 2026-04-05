@@ -128,6 +128,16 @@ AI Agent ──MCP──▶ Canopy Server
 | Go | Yes | gofmt | gopls |
 | C/C++ | Yes | clang-format | clangd |
 
+## For AI agents
+
+If you use an agentic coding tool (Claude Code, Cursor, etc.), include
+[`agents-guide.md`](agents-guide.md) in your project context for a
+reference on how to use canopy effectively. You can also run:
+
+```bash
+canopy --help-agent
+```
+
 ## Design
 
 See [`docs/design.md`](docs/design.md) for the full architecture and

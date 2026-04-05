@@ -2,25 +2,34 @@ name: Release
 
 on:
   release:
-    types: [created]
+    types: [published]
 
 permissions:
   contents: write
 
 jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo test
+
   build:
+    needs: test
     strategy:
       matrix:
         include:
           - target: aarch64-apple-darwin
             os: macos-latest
-            name: canopy-darwin-arm64
+            suffix: darwin-arm64
           - target: x86_64-unknown-linux-gnu
             os: ubuntu-latest
-            name: canopy-linux-amd64
+            suffix: linux-amd64
           - target: aarch64-unknown-linux-gnu
             os: ubuntu-latest
-            name: canopy-linux-arm64
+            suffix: linux-arm64
 
     runs-on: ${{ matrix.os }}
     steps:
@@ -46,86 +55,37 @@ jobs:
 
       - name: Package
         run: |
+          VERSION="${{ github.event.release.tag_name }}"
+          VERSION_NUM="${VERSION#v}"
+          ARCHIVE="canopy-${VERSION_NUM}-${{ matrix.suffix }}.tar.gz"
           cd target/${{ matrix.target }}/release
-          tar czf ../../../${{ matrix.name }}.tar.gz canopy
+          tar czf "../../../${ARCHIVE}" canopy
           cd ../../..
-          shasum -a 256 ${{ matrix.name }}.tar.gz > ${{ matrix.name }}.tar.gz.sha256
 
       - name: Upload to release
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh release upload "${{ github.event.release.tag_name }}" \
-            ${{ matrix.name }}.tar.gz \
-            ${{ matrix.name }}.tar.gz.sha256
+          VERSION="${{ github.event.release.tag_name }}"
+          VERSION_NUM="${VERSION#v}"
+          ARCHIVE="canopy-${VERSION_NUM}-${{ matrix.suffix }}.tar.gz"
+          gh release upload "$VERSION" "${ARCHIVE}"
 
   homebrew:
     needs: build
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-
-      - name: Generate Homebrew formula
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          VERSION="${{ github.event.release.tag_name }}"
-          VERSION_NUM="${VERSION#v}"
-
-          # Download SHA256 files
-          gh release download "$VERSION" --pattern '*.sha256'
-
-          DARWIN_SHA=$(awk '{print $1}' canopy-darwin-arm64.tar.gz.sha256)
-          LINUX_AMD64_SHA=$(awk '{print $1}' canopy-linux-amd64.tar.gz.sha256)
-          LINUX_ARM64_SHA=$(awk '{print $1}' canopy-linux-arm64.tar.gz.sha256)
-
-          BASE_URL="https://github.com/marcelocantos/canopy/releases/download/${VERSION}"
-
-          cat > canopy.rb <<FORMULA
-          class Canopy < Formula
-            desc "MCP server for AST-level multi-language code transformations"
-            homepage "https://github.com/marcelocantos/canopy"
-            version "${VERSION_NUM}"
-            license "Apache-2.0"
-
-            on_macos do
-              if Hardware::CPU.arm?
-                url "${BASE_URL}/canopy-darwin-arm64.tar.gz"
-                sha256 "${DARWIN_SHA}"
-              end
-            end
-
-            on_linux do
-              if Hardware::CPU.intel?
-                url "${BASE_URL}/canopy-linux-amd64.tar.gz"
-                sha256 "${LINUX_AMD64_SHA}"
-              elsif Hardware::CPU.arm?
-                url "${BASE_URL}/canopy-linux-arm64.tar.gz"
-                sha256 "${LINUX_ARM64_SHA}"
-              end
-            end
-
-            def install
-              bin.install "canopy"
-            end
-
-            test do
-              assert_match version.to_s, shell_output("#{bin}/canopy --version")
-            end
-          end
-          FORMULA
-
-      - name: Push formula to tap
-        env:
-          GH_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
-        run: |
-          VERSION="${{ github.event.release.tag_name }}"
-          # Clone the tap repo
-          git clone "https://x-access-token:${GH_TOKEN}@github.com/marcelocantos/homebrew-tap.git" tap
-          cp canopy.rb tap/Formula/canopy.rb
-          cd tap
-          git config user.name "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add Formula/canopy.rb
-          git commit -m "canopy ${VERSION}" || exit 0
-          git push
+      - uses: Justintime50/homebrew-releaser@v3
+        with:
+          homebrew_owner: marcelocantos
+          homebrew_tap: homebrew-tap
+          github_token: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+          formula_folder: Formula
+          version: ${{ github.event.release.tag_name }}
+          install: 'bin.install "canopy" => "canopy"'
+          target_darwin_arm64: true
+          target_linux_amd64: true
+          target_linux_arm64: true
+          test: 'system bin/"canopy", "--version"'
+          skip_checksum: true
+          update_readme_table: true

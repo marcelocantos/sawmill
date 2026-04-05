@@ -20,14 +20,20 @@ mod store;
 mod transform;
 mod watcher;
 
-use clap::{Parser, Subcommand};
+use clap::{CommandFactory, Parser, Subcommand};
 use std::path::PathBuf;
+
+const AGENT_GUIDE: &str = include_str!("../agents-guide.md");
 
 #[derive(Parser)]
 #[command(name = "canopy", version, about = "Codebase operations platform")]
 struct Cli {
+    /// Print help text followed by the agent guide.
+    #[arg(long)]
+    help_agent: bool,
+
     #[command(subcommand)]
-    command: Command,
+    command: Option<Command>,
 }
 
 #[derive(Subcommand)]
@@ -57,7 +63,22 @@ enum Command {
 fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
 
-    match cli.command {
+    if cli.help_agent {
+        let mut cmd = Cli::command();
+        cmd.print_help()?;
+        println!("\n\n{AGENT_GUIDE}");
+        return Ok(());
+    }
+
+    let command = match cli.command {
+        Some(cmd) => cmd,
+        None => {
+            Cli::command().print_help()?;
+            return Ok(());
+        }
+    };
+
+    match command {
         Command::Parse { path } => {
             let forest = forest::Forest::from_path(&path)?;
             println!("{forest}");
