@@ -3,6 +3,7 @@
 
 mod adapters;
 mod codegen;
+mod exemplar;
 mod forest;
 mod index;
 mod js_engine;

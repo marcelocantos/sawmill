@@ -13,6 +13,7 @@ use tree_sitter::{Parser, Query, QueryCursor};
 use streaming_iterator::StreamingIterator;
 
 use crate::codegen;
+use crate::exemplar;
 use crate::forest::{FileChange, Forest, ParsedFile};
 use crate::model::CodebaseModel;
 use crate::rewrite;
@@ -260,6 +261,26 @@ struct InstantiateParams {
 
 #[derive(serde::Deserialize, schemars::JsonSchema)]
 struct ListRecipesParams {}
+
+#[derive(serde::Deserialize, schemars::JsonSchema)]
+struct TeachByExampleParams {
+    /// Unique name for this pattern.
+    name: String,
+    /// Human-readable description.
+    #[serde(default)]
+    description: String,
+    /// Path to the exemplar file.
+    exemplar: String,
+    /// Parameter name → value mapping. For example:
+    /// {"name": "users", "entity": "User"}.
+    /// All occurrences of these values (and their case variants)
+    /// will be replaced with $param_name placeholders.
+    parameters: HashMap<String, String>,
+    /// Additional files or directories affected by this pattern.
+    /// Files containing parameter values will be included in the template.
+    #[serde(default)]
+    also_affects: Vec<String>,
+}
 
 #[derive(serde::Deserialize, schemars::JsonSchema)]
 struct AddParameterParams {
@@ -795,6 +816,80 @@ impl PolyRefactorServer {
     }
 
     #[tool(
+        name = "teach_by_example",
+        description = "Teach a reusable pattern by pointing at existing code. Specify an exemplar file and which parts are variable (parameter name → value in the exemplar). The platform extracts a template by replacing all occurrences of parameter values (and their case variants) with $param_name placeholders. Use `instantiate` to create new code from the template."
+    )]
+    fn teach_by_example(&self, Parameters(params): Parameters<TeachByExampleParams>) -> String {
+        let model_lock = self.model.lock().unwrap();
+        let model = match &*model_lock {
+            Some(m) => m,
+            None => return "Error: call `parse` first.".to_string(),
+        };
+
+        let root = model.root().to_owned();
+        let exemplar_path = PathBuf::from(&params.exemplar);
+        let abs_exemplar = if exemplar_path.is_absolute() {
+            exemplar_path
+        } else {
+            root.join(&exemplar_path)
+        };
+
+        let also_affects: Vec<String> = params.also_affects.iter()
+            .map(|p| {
+                let ap = PathBuf::from(p);
+                if ap.is_absolute() {
+                    p.clone()
+                } else {
+                    root.join(p).to_string_lossy().to_string()
+                }
+            })
+            .collect();
+
+        // Convert back to paths relative to root for the also_affects.
+        let also_refs: Vec<String> = also_affects.iter()
+            .map(|p| PathBuf::from(p).strip_prefix(&root)
+                .unwrap_or(Path::new(p))
+                .to_string_lossy().to_string())
+            .collect();
+        let _ = also_refs;
+
+        let template = match exemplar::extract_template(
+            &params.name,
+            &params.description,
+            &abs_exemplar,
+            &params.parameters,
+            &params.also_affects,
+            &root,
+        ) {
+            Ok(t) => t,
+            Err(e) => return format!("Error extracting template: {e}"),
+        };
+
+        // Store as a recipe with create_file steps.
+        let steps = exemplar::template_to_recipe_steps(&template);
+        let param_names: Vec<String> = template.params.clone();
+
+        match model.save_recipe(&params.name, &params.description, &param_names, &steps) {
+            Ok(()) => {
+                let mut output = format!(
+                    "Pattern '{}' extracted from {} with {} file(s).\n",
+                    params.name,
+                    params.exemplar,
+                    template.files.len(),
+                );
+                output.push_str(&format!("Parameters: [{}]\n", param_names.join(", ")));
+                for ft in &template.files {
+                    output.push_str(&format!("  {} → template ({} bytes)\n",
+                        ft.path_template, ft.content_template.len()));
+                }
+                output.push_str("\nUse `instantiate` with this pattern name to create new code.");
+                output
+            }
+            Err(e) => format!("Error saving pattern: {e}"),
+        }
+    }
+
+    #[tool(
         name = "teach_recipe",
         description = "Teach a reusable recipe — a named sequence of transform operations with parameter variables. Use $param_name in string values for substitution. Recipes persist across sessions."
     )]
@@ -839,25 +934,61 @@ impl PolyRefactorServer {
             }
         }
 
-        // Substitute parameters in the steps JSON.
-        let mut steps_str = serde_json::to_string(&steps).unwrap_or_default();
-        for (key, value) in &params.params {
-            steps_str = steps_str.replace(&format!("${key}"), value);
-        }
+        // Substitute parameters using case-aware substitution.
+        let steps_str = serde_json::to_string(&steps).unwrap_or_default();
+        let substituted_str = exemplar::substitute_in_json(&steps_str, &params.params);
 
-        let substituted_steps: serde_json::Value = match serde_json::from_str(&steps_str) {
+        let substituted_steps: serde_json::Value = match serde_json::from_str(&substituted_str) {
             Ok(v) => v,
             Err(e) => return format!("Error substituting parameters: {e}"),
         };
 
-        // Execute as transform_batch.
+        // Check if these are create_file steps (from teach_by_example).
+        if let Some(steps_arr) = substituted_steps.as_array() {
+            let is_create_file = steps_arr.iter()
+                .all(|s| s["action"].as_str() == Some("create_file"));
+
+            if is_create_file {
+                // Handle create_file steps directly.
+                let mut changes = Vec::new();
+                let root = PathBuf::from(&params.path);
+                for step in steps_arr {
+                    let path_str = step["path"].as_str().unwrap_or("");
+                    let content = step["content"].as_str().unwrap_or("");
+                    let full_path = root.join(path_str);
+                    changes.push(FileChange {
+                        path: full_path,
+                        original: Vec::new(),
+                        new_source: content.as_bytes().to_vec(),
+                    });
+                }
+
+                if changes.is_empty() {
+                    return "No files to create.".to_string();
+                }
+
+                let diff: String = changes.iter().map(|c| c.diff()).collect();
+                let file_count = changes.len();
+                let description = format!("instantiate '{}'", params.recipe);
+
+                *self.pending.lock().unwrap() = Some(PendingChanges {
+                    changes,
+                    description,
+                });
+
+                return format!(
+                    "{diff}\n---\n{file_count} file(s) to create. Call `apply` with confirm=true to write to disk."
+                );
+            }
+        }
+
+        // Otherwise, execute as transform_batch.
         let batch_params = serde_json::json!({
             "path": params.path,
             "format": params.format,
             "transforms": substituted_steps,
         });
 
-        // Delegate to the existing transform_batch logic.
         let batch: crate::mcp::TransformBatchParams = match serde_json::from_value(batch_params) {
             Ok(b) => b,
             Err(e) => return format!("Error building batch: {e}"),
