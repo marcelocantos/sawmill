@@ -11,15 +11,8 @@
 - 🎯T9.2 Structural pre-flight checks — dangling references,
   removed symbols still referenced
 
-## 🎯T10 Frontier K: Agent prompt generation — ACTIVE
+## 🎯T10 Frontier K: Agent prompt generation — ACHIEVED
 
-The MCP server generates a rich, dynamic system prompt describing its
-capabilities, taught recipes, and taught conventions. Agents connecting
-to Canopy receive enough context to use it effectively without external
-documentation.
-
-- 🎯T10.1 Static instructions — the agents-guide content is served as
-  MCP instructions on connection
-- 🎯T10.2 Dynamic prompt tool — a `get_agent_prompt` tool returns the
-  full prompt including project-specific recipes and conventions from
-  the store
+- 🎯T10.1 Static instructions — agents-guide served as MCP instructions
+- 🎯T10.2 Dynamic prompt tool — `get_agent_prompt` returns guide +
+  project-specific recipes and conventions
