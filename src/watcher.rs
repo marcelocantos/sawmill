@@ -106,8 +106,10 @@ impl FileWatcher {
                         }
                     }
                     Ok(Err(e)) => {
-                        // Notify reported a watcher error; log and continue.
-                        eprintln!("watcher error: {e}");
+                        // Notify reported a watcher error. Suppressed to avoid
+                        // interfering with the stdio-based MCP JSON-RPC protocol.
+                        // Non-critical; continue watching.
+                        let _ = e;
                     }
                     Err(mpsc::RecvTimeoutError::Timeout) => {
                         // Check stop signal.
