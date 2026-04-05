@@ -8,7 +8,7 @@
 //! semantic operations (hover, definition, references, diagnostics).
 
 use std::collections::HashMap;
-use std::io::{BufRead, BufReader, Read, Write};
+use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::sync::atomic::{AtomicI64, Ordering};
@@ -31,7 +31,6 @@ fn uri_to_path(uri: &str) -> Option<PathBuf> {
 struct LspConnection {
     process: Child,
     next_id: AtomicI64,
-    #[allow(dead_code)]
     language_id: String,
 }
 
@@ -360,7 +359,7 @@ fn read_byte(reader: &mut dyn Read) -> Result<u8> {
 }
 
 /// Parse location results from LSP responses.
-fn parse_location_infos(value: &Value, root: &Path) -> Result<Vec<LocationInfo>> {
+fn parse_location_infos(value: &Value, _root: &Path) -> Result<Vec<LocationInfo>> {
     if value.is_null() {
         return Ok(Vec::new());
     }

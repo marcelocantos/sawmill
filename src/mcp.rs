@@ -1086,7 +1086,7 @@ impl CanopyServer {
 
         let mut all_violations = Vec::new();
 
-        for (name, description, check_program) in &conventions {
+        for (name, _description, check_program) in &conventions {
             match codegen::run_convention_check(&model.forest, check_program) {
                 Ok(violations) if violations.is_empty() => {
                     all_violations.push(format!("  {} — OK", name));

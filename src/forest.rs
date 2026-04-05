@@ -104,7 +104,7 @@ pub fn undo_from_backups(backup_paths: &[PathBuf]) -> Result<usize> {
     let mut restored = 0;
     for backup in backup_paths {
         // Derive the original path from the backup path.
-        let original = backup.with_extension(""); // strips .canopy.bak
+        let _original = backup.with_extension(""); // strips .canopy.bak
         // Actually, with_extension only strips the last extension.
         // .canopy.bak → .canopy → need to strip again.
         let original = PathBuf::from(

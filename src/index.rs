@@ -6,11 +6,9 @@
 //! Parses a file's Tree-sitter tree and extracts symbols (functions, types,
 //! imports, calls) for indexing in the store.
 
-use anyhow::{Context, Result};
 use streaming_iterator::StreamingIterator;
 use tree_sitter::Query;
 
-use crate::adapters::LanguageAdapter;
 use crate::forest::ParsedFile;
 
 /// A symbol extracted from a parsed file.

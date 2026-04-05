@@ -1,6 +1,11 @@
 // Copyright 2026 Marcelo Cantos
 // SPDX-License-Identifier: Apache-2.0
 
+// Many public APIs are defined ahead of their call sites (planned features
+// documented in docs/design.md and docs/frontier.md). Suppress warnings
+// crate-wide rather than annotating each stub individually.
+#![allow(dead_code)]
+
 mod adapters;
 mod codegen;
 mod exemplar;
