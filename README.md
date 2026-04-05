@@ -86,6 +86,7 @@ Add to your MCP client config (e.g. `.mcp.json`):
 | `check_conventions` | Scan for convention violations |
 | `list_recipes` | List all taught recipes |
 | `list_conventions` | List all taught conventions |
+| `get_agent_prompt` | Generate a rich system prompt with capabilities, recipes, and conventions |
 | `hover` | Get type info at a position (via LSP) |
 | `definition` | Go to definition (via LSP) |
 | `lsp_references` | Find all references (via LSP) |

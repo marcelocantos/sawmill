@@ -1,6 +1,6 @@
 # Canopy Stability
 
-**Current version:** 0.1.0 (pre-1.0)
+**Current version:** 0.2.0 (pre-1.0)
 
 ## Stability Commitment
 
@@ -246,6 +246,13 @@ Scan the codebase for convention violations.
 
 List all taught conventions. No parameters.
 
+#### `get_agent_prompt`
+
+Generate a rich system prompt describing capabilities, recipes, and
+conventions. No parameters. Returns the agents-guide content plus
+dynamic project-specific recipes and conventions if `parse` has been
+called. **Needs review** — new in v0.2.0; output format may evolve.
+
 #### `hover`
 
 Get type information at a position via LSP.
@@ -411,14 +418,9 @@ table; symbol kind vocabulary is not formalised).
    would break existing databases silently. Needs at minimum a
    `schema_version` table and migration runner.
 
-5. **Frontier D (structural pre-flight checks).** Dangling-reference
-   and missing-import detection on `apply` is in progress. This is a
-   correctness prerequisite -- users need confidence that `apply` will
-   not silently introduce broken references.
+5. ~~**Frontier D (structural pre-flight checks).**~~ Done (v0.2.0).
 
-6. **Frontier E (LSP on `ctx`).** Bridging LSP into the JS runtime is
-   planned and will expand the `ctx` API surface. Should land and
-   stabilise before 1.0.
+6. ~~**Frontier E (LSP on `ctx`).**~~ Done (v0.2.0).
 
 7. **Error contract.** MCP tool error responses are unstructured
    strings. A structured error schema (error codes, categories) would
@@ -449,7 +451,7 @@ table; symbol kind vocabulary is not formalised).
 - **Automatic LSP server management** (Frontier I).
 - **WASM / browser build** (Frontier L).
 - **Change decomposition / sharding** (Frontier G).
-- **Agent prompt generation** (Frontier K).
+- ~~**Agent prompt generation** (Frontier K)~~ -- done (v0.2.0).
 - **Incremental Tree-sitter re-parse** (Frontier F) -- current
   whole-file re-parse is fast enough for the target codebase sizes.
 - **Deep semantic analysis** (type checking, control flow) beyond what
