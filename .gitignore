@@ -16,7 +16,7 @@ Thumbs.db
 .env
 .env.*
 
-# PolyRefactor
-.polyrefactor/
-*.polyrefactor.bak
-*.polyrefactor.new
+# Canopy
+.canopy/
+*.canopy.bak
+*.canopy.new

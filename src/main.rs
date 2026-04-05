@@ -19,7 +19,7 @@ use clap::{Parser, Subcommand};
 use std::path::PathBuf;
 
 #[derive(Parser)]
-#[command(name = "polyrefactor", version, about = "AST-level multi-language refactoring tool")]
+#[command(name = "canopy", version, about = "Codebase operations platform")]
 struct Cli {
     #[command(subcommand)]
     command: Command,

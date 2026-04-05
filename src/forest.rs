@@ -53,8 +53,8 @@ impl FileChange {
 /// Apply a set of file changes atomically with backup.
 ///
 /// Strategy:
-/// 1. Write all new content to `.polyrefactor.new` temp files
-/// 2. Back up all originals to `.polyrefactor.bak`
+/// 1. Write all new content to `.canopy.new` temp files
+/// 2. Back up all originals to `.canopy.bak`
 /// 3. Rename `.new` files to their final paths
 ///
 /// If anything fails during step 3, the `.bak` files allow recovery.
@@ -65,7 +65,7 @@ pub fn apply_with_backup(changes: &[FileChange]) -> Result<Vec<PathBuf>> {
 
     // Step 1: Write new content to temp files.
     for change in changes {
-        let temp = change.path.with_extension("polyrefactor.new");
+        let temp = change.path.with_extension("canopy.new");
         std::fs::write(&temp, &change.new_source)
             .with_context(|| format!("writing temp {}", temp.display()))?;
         temp_paths.push(temp);
@@ -73,7 +73,7 @@ pub fn apply_with_backup(changes: &[FileChange]) -> Result<Vec<PathBuf>> {
 
     // Step 2: Back up originals.
     for change in changes {
-        let backup = change.path.with_extension("polyrefactor.bak");
+        let backup = change.path.with_extension("canopy.bak");
         if change.path.exists() {
             std::fs::copy(&change.path, &backup)
                 .with_context(|| format!("backing up {}", change.path.display()))?;
@@ -99,17 +99,17 @@ pub fn apply_with_backup(changes: &[FileChange]) -> Result<Vec<PathBuf>> {
     Ok(backup_paths)
 }
 
-/// Undo a previously applied change by restoring from `.polyrefactor.bak` files.
+/// Undo a previously applied change by restoring from `.canopy.bak` files.
 pub fn undo_from_backups(backup_paths: &[PathBuf]) -> Result<usize> {
     let mut restored = 0;
     for backup in backup_paths {
         // Derive the original path from the backup path.
-        let original = backup.with_extension(""); // strips .polyrefactor.bak
+        let original = backup.with_extension(""); // strips .canopy.bak
         // Actually, with_extension only strips the last extension.
-        // .polyrefactor.bak → .polyrefactor → need to strip again.
+        // .canopy.bak → .canopy → need to strip again.
         let original = PathBuf::from(
             backup.to_string_lossy()
-                .trim_end_matches(".polyrefactor.bak")
+                .trim_end_matches(".canopy.bak")
         );
 
         if !backup.exists() {
@@ -149,7 +149,7 @@ pub fn cleanup_backups(backup_paths: &[PathBuf]) {
     for backup in backup_paths {
         let new_path = PathBuf::from(
             backup.to_string_lossy()
-                .replace(".polyrefactor.bak", ".polyrefactor.new")
+                .replace(".canopy.bak", ".canopy.new")
         );
         let _ = std::fs::remove_file(new_path);
     }

@@ -1,4 +1,4 @@
-# PolyRefactor Frontier Roadmap
+# Canopy Frontier Roadmap
 
 **Date:** April 2026
 **Status:** Frontiers A, B, C complete. E and D are next.

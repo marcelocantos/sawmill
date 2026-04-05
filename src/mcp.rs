@@ -25,7 +25,7 @@ struct PendingChanges {
     description: String,
 }
 
-pub struct PolyRefactorServer {
+pub struct CanopyServer {
     tool_router: ToolRouter<Self>,
     pending: Mutex<Option<PendingChanges>>,
     /// Backup paths from the last apply, for undo.
@@ -368,7 +368,7 @@ fn default_position() -> String {
 // --- Tool implementations ---
 
 #[tool_router]
-impl PolyRefactorServer {
+impl CanopyServer {
     #[tool(
         name = "parse",
         description = "Parse source files into the persistent codebase model. First call loads and indexes all files; subsequent calls sync changes. Returns a summary of files and languages."
@@ -1352,7 +1352,7 @@ impl PolyRefactorServer {
 
     #[tool(
         name = "apply",
-        description = "Apply the pending changes from the last transform to disk. Requires confirm=true. Creates .polyrefactor.bak backups for each changed file — use `undo` to revert. Checks conventions and warns on violations."
+        description = "Apply the pending changes from the last transform to disk. Requires confirm=true. Creates .canopy.bak backups for each changed file — use `undo` to revert. Checks conventions and warns on violations."
     )]
     fn apply(&self, Parameters(params): Parameters<ApplyParams>) -> String {
         if !params.confirm {
@@ -1396,7 +1396,7 @@ impl PolyRefactorServer {
 
     #[tool(
         name = "undo",
-        description = "Revert the last applied changes by restoring from .polyrefactor.bak backup files."
+        description = "Revert the last applied changes by restoring from .canopy.bak backup files."
     )]
     fn undo(&self, Parameters(_params): Parameters<UndoParams>) -> String {
         let backups = self.last_backups.lock().unwrap().take();
@@ -1415,11 +1415,11 @@ impl PolyRefactorServer {
 }
 
 #[tool_handler]
-impl ServerHandler for PolyRefactorServer {
+impl ServerHandler for CanopyServer {
     fn get_info(&self) -> ServerInfo {
         ServerInfo::new(ServerCapabilities::builder().enable_tools().build())
             .with_instructions(
-                "PolyRefactor: AST-level multi-language refactoring server.\n\n\
+                "Canopy: codebase operations platform.\n\n\
                  Tools:\n\
                  - parse: scan a codebase and list files/languages\n\
                  - query: search for structural patterns (functions, classes, calls, imports)\n\
@@ -1438,7 +1438,7 @@ impl ServerHandler for PolyRefactorServer {
     }
 }
 
-impl PolyRefactorServer {
+impl CanopyServer {
     pub fn new() -> Self {
         Self {
             tool_router: Self::tool_router(),
@@ -1857,7 +1857,7 @@ fn find_param_list(
 }
 
 pub async fn serve() -> anyhow::Result<()> {
-    let server = PolyRefactorServer::new();
+    let server = CanopyServer::new();
     let service = server.serve(rmcp::transport::stdio()).await?;
     service.waiting().await?;
     Ok(())

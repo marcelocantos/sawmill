@@ -1,13 +1,13 @@
-# PolyRefactor Design Document
+# Canopy Design Document
 
-**Project Name:** PolyRefactor
+**Project Name:** Canopy
 **Version:** 0.5
 **Date:** April 2026
 **Status:** Revised — two-tier transform model, orthogonal match/act
 
 ## 1. Overview
 
-PolyRefactor is an MCP server that models a codebase as a forest of
+Canopy is an MCP server that models a codebase as a forest of
 Concrete Syntax Trees (CSTs) and exposes safe, programmable,
 multi-language structural transformations to AI coding agents. It
 allows agents to request refactoring operations without repeatedly
@@ -77,7 +77,7 @@ formatting, comments, whitespace, and language-specific constructs
 ## 3. High-Level Architecture
 
 ```
-AI Agent ──MCP──▶ PolyRefactor Server
+AI Agent ──MCP──▶ Canopy Server
                     │
                     ├─ Parsing Layer (Tree-sitter)
                     │    └─ Per-language grammars
@@ -522,23 +522,23 @@ For testing and direct invocation:
 
 ```sh
 # Parse and show forest summary
-polyrefactor parse ./src
+canopy parse ./src
 
 # Find all functions named "process"
-polyrefactor find-symbol process --kind function
+canopy find-symbol process --kind function
 
 # Rename across codebase (dry-run by default)
-polyrefactor rename old_name new_name --path ./src
+canopy rename old_name new_name --path ./src
 
 # Structural match + declarative action
-polyrefactor transform \
+canopy transform \
   --match 'kind=call,name=old_api' \
   --action replace_name \
   --code new_api \
   --path ./src
 
 # Raw query + declarative action
-polyrefactor transform \
+canopy transform \
   --raw-query '(call_expression function: (identifier) @fn (#eq? @fn "old_api"))' \
   --capture fn \
   --action replace \
@@ -546,13 +546,13 @@ polyrefactor transform \
   --path ./src
 
 # Match + JS function
-polyrefactor transform \
+canopy transform \
   --match 'kind=function' \
   --transform-fn '(node) => node.name.startsWith("_") ? node.remove() : node' \
   --path ./src
 
 # Apply changes (writes to disk)
-polyrefactor apply --path ./src
+canopy apply --path ./src
 ```
 
 ## 5. Technology Choices
