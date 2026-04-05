@@ -1,0 +1,138 @@
+# Canopy
+
+Canopy is an MCP server that models a codebase as a forest of Concrete
+Syntax Trees and exposes safe, programmable, multi-language structural
+transformations to AI coding agents.
+
+Agents request refactoring operations — renames, structural transforms,
+code generation — without repeatedly processing or regenerating large
+volumes of source code in their context windows. Canopy handles the
+mechanical rewriting deterministically, producing minimal, git-diff-friendly
+changes that preserve formatting, comments, and whitespace.
+
+## Features
+
+- **Multi-language**: Python, TypeScript, Rust, Go, C/C++ via Tree-sitter
+- **MCP server**: Runs over stdio; works with any MCP-compatible AI agent
+- **Structural transforms**: Rename, query, match/act with declarative
+  actions or JavaScript transform functions
+- **Teach by example**: Point at existing code, name the variable parts,
+  get a reusable template
+- **Conventions**: Define enforceable rules as JavaScript checks, verified
+  on every apply
+- **Code generation**: JavaScript programs with a rich `ctx` API for
+  coordinated multi-file edits
+- **LSP bridge**: Type info, definitions, references, and diagnostics from
+  language servers
+- **Safe by default**: Diff preview before every write, backup/undo on
+  every apply
+
+## Quick start
+
+### Build
+
+```bash
+cargo build --release
+```
+
+The binary is at `target/release/canopy`.
+
+### CLI usage
+
+```bash
+# Parse and summarise a codebase
+canopy parse src/
+
+# Rename a symbol (prints diff)
+canopy rename old_name new_name --path src/
+
+# Run as MCP server
+canopy serve
+```
+
+### MCP server configuration
+
+Add to your MCP client config (e.g. `.mcp.json`):
+
+```json
+{
+  "mcpServers": {
+    "canopy": {
+      "command": "canopy",
+      "args": ["serve"]
+    }
+  }
+}
+```
+
+## MCP tools
+
+| Tool | Description |
+|---|---|
+| `parse` | Load and index the codebase (incremental on subsequent calls) |
+| `rename` | Rename a symbol across files (diff preview) |
+| `query` | Search for structural patterns (functions, classes, calls, imports) |
+| `find_symbol` | Find all definitions of a symbol by name |
+| `find_references` | Find all usages of a symbol by name |
+| `transform` | Match/act structural transform with declarative or JS actions |
+| `transform_batch` | Apply multiple transforms sequentially |
+| `add_parameter` | Add a parameter to a function definition |
+| `remove_parameter` | Remove a parameter from a function definition |
+| `codegen` | Execute a JavaScript code generator against the codebase |
+| `teach_by_example` | Extract a reusable template from exemplar code |
+| `teach_recipe` | Define a named sequence of transforms with parameters |
+| `instantiate` | Create new code from a taught recipe |
+| `teach_convention` | Define an enforceable project rule |
+| `check_conventions` | Scan for convention violations |
+| `list_recipes` | List all taught recipes |
+| `list_conventions` | List all taught conventions |
+| `hover` | Get type info at a position (via LSP) |
+| `definition` | Go to definition (via LSP) |
+| `lsp_references` | Find all references (via LSP) |
+| `diagnostics` | Get compile errors/warnings (via LSP) |
+| `apply` | Write pending changes to disk (with backup) |
+| `undo` | Revert the last apply from backups |
+
+Every transform tool returns a diff preview. Call `apply` to write
+changes. Call `undo` to revert.
+
+## How it works
+
+```
+AI Agent ──MCP──▶ Canopy Server
+                    │
+                    ├─ Parsing Layer (Tree-sitter)
+                    ├─ Forest (immutable parsed files)
+                    ├─ Language Adapters (query dispatch)
+                    ├─ Transform Engine
+                    │    ├─ Named Operations (rename, extract)
+                    │    └─ Match/Act Engine
+                    ├─ Rewrite Engine (range-based patching)
+                    └─ Output (diffs, patches, in-place writes)
+```
+
+1. **Parse** source files into Tree-sitter CSTs, one per file
+2. **Match** nodes using abstract kind queries or raw Tree-sitter queries
+3. **Transform** via declarative actions or JavaScript functions
+4. **Rewrite** by copying unchanged regions verbatim, regenerating only
+   modified portions
+5. **Preview** as a unified diff; apply only on confirmation
+
+## Supported languages
+
+| Language | Parsing | Formatting | LSP |
+|---|---|---|---|
+| Python | Yes | autopep8 | pylsp |
+| TypeScript | Yes | — | — |
+| Rust | Yes | rustfmt | rust-analyzer |
+| Go | Yes | gofmt | gopls |
+| C/C++ | Yes | clang-format | clangd |
+
+## Design
+
+See [`docs/design.md`](docs/design.md) for the full architecture and
+rationale. See [`docs/frontier.md`](docs/frontier.md) for the roadmap.
+
+## License
+
+[Apache 2.0](LICENSE)
