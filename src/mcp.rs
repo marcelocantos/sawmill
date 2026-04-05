@@ -28,6 +28,8 @@ struct PendingChanges {
 pub struct PolyRefactorServer {
     tool_router: ToolRouter<Self>,
     pending: Mutex<Option<PendingChanges>>,
+    /// Backup paths from the last apply, for undo.
+    last_backups: Mutex<Option<(Vec<PathBuf>, String)>>,
     /// Persistent codebase model, loaded on first `parse` call.
     model: Mutex<Option<CodebaseModel>>,
 }
@@ -212,6 +214,9 @@ struct ApplyParams {
     /// Set to true to confirm applying the pending changes.
     confirm: bool,
 }
+
+#[derive(serde::Deserialize, schemars::JsonSchema)]
+struct UndoParams {}
 
 fn default_true() -> bool { true }
 
@@ -1347,7 +1352,7 @@ impl PolyRefactorServer {
 
     #[tool(
         name = "apply",
-        description = "Apply the pending changes from the last transform to disk. Requires confirm=true. Checks conventions before applying and warns on violations (but still applies)."
+        description = "Apply the pending changes from the last transform to disk. Requires confirm=true. Creates .polyrefactor.bak backups for each changed file — use `undo` to revert. Checks conventions and warns on violations."
     )]
     fn apply(&self, Parameters(params): Parameters<ApplyParams>) -> String {
         if !params.confirm {
@@ -1358,33 +1363,52 @@ impl PolyRefactorServer {
         match pending {
             None => "No pending changes to apply.".to_string(),
             Some(p) => {
-                // Check conventions before applying.
                 let convention_warnings = self.check_conventions_on_changes(&p.changes);
+                let file_count = p.changes.len();
 
-                let mut applied = 0;
-                for change in &p.changes {
-                    if let Err(e) = change.apply() {
-                        return format!(
-                            "Error writing {}: {e}\n({applied} file(s) already written)",
-                            change.path.display()
+                match crate::forest::apply_with_backup(&p.changes) {
+                    Ok(backup_paths) => {
+                        // Store backups for undo.
+                        *self.last_backups.lock().unwrap() = Some((
+                            backup_paths,
+                            p.description.clone(),
+                        ));
+
+                        let mut output = format!(
+                            "Applied {} to {file_count} file(s). Backups created — use `undo` to revert.",
+                            p.description
                         );
+
+                        if !convention_warnings.is_empty() {
+                            output.push_str(&format!(
+                                "\n\nConvention warnings:\n{}",
+                                convention_warnings
+                            ));
+                        }
+
+                        output
                     }
-                    applied += 1;
+                    Err(e) => format!("Error applying changes: {e}"),
                 }
+            }
+        }
+    }
 
-                let mut output = format!(
-                    "Applied {} to {applied} file(s).",
-                    p.description
-                );
-
-                if !convention_warnings.is_empty() {
-                    output.push_str(&format!(
-                        "\n\nConvention warnings:\n{}",
-                        convention_warnings
-                    ));
+    #[tool(
+        name = "undo",
+        description = "Revert the last applied changes by restoring from .polyrefactor.bak backup files."
+    )]
+    fn undo(&self, Parameters(_params): Parameters<UndoParams>) -> String {
+        let backups = self.last_backups.lock().unwrap().take();
+        match backups {
+            None => "No changes to undo.".to_string(),
+            Some((paths, description)) => {
+                match crate::forest::undo_from_backups(&paths) {
+                    Ok(restored) => {
+                        format!("Undone {description}: {restored} file(s) restored.")
+                    }
+                    Err(e) => format!("Error during undo: {e}"),
                 }
-
-                output
             }
         }
     }
@@ -1419,6 +1443,7 @@ impl PolyRefactorServer {
         Self {
             tool_router: Self::tool_router(),
             pending: Mutex::new(None),
+            last_backups: Mutex::new(None),
             model: Mutex::new(None),
         }
     }

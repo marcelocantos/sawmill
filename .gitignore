@@ -16,5 +16,7 @@ Thumbs.db
 .env
 .env.*
 
-# PolyRefactor persistent store
+# PolyRefactor
 .polyrefactor/
+*.polyrefactor.bak
+*.polyrefactor.new

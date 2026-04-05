@@ -50,6 +50,111 @@ impl FileChange {
     }
 }
 
+/// Apply a set of file changes atomically with backup.
+///
+/// Strategy:
+/// 1. Write all new content to `.polyrefactor.new` temp files
+/// 2. Back up all originals to `.polyrefactor.bak`
+/// 3. Rename `.new` files to their final paths
+///
+/// If anything fails during step 3, the `.bak` files allow recovery.
+/// Returns the list of backup paths for undo.
+pub fn apply_with_backup(changes: &[FileChange]) -> Result<Vec<PathBuf>> {
+    let mut temp_paths = Vec::new();
+    let mut backup_paths = Vec::new();
+
+    // Step 1: Write new content to temp files.
+    for change in changes {
+        let temp = change.path.with_extension("polyrefactor.new");
+        std::fs::write(&temp, &change.new_source)
+            .with_context(|| format!("writing temp {}", temp.display()))?;
+        temp_paths.push(temp);
+    }
+
+    // Step 2: Back up originals.
+    for change in changes {
+        let backup = change.path.with_extension("polyrefactor.bak");
+        if change.path.exists() {
+            std::fs::copy(&change.path, &backup)
+                .with_context(|| format!("backing up {}", change.path.display()))?;
+        } else {
+            // New file — write an empty marker so undo knows to delete it.
+            std::fs::write(&backup, b"")
+                .with_context(|| format!("creating backup marker {}", backup.display()))?;
+        }
+        backup_paths.push(backup);
+    }
+
+    // Step 3: Rename temp files to final paths.
+    for (i, change) in changes.iter().enumerate() {
+        // Ensure parent directory exists (for new files).
+        if let Some(parent) = change.path.parent() {
+            std::fs::create_dir_all(parent)
+                .with_context(|| format!("creating directory {}", parent.display()))?;
+        }
+        std::fs::rename(&temp_paths[i], &change.path)
+            .with_context(|| format!("renaming temp to {}", change.path.display()))?;
+    }
+
+    Ok(backup_paths)
+}
+
+/// Undo a previously applied change by restoring from `.polyrefactor.bak` files.
+pub fn undo_from_backups(backup_paths: &[PathBuf]) -> Result<usize> {
+    let mut restored = 0;
+    for backup in backup_paths {
+        // Derive the original path from the backup path.
+        let original = backup.with_extension(""); // strips .polyrefactor.bak
+        // Actually, with_extension only strips the last extension.
+        // .polyrefactor.bak → .polyrefactor → need to strip again.
+        let original = PathBuf::from(
+            backup.to_string_lossy()
+                .trim_end_matches(".polyrefactor.bak")
+        );
+
+        if !backup.exists() {
+            continue;
+        }
+
+        let backup_content = std::fs::read(backup)
+            .with_context(|| format!("reading backup {}", backup.display()))?;
+
+        if backup_content.is_empty() && !original.exists() {
+            // Empty marker for a file that was newly created — nothing to restore.
+            let _ = std::fs::remove_file(backup);
+            continue;
+        }
+
+        if backup_content.is_empty() {
+            // File was newly created — remove it.
+            let _ = std::fs::remove_file(&original);
+        } else {
+            // Restore original content.
+            std::fs::write(&original, &backup_content)
+                .with_context(|| format!("restoring {}", original.display()))?;
+        }
+
+        let _ = std::fs::remove_file(backup);
+        restored += 1;
+    }
+    Ok(restored)
+}
+
+/// Clean up backup files after a successful apply (user confirmed the changes are good).
+pub fn cleanup_backups(backup_paths: &[PathBuf]) {
+    for backup in backup_paths {
+        let _ = std::fs::remove_file(backup);
+    }
+    // Also clean up any stale .new files.
+    for backup in backup_paths {
+        let new_path = PathBuf::from(
+            backup.to_string_lossy()
+                .replace(".polyrefactor.bak", ".polyrefactor.new")
+        );
+        let _ = std::fs::remove_file(new_path);
+    }
+}
+
 /// A collection of parsed source files.
 pub struct Forest {
     pub files: Vec<ParsedFile>,
