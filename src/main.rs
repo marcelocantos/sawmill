@@ -23,8 +23,6 @@ mod watcher;
 use clap::{CommandFactory, Parser, Subcommand};
 use std::path::PathBuf;
 
-const AGENT_GUIDE: &str = include_str!("../agents-guide.md");
-
 #[derive(Parser)]
 #[command(name = "canopy", version, about = "Codebase operations platform")]
 struct Cli {
@@ -66,7 +64,7 @@ fn main() -> anyhow::Result<()> {
     if cli.help_agent {
         let mut cmd = Cli::command();
         cmd.print_help()?;
-        println!("\n\n{AGENT_GUIDE}");
+        println!("\n\n{}", mcp::AGENT_GUIDE);
         return Ok(());
     }
 

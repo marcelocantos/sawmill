@@ -61,8 +61,9 @@ These are valuable but not needed for the near-term use case.
   marketplace, convention packs.
 - **K. Agent prompt generation** — server generates a rich system
   prompt describing its capabilities, recipes, and conventions.
-  High value but depends on real-world usage to know what to
-  include.
+  **Initial cut implemented**: MCP instructions serve the full
+  agents-guide; `get_agent_prompt` tool returns the guide plus
+  dynamic project-specific recipes and conventions.
 - **L. WASM build** — browser playground. Needs a user community
   first.
 

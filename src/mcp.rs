@@ -19,6 +19,8 @@ use crate::model::CodebaseModel;
 use crate::rewrite;
 use crate::transform;
 
+pub const AGENT_GUIDE: &str = include_str!("../agents-guide.md");
+
 /// Pending changes from the last transform, waiting to be applied.
 struct PendingChanges {
     changes: Vec<FileChange>,
@@ -289,6 +291,9 @@ struct CheckConventionsParams {
 
 #[derive(serde::Deserialize, schemars::JsonSchema)]
 struct ListConventionsParams {}
+
+#[derive(serde::Deserialize, schemars::JsonSchema)]
+struct GetAgentPromptParams {}
 
 #[derive(serde::Deserialize, schemars::JsonSchema)]
 struct TeachByExampleParams {
@@ -1188,6 +1193,63 @@ impl CanopyServer {
     }
 
     #[tool(
+        name = "get_agent_prompt",
+        description = "Generate a rich system prompt describing Canopy's capabilities, including any taught recipes and conventions. Call after `parse` to include project-specific context. Without `parse`, returns the static guide only."
+    )]
+    fn get_agent_prompt(
+        &self,
+        Parameters(_params): Parameters<GetAgentPromptParams>,
+    ) -> String {
+        let mut prompt = AGENT_GUIDE.to_string();
+
+        let model_lock = self.model.lock().unwrap();
+        if let Some(model) = &*model_lock {
+            // Append recipes section.
+            if let Ok(recipes) = model.list_recipes() {
+                if !recipes.is_empty() {
+                    prompt.push_str("\n\n## Project Recipes\n\n");
+                    prompt.push_str(
+                        "The following recipes have been taught for this project. \
+                         Use `instantiate` with the recipe name and parameter values.\n\n",
+                    );
+                    for (name, desc) in &recipes {
+                        if desc.is_empty() {
+                            prompt.push_str(&format!("- **{name}**\n"));
+                        } else {
+                            prompt.push_str(&format!("- **{name}** — {desc}\n"));
+                        }
+                    }
+                }
+            }
+
+            // Append conventions section.
+            if let Ok(convs) = model.list_conventions() {
+                if !convs.is_empty() {
+                    prompt.push_str("\n\n## Project Conventions\n\n");
+                    prompt.push_str(
+                        "The following conventions are enforced on `apply`. \
+                         Violations will block changes from being written.\n\n",
+                    );
+                    for (name, desc, _) in &convs {
+                        if desc.is_empty() {
+                            prompt.push_str(&format!("- **{name}**\n"));
+                        } else {
+                            prompt.push_str(&format!("- **{name}** — {desc}\n"));
+                        }
+                    }
+                }
+            }
+        } else {
+            prompt.push_str(
+                "\n\n---\n*Call `parse` first, then `get_agent_prompt` again \
+                 to include project-specific recipes and conventions.*",
+            );
+        }
+
+        prompt
+    }
+
+    #[tool(
         name = "hover",
         description = "Get type information for a symbol at a specific position using the language's LSP server. Returns type signature, documentation, etc. Requires `parse` to be called first."
     )]
@@ -1476,23 +1538,7 @@ impl CanopyServer {
 impl ServerHandler for CanopyServer {
     fn get_info(&self) -> ServerInfo {
         ServerInfo::new(ServerCapabilities::builder().enable_tools().build())
-            .with_instructions(
-                "Canopy: codebase operations platform.\n\n\
-                 Tools:\n\
-                 - parse: scan a codebase and list files/languages\n\
-                 - query: search for structural patterns (functions, classes, calls, imports)\n\
-                 - find_symbol: find definitions of a symbol\n\
-                 - find_references: find call sites of a symbol\n\
-                 - rename: rename a symbol across the codebase (preview)\n\
-                 - transform: apply a single structural transformation\n\
-                 - transform_batch: apply multiple transforms sequentially in one operation\n\
-                 - add_parameter: add a parameter to a function definition\n\
-                 - remove_parameter: remove a parameter from a function definition\n\
-                 - apply: write pending changes to disk\n\n\
-                 All mutating tools return a diff preview. Call `apply` with confirm=true to write changes.\n\
-                 Supported languages: Python, Rust, TypeScript, C++, Go."
-                    .to_string(),
-            )
+            .with_instructions(AGENT_GUIDE.to_string())
     }
 }
 
