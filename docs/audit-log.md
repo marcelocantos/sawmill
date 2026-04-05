@@ -9,3 +9,15 @@ maintenance activities. Append-only — newest entries at the bottom.
 - **Outcome**: Open-sourced canopy. Audit: no secrets or license issues found; 10 clippy lints and 19 compiler warnings fixed. Added Apache 2.0 LICENSE, README.md, CLAUDE.md, agents-guide.md, STABILITY.md. CI workflow (test/clippy/fmt). Release workflow with homebrew-releaser. --help-agent flag. Released v0.1.0 with binaries for darwin-arm64, linux-amd64, linux-arm64.
 - **Deferred**:
   - HOMEBREW_TAP_TOKEN secret not yet set on canopy repo — Homebrew formula push requires manual PAT setup
+
+## 2026-04-05 — /audit
+
+- **Commit**: `83384da`
+- **Outcome**: 12 findings (0 critical, 0 high, 5 medium, 5 low, 2 info). Report: docs/audit-2026-04-05.md. Key issues: cargo fmt/clippy failures will block CI; broken LSP timeout implementation; convention checks run on pre-change state.
+- **Deferred**:
+  - try_read_message broken timeout (medium) — needs non-blocking I/O redesign
+  - check_conventions_on_changes pre-change state (medium) — requires re-parsing changed files
+  - mcp.rs 2021 lines (low) — module split is cosmetic, not blocking
+  - CI multi-OS testing (low) — macOS CI job would increase confidence for cross-platform release
+  - HOMEBREW_TAP_TOKEN secret (low) — carried from open-source audit
+  - Cargo.lock not committed (info) — recommended for binary crates

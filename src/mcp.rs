@@ -1196,46 +1196,43 @@ impl CanopyServer {
         name = "get_agent_prompt",
         description = "Generate a rich system prompt describing Canopy's capabilities, including any taught recipes and conventions. Call after `parse` to include project-specific context. Without `parse`, returns the static guide only."
     )]
-    fn get_agent_prompt(
-        &self,
-        Parameters(_params): Parameters<GetAgentPromptParams>,
-    ) -> String {
+    fn get_agent_prompt(&self, Parameters(_params): Parameters<GetAgentPromptParams>) -> String {
         let mut prompt = AGENT_GUIDE.to_string();
 
         let model_lock = self.model.lock().unwrap();
         if let Some(model) = &*model_lock {
             // Append recipes section.
-            if let Ok(recipes) = model.list_recipes() {
-                if !recipes.is_empty() {
-                    prompt.push_str("\n\n## Project Recipes\n\n");
-                    prompt.push_str(
-                        "The following recipes have been taught for this project. \
+            if let Ok(recipes) = model.list_recipes()
+                && !recipes.is_empty()
+            {
+                prompt.push_str("\n\n## Project Recipes\n\n");
+                prompt.push_str(
+                    "The following recipes have been taught for this project. \
                          Use `instantiate` with the recipe name and parameter values.\n\n",
-                    );
-                    for (name, desc) in &recipes {
-                        if desc.is_empty() {
-                            prompt.push_str(&format!("- **{name}**\n"));
-                        } else {
-                            prompt.push_str(&format!("- **{name}** — {desc}\n"));
-                        }
+                );
+                for (name, desc) in &recipes {
+                    if desc.is_empty() {
+                        prompt.push_str(&format!("- **{name}**\n"));
+                    } else {
+                        prompt.push_str(&format!("- **{name}** — {desc}\n"));
                     }
                 }
             }
 
             // Append conventions section.
-            if let Ok(convs) = model.list_conventions() {
-                if !convs.is_empty() {
-                    prompt.push_str("\n\n## Project Conventions\n\n");
-                    prompt.push_str(
-                        "The following conventions are enforced on `apply`. \
+            if let Ok(convs) = model.list_conventions()
+                && !convs.is_empty()
+            {
+                prompt.push_str("\n\n## Project Conventions\n\n");
+                prompt.push_str(
+                    "The following conventions are enforced on `apply`. \
                          Violations will block changes from being written.\n\n",
-                    );
-                    for (name, desc, _) in &convs {
-                        if desc.is_empty() {
-                            prompt.push_str(&format!("- **{name}**\n"));
-                        } else {
-                            prompt.push_str(&format!("- **{name}** — {desc}\n"));
-                        }
+                );
+                for (name, desc, _) in &convs {
+                    if desc.is_empty() {
+                        prompt.push_str(&format!("- **{name}**\n"));
+                    } else {
+                        prompt.push_str(&format!("- **{name}** — {desc}\n"));
                     }
                 }
             }
