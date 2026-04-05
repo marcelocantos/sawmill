@@ -1601,11 +1601,11 @@ impl CanopyServer {
         for file in &mut post_forest.files {
             if let Some(change) = changes.iter().find(|c| c.path == file.path) {
                 let mut parser = Parser::new();
-                if parser.set_language(&file.adapter.language()).is_ok() {
-                    if let Some(tree) = parser.parse(&change.new_source, None) {
-                        file.original_source = change.new_source.clone();
-                        file.tree = tree;
-                    }
+                if parser.set_language(&file.adapter.language()).is_ok()
+                    && let Some(tree) = parser.parse(&change.new_source, None)
+                {
+                    file.original_source = change.new_source.clone();
+                    file.tree = tree;
                 }
             }
         }

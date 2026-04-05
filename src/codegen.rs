@@ -170,6 +170,7 @@ impl LspProxy {
     /// Safe to call when the contract documented on `LspProxy` holds:
     /// the pointer is valid, the original `&mut` is still live, and no
     /// other reference obtained through this method is alive.
+    #[allow(clippy::mut_from_ref)] // Intentional: interior mutability via raw pointer.
     fn get(&self) -> &mut crate::lsp::LspManager {
         // SAFETY: see LspProxy safety contract.
         unsafe { &mut *self.ptr }
