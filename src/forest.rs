@@ -158,6 +158,14 @@ pub struct Forest {
     pub files: Vec<ParsedFile>,
 }
 
+impl Clone for Forest {
+    fn clone(&self) -> Self {
+        Forest {
+            files: self.files.clone(),
+        }
+    }
+}
+
 impl Forest {
     /// Parse all supported files under `path` (file or directory).
     pub fn from_path(path: &Path) -> Result<Self> {

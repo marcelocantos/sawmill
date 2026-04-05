@@ -1579,7 +1579,7 @@ impl CanopyServer {
 
     /// Run convention checks against a set of changes.
     /// Returns a warning string (empty if no violations).
-    fn check_conventions_on_changes(&self, _changes: &[FileChange]) -> String {
+    fn check_conventions_on_changes(&self, changes: &[FileChange]) -> String {
         let model_lock = self.model.lock().unwrap();
         let model = match &*model_lock {
             Some(m) => m,
@@ -1595,12 +1595,25 @@ impl CanopyServer {
             return String::new();
         }
 
-        // Run checks against the current forest (which reflects pre-change state).
-        // Ideally we'd check the post-change state, but that would require
-        // re-parsing the changed files. For now, check the current state.
+        // Build a post-change forest by cloning the current forest and
+        // re-parsing any files that appear in `changes` from their new content.
+        let mut post_forest = model.forest.clone();
+        for file in &mut post_forest.files {
+            if let Some(change) = changes.iter().find(|c| c.path == file.path) {
+                let mut parser = Parser::new();
+                if parser.set_language(&file.adapter.language()).is_ok() {
+                    if let Some(tree) = parser.parse(&change.new_source, None) {
+                        file.original_source = change.new_source.clone();
+                        file.tree = tree;
+                    }
+                }
+            }
+        }
+
+        // Run convention checks against the post-change forest.
         let mut warnings = Vec::new();
         for (name, _, check_program) in &conventions {
-            match codegen::run_convention_check(&model.forest, check_program) {
+            match codegen::run_convention_check(&post_forest, check_program) {
                 Ok(violations) if !violations.is_empty() => {
                     warnings.push(format!("  {} — {} violation(s):", name, violations.len()));
                     for v in &violations {
