@@ -1248,4 +1248,58 @@ mod tests {
         assert!(!errors.is_empty(), "should detect parse error");
         assert!(errors[0].contains("broken.py"));
     }
+
+    #[test]
+    fn structural_check_removed_function() {
+        // Forest has two files: one defines `compute`, one calls it.
+        let forest = make_forest(vec![
+            ("lib.py", "def compute():\n    pass\n"),
+            ("main.py", "compute()\n"),
+        ]);
+
+        // Change removes the definition of `compute` entirely.
+        let changes = vec![FileChange {
+            path: PathBuf::from("lib.py"),
+            original: b"def compute():\n    pass\n".to_vec(),
+            new_source: b"# compute was removed\n".to_vec(),
+        }];
+
+        let warnings = structural_checks(&forest, &changes);
+        assert!(!warnings.is_empty(), "should detect removed symbol still referenced: {warnings:?}");
+        assert!(
+            warnings.iter().any(|w| w.contains("compute")),
+            "warning should mention `compute`: {warnings:?}"
+        );
+        assert!(
+            warnings.iter().any(|w| w.contains("main.py")),
+            "warning should mention the call site file: {warnings:?}"
+        );
+    }
+
+    #[test]
+    fn structural_check_renamed_function_missing_call_update() {
+        // Forest has two files: one defines `foo`, one calls `foo`.
+        let forest = make_forest(vec![
+            ("defs.py", "def foo():\n    pass\n"),
+            ("caller.py", "foo()\n"),
+        ]);
+
+        // Change renames the definition from `foo` to `bar` but leaves the call site unchanged.
+        let changes = vec![FileChange {
+            path: PathBuf::from("defs.py"),
+            original: b"def foo():\n    pass\n".to_vec(),
+            new_source: b"def bar():\n    pass\n".to_vec(),
+        }];
+
+        let warnings = structural_checks(&forest, &changes);
+        assert!(!warnings.is_empty(), "should detect that `foo` was removed but still called: {warnings:?}");
+        assert!(
+            warnings.iter().any(|w| w.contains("foo")),
+            "warning should mention `foo`: {warnings:?}"
+        );
+        assert!(
+            warnings.iter().any(|w| w.contains("caller.py")),
+            "warning should mention the caller file: {warnings:?}"
+        );
+    }
 }

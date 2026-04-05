@@ -1302,9 +1302,11 @@ impl PolyRefactorServer {
 
         // Pre-flight validation.
         if params.validate {
-            let errors = codegen::validate_changes(&changes);
+            let mut all_warnings: Vec<String> = codegen::validate_changes(&changes);
+            all_warnings.extend(codegen::structural_checks(&forest, &changes));
+            let errors = all_warnings;
             if !errors.is_empty() {
-                let mut output = "WARNING: parse errors detected after transformation:\n".to_string();
+                let mut output = "WARNING: pre-flight checks detected issues after transformation:\n".to_string();
                 for err in &errors {
                     output.push_str(&format!("  - {err}\n"));
                 }
