@@ -106,10 +106,9 @@ func (s *SawmillServer) Serve(ctx context.Context) error {
 func (s *SawmillServer) registerTools(srv *server.MCPServer) {
 	// parse
 	srv.AddTool(mcpgo.NewTool("parse",
-		mcpgo.WithDescription("Parse a source tree. Must be called before any other tool. Returns a summary of the parsed codebase."),
+		mcpgo.WithDescription("Parse a source tree. When connected via the daemon, the working directory is used automatically and path can be omitted. Returns a summary of the parsed codebase."),
 		mcpgo.WithString("path",
-			mcpgo.Required(),
-			mcpgo.Description("Root directory or single file to parse"),
+			mcpgo.Description("Root directory or single file to parse (default: daemon working directory)"),
 		),
 	), s.handleParse)
 

@@ -67,33 +67,37 @@ func (s *SawmillServer) requireModel() (*model.CodebaseModel, error) {
 // ---- parse ----------------------------------------------------------------
 
 func (s *SawmillServer) handleParse(_ context.Context, req mcpgo.CallToolRequest) (*mcpgo.CallToolResult, error) {
-	path, err := req.RequireString("path")
-	if err != nil {
-		return toolErr(err)
-	}
+	path := optString(req, "path")
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	// Close any existing model.
-	if s.model != nil {
-		_ = s.model.Close()
-		s.model = nil
-	}
-	s.pending = nil
-	s.lastBackups = nil
+	if path == "" && s.model != nil {
+		// No path and model already loaded (e.g. by daemon handshake) — just
+		// sync and return the summary.
+		_ = s.model.Sync()
+	} else {
+		// Load a new model (or re-load if path changed).
+		if path == "" {
+			return toolErr(fmt.Errorf("path is required when no model is pre-loaded"))
+		}
+		if s.model != nil {
+			_ = s.model.Close()
+		}
+		s.pending = nil
+		s.lastBackups = nil
 
-	m, err := model.Load(path)
-	if err != nil {
-		return toolErr(fmt.Errorf("parsing %q: %w", path, err))
+		m, err := model.Load(path)
+		if err != nil {
+			return toolErr(fmt.Errorf("parsing %q: %w", path, err))
+		}
+		s.model = m
 	}
-
-	s.model = m
 
 	// Build summary.
-	summary := m.SummaryByLanguage()
+	summary := s.model.SummaryByLanguage()
 	var sb strings.Builder
-	fmt.Fprintf(&sb, "Parsed %d file(s) in %s\n", m.FileCount(), m.Root)
+	fmt.Fprintf(&sb, "Parsed %d file(s) in %s\n", s.model.FileCount(), s.model.Root)
 	for lang, count := range summary {
 		fmt.Fprintf(&sb, "  %s: %d\n", lang, count)
 	}

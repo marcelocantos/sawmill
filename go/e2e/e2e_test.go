@@ -370,3 +370,40 @@ func TestE2EMultipleSessionsSameProject(t *testing.T) {
 		t.Errorf("session 2 parse failed: %s", t2)
 	}
 }
+
+// TestE2EImplicitParse verifies that tools work without an explicit parse call
+// when the daemon has pre-loaded the model via the handshake.
+func TestE2EImplicitParse(t *testing.T) {
+	projectDir := t.TempDir()
+	os.WriteFile(filepath.Join(projectDir, "lib.py"), []byte("def greet():\n    pass\n"), 0o644)
+
+	_, socketPath := startDaemon(t)
+	c := dialMCP(t, socketPath, projectDir)
+
+	// Initialize — but do NOT call parse.
+	c.call("initialize", map[string]any{
+		"protocolVersion": "2024-11-05",
+		"capabilities":    map[string]any{},
+		"clientInfo":      map[string]any{"name": "e2e-test", "version": "1.0"},
+	})
+
+	// Query should work immediately — daemon already loaded the model.
+	queryResp := c.call("tools/call", map[string]any{
+		"name":      "query",
+		"arguments": map[string]any{"kind": "function", "name": "greet"},
+	})
+	queryText := c.resultText(queryResp)
+	if !strings.Contains(queryText, "greet") {
+		t.Errorf("query should find greet without explicit parse: %s", queryText)
+	}
+
+	// parse with no path should also work — returns summary of pre-loaded model.
+	parseResp := c.call("tools/call", map[string]any{
+		"name":      "parse",
+		"arguments": map[string]any{},
+	})
+	parseText := c.resultText(parseResp)
+	if !strings.Contains(parseText, "python") {
+		t.Errorf("parse with no path should return pre-loaded summary: %s", parseText)
+	}
+}
