@@ -40,10 +40,6 @@ jobs:
         run: cp ../agents-guide.md mcp/agents-guide.md
 
       - name: Build
-        env:
-          CGO_ENABLED: "0"
-          GOOS: ${{ matrix.goos }}
-          GOARCH: ${{ matrix.goarch }}
         run: |
           VERSION="${GITHUB_REF_NAME#v}"
           go build -ldflags="-s -w -X main.version=${VERSION}" -o sawmill ./cmd/sawmill
