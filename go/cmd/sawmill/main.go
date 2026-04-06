@@ -10,18 +10,17 @@
 package main
 
 import (
-	"context"
 	"flag"
 	"fmt"
 	"net"
 	"os"
-	"os/signal"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"syscall"
+	"time"
 
 	"github.com/marcelocantos/sawmill/daemon"
-	mcpserver "github.com/marcelocantos/sawmill/mcp"
 	"github.com/marcelocantos/sawmill/proxy"
 )
 
@@ -109,25 +108,40 @@ func runServe(args []string) {
 		}
 	}
 
-	if daemonRunning(sockPath) {
-		// Proxy mode: relay MCP JSON-RPC between stdio and the daemon socket.
-		if err := proxy.Run(sockPath, root); err != nil {
-			fmt.Fprintf(os.Stderr, "proxy error: %v\n", err)
+	if !daemonRunning(sockPath) {
+		// Auto-start the daemon in the background.
+		exe, err := os.Executable()
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "cannot find own executable: %v\n", err)
 			os.Exit(1)
 		}
-		return
+		cmd := exec.Command(exe, "daemon", "--socket", sockPath)
+		cmd.Stdout = nil
+		cmd.Stderr = nil
+		// Detach: the daemon runs independently of this process.
+		cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
+		if err := cmd.Start(); err != nil {
+			fmt.Fprintf(os.Stderr, "failed to start daemon: %v\n", err)
+			os.Exit(1)
+		}
+		// Release the child so it isn't reaped with us.
+		_ = cmd.Process.Release()
+
+		// Wait for the daemon to become ready (up to 3 seconds).
+		for range 30 {
+			time.Sleep(100 * time.Millisecond)
+			if daemonRunning(sockPath) {
+				break
+			}
+		}
+		if !daemonRunning(sockPath) {
+			fmt.Fprintf(os.Stderr, "daemon did not start within 3 seconds\n")
+			os.Exit(1)
+		}
 	}
 
-	// Fallback: no daemon running — serve in-process with a warning.
-	fmt.Fprintf(os.Stderr, "warning: sawmill daemon not running on %s; falling back to in-process mode\n", sockPath)
-	fmt.Fprintf(os.Stderr, "         Run 'sawmill daemon' to start the daemon for better performance.\n")
-
-	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
-	defer cancel()
-
-	s := mcpserver.NewServer()
-	if err := s.Serve(ctx); err != nil && err != context.Canceled {
-		fmt.Fprintf(os.Stderr, "serve error: %v\n", err)
+	if err := proxy.Run(sockPath, root); err != nil {
+		fmt.Fprintf(os.Stderr, "proxy error: %v\n", err)
 		os.Exit(1)
 	}
 }
