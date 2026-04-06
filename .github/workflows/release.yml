@@ -1,29 +1,87 @@
 name: Release
 
 on:
-  push:
-    tags:
-      - 'v*'
+  release:
+    types: [published]
 
 permissions:
   contents: write
 
 jobs:
-  release:
-    runs-on: ubuntu-latest
+  build:
+    strategy:
+      matrix:
+        include:
+          - os: macos-latest
+            goos: darwin
+            goarch: arm64
+          - os: ubuntu-latest
+            goos: linux
+            goarch: amd64
+          - os: ubuntu-24.04-arm
+            goos: linux
+            goarch: arm64
+    runs-on: ${{ matrix.os }}
+    defaults:
+      run:
+        working-directory: go
     steps:
       - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
       - uses: actions/setup-go@v5
         with:
           go-version-file: go/go.mod
+
       - name: Run tests
-        working-directory: go
         run: go test ./... -count=1
-      - uses: goreleaser/goreleaser-action@v6
-        with:
-          version: '~> v2'
-          args: release --clean
+
+      - name: Copy agents-guide for embed
+        run: cp ../agents-guide.md mcp/agents-guide.md
+
+      - name: Build
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          CGO_ENABLED: "0"
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          go build -ldflags="-s -w -X main.version=${VERSION}" -o sawmill ./cmd/sawmill
+
+      - name: Package
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          tar czf "sawmill-${VERSION}-${{ matrix.goos }}-${{ matrix.goarch }}.tar.gz" sawmill
+
+      - name: Upload
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          gh release upload "${{ github.event.release.tag_name }}" \
+            "sawmill-${VERSION}-${{ matrix.goos }}-${{ matrix.goarch }}.tar.gz" \
+            --clobber
+
+  homebrew:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: Justintime50/homebrew-releaser@v3
+        with:
+          homebrew_owner: marcelocantos
+          homebrew_tap: homebrew-tap
+          github_token: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+          formula_folder: Formula
+          version: ${{ github.event.release.tag_name }}
+          install: 'bin.install "sawmill" => "sawmill"'
+          target_darwin_arm64: true
+          target_linux_amd64: true
+          target_linux_arm64: true
+          test: 'system bin/"sawmill", "version"'
+          skip_checksum: true
+          update_readme_table: true
+          formula_includes: |
+            service do
+              run [opt_bin/"sawmill", "serve"]
+              keep_alive true
+              log_path var/"log/sawmill/sawmill.log"
+              error_log_path var/"log/sawmill/sawmill.log"
+            end

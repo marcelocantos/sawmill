@@ -1,5 +1,6 @@
 # Build
 /bin/
+/go/sawmill
 
 # IDE
 .vscode/

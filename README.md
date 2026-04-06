@@ -14,6 +14,8 @@ changes that preserve formatting, comments, and whitespace.
 
 - **Multi-language**: Python, TypeScript, Rust, Go, C/C++ via Tree-sitter
 - **MCP server**: Runs over stdio; works with any MCP-compatible AI agent
+- **Persistent daemon**: Background process shares parsed state across
+  sessions via Unix socket — auto-started on first use
 - **Structural transforms**: Rename, query, match/act with declarative
   actions or JavaScript transform functions
 - **Teach by example**: Point at existing code, name the variable parts,
@@ -22,10 +24,18 @@ changes that preserve formatting, comments, and whitespace.
   on every apply
 - **Code generation**: JavaScript programs with a rich `ctx` API for
   coordinated multi-file edits
-- **LSP bridge**: Type info, definitions, references, and diagnostics from
-  language servers
 - **Safe by default**: Diff preview before every write, backup/undo on
   every apply
+
+## Quick start
+
+Give your AI coding agent this prompt:
+
+```
+Install sawmill from https://github.com/marcelocantos/sawmill — brew
+install, start the service, register it as an MCP server, and restart
+the session. Follow the agents-guide.md in the repo.
+```
 
 ## Installation
 
@@ -37,30 +47,32 @@ changes that preserve formatting, comments, and whitespace.
 brew install marcelocantos/tap/sawmill
 ```
 
-**From source** (requires Rust 1.85+):
-
-```bash
-cargo install --git https://github.com/marcelocantos/sawmill
-```
-
-Or clone and build:
+**From source** (requires Go 1.26+):
 
 ```bash
 git clone https://github.com/marcelocantos/sawmill.git
-cd sawmill
-cargo build --release
-# binary is at target/release/sawmill
+cd sawmill/go
+go build -o sawmill ./cmd/sawmill
 ```
 
-### 2. Register the MCP server
+### 2. Start the background service
 
-Sawmill communicates over stdio. Register it with your MCP client so it
-starts automatically.
+```bash
+brew services start sawmill
+```
+
+This starts the sawmill daemon which manages parsed codebases and
+persists state across sessions. The daemon auto-starts on login.
+
+If you don't use Homebrew services, the daemon is auto-started by
+`sawmill` on first use — no manual step needed.
+
+### 3. Register the MCP server
 
 **Claude Code** (one command — installs globally for all projects):
 
 ```bash
-claude mcp add --scope user sawmill -- sawmill serve
+claude mcp add --scope user sawmill -- sawmill
 ```
 
 This writes the server entry to `~/.claude.json`. Restart Claude Code
@@ -73,36 +85,38 @@ to pick up the new server.
 {
   "mcpServers": {
     "sawmill": {
-      "command": "sawmill",
-      "args": ["serve"]
+      "command": "sawmill"
     }
   }
 }
 ```
 
-### 3. Verify
+### 4. Verify
 
-In a new session, call the `parse` tool on your project root. If
-sawmill is running, it will respond with a file/language summary.
+In a new session, call the `get_agent_prompt` tool. If it returns the
+agents guide, installation is complete.
 
-## CLI usage
+## Architecture
 
-```bash
-# Parse and summarise a codebase
-sawmill parse src/
-
-# Rename a symbol (prints diff)
-sawmill rename old_name new_name --path src/
-
-# Run as MCP server (used by MCP clients — you don't need to run this manually)
-sawmill serve
 ```
+AI Agent ──stdio──▶ sawmill ──socket──▶ sawmill serve (daemon)
+                                            │
+                                            ├─ CodebaseModel (per project)
+                                            │    ├─ Forest (Tree-sitter CSTs)
+                                            │    ├─ Store (SQLite)
+                                            │    └─ Watcher (fsnotify)
+                                            └─ MCP Server (20 tools)
+```
+
+- `sawmill` (no args) is the MCP stdio server that clients launch
+- `sawmill serve` is the background daemon, started via `brew services`
+- The daemon auto-starts if not running when `sawmill` connects
 
 ## MCP tools
 
 | Tool | Description |
 |---|---|
-| `parse` | Load and index the codebase (incremental on subsequent calls) |
+| `parse` | Load and index the codebase (auto-loaded from working directory) |
 | `rename` | Rename a symbol across files (diff preview) |
 | `query` | Search for structural patterns (functions, classes, calls, imports) |
 | `find_symbol` | Find all definitions of a symbol by name |
@@ -119,70 +133,24 @@ sawmill serve
 | `check_conventions` | Scan for convention violations |
 | `list_recipes` | List all taught recipes |
 | `list_conventions` | List all taught conventions |
-| `get_agent_prompt` | Generate a rich system prompt with capabilities, recipes, and conventions |
-| `hover` | Get type info at a position (via LSP) |
-| `definition` | Go to definition (via LSP) |
-| `lsp_references` | Find all references (via LSP) |
-| `diagnostics` | Get compile errors/warnings (via LSP) |
+| `get_agent_prompt` | Return the agent guide with all tool documentation |
 | `apply` | Write pending changes to disk (with backup) |
 | `undo` | Revert the last apply from backups |
 
 Every transform tool returns a diff preview. Call `apply` to write
 changes. Call `undo` to revert.
 
-## How it works
-
-```
-AI Agent ──MCP──▶ Sawmill Server
-                    │
-                    ├─ Parsing Layer (Tree-sitter)
-                    ├─ Forest (immutable parsed files)
-                    ├─ Language Adapters (query dispatch)
-                    ├─ Transform Engine
-                    │    ├─ Named Operations (rename, extract)
-                    │    └─ Match/Act Engine
-                    ├─ Rewrite Engine (range-based patching)
-                    └─ Output (diffs, patches, in-place writes)
-```
-
-1. **Parse** source files into Tree-sitter CSTs, one per file
-2. **Match** nodes using abstract kind queries or raw Tree-sitter queries
-3. **Transform** via declarative actions or JavaScript functions
-4. **Rewrite** by copying unchanged regions verbatim, regenerating only
-   modified portions
-5. **Preview** as a unified diff; apply only on confirmation
-
 ## Supported languages
 
-| Language | Parsing | Formatting | LSP |
-|---|---|---|---|
-| Python | Yes | autopep8 | pylsp |
-| TypeScript | Yes | — | — |
-| Rust | Yes | rustfmt | rust-analyzer |
-| Go | Yes | gofmt | gopls |
-| C/C++ | Yes | clang-format | clangd |
+| Language | Parsing | Formatting |
+|---|---|---|
+| Python | Yes | autopep8 |
+| TypeScript | Yes | — |
+| Rust | Yes | rustfmt |
+| Go | Yes | gofmt |
+| C/C++ | Yes | clang-format |
 
 ## For AI agents
-
-### Installing sawmill (agent instructions)
-
-If a user asks you to install sawmill, follow these steps:
-
-1. **Install the binary.** Run `brew install marcelocantos/tap/sawmill`.
-   If Homebrew is not available, use
-   `cargo install --git https://github.com/marcelocantos/sawmill`.
-
-2. **Register the MCP server.** For Claude Code, run:
-   ```bash
-   claude mcp add --scope user sawmill -- sawmill serve
-   ```
-   For other MCP clients, add the JSON entry shown in the Installation
-   section above to the client's MCP configuration.
-
-3. **Tell the user** they need to restart their agent session (or start
-   a new one) for the MCP server to become available.
-
-### Using sawmill
 
 See [`agents-guide.md`](agents-guide.md) for a full reference on
 sawmill's tools, workflows, and gotchas. You can also run:
@@ -193,8 +161,8 @@ sawmill --help-agent
 
 ## Design
 
-See [`docs/design.md`](docs/design.md) for the full architecture and
-rationale. See [`docs/frontier.md`](docs/frontier.md) for the roadmap.
+See [`docs/design.md`](docs/design.md) for the architecture and
+rationale.
 
 ## License
 

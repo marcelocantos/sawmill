@@ -15,22 +15,31 @@ Supported languages: Python, TypeScript, Rust, Go, C/C++.
 
 ## Installation
 
-Install the binary, then register the MCP server.
+Installation is a **multi-step process**. It is not complete until all
+steps succeed — installing the binary alone is not enough.
 
-**Step 1 — Install:**
+**Step 1 — Install the binary:**
 
 ```bash
 brew install marcelocantos/tap/sawmill
 ```
 
-If Homebrew is not available: `cargo install --git https://github.com/marcelocantos/sawmill`
+**Step 2 — Start the background service:**
 
-**Step 2 — Register the MCP server:**
+```bash
+brew services start sawmill
+```
+
+This starts the sawmill daemon which manages parsed codebases and
+persists state across sessions. The daemon starts automatically on
+login.
+
+**Step 3 — Register as an MCP server:**
 
 For Claude Code (global install — available in all projects):
 
 ```bash
-claude mcp add --scope user sawmill -- sawmill serve
+claude mcp add --scope user sawmill -- sawmill
 ```
 
 For other MCP clients, add to the client's MCP configuration
@@ -40,15 +49,18 @@ For other MCP clients, add to the client's MCP configuration
 {
   "mcpServers": {
     "sawmill": {
-      "command": "sawmill",
-      "args": ["serve"]
+      "command": "sawmill"
     }
   }
 }
 ```
 
-**Step 3:** Restart the agent session. MCP servers are loaded at
+**Step 4 — Restart the agent session.** MCP servers are loaded at
 session start — sawmill won't be available until the next session.
+
+**Verification:** After restarting, call the `get_agent_prompt` tool to
+confirm end-to-end integration. If it returns this guide, installation
+is complete.
 
 ## Recommended Workflow
 
