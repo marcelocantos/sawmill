@@ -10,6 +10,7 @@ permissions:
 jobs:
   build:
     strategy:
+      fail-fast: false
       matrix:
         include:
           - os: macos-latest
@@ -30,6 +31,7 @@ jobs:
       - uses: actions/setup-go@v5
         with:
           go-version-file: go/go.mod
+          cache-dependency-path: go/go.sum
 
       - name: Run tests
         run: go test ./... -count=1
