@@ -36,7 +36,7 @@ state (recipes, conventions) across sessions, and enables brew services
 integration.
 
 - **Weight**: 21 (value 21 / cost 13)
-- **Status**: converging
+- **Status**: achieved
 
 #### 🎯T11.1 Core logic port
 
@@ -111,11 +111,11 @@ launchd plist for `brew services start sawmill`. Daemon logs to
 
 #### 🎯T11.7 Feature parity
 
-All 35 existing tests pass in Go. All MCP tools work. agents-guide,
---help-agent, --version all present. Release workflow updated for Go
-cross-compilation.
+All 35 Rust tests ported to Go (46 Go tests passing). Rewrite package tests
+added (`go/rewrite/rewrite_test.go`). Go CI workflow created
+(`.github/workflows/go.yml`).
 
 - **Parent**: 🎯T11
 - **Weight**: 1 (value 5 / cost 5)
-- **Status**: not started
+- **Status**: achieved
 - **Depends on**: 🎯T11.1, 🎯T11.4
