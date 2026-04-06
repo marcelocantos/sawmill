@@ -91,6 +91,16 @@ func (b *baseAdapter) ResolveImportPath(_, _, _ string) string { return "" }
 // BuildImportPath returns "" (unknown resolution).
 func (b *baseAdapter) BuildImportPath(_, _, _ string) string { return "" }
 
+// StructLiteralQuery returns an empty string (no struct literal query).
+func (b *baseAdapter) StructLiteralQuery() string { return "" }
+
+// FactoryFuncNames returns nil (no factory patterns).
+func (b *baseAdapter) FactoryFuncNames(_ string) []string { return nil }
+
+// GenFieldInitializer returns an empty string.
+func (b *baseAdapter) GenFieldInitializer(_, _ string) string { return "" }
+
+
 // leadingWhitespace returns the leading whitespace characters of s.
 func leadingWhitespace(s string) string {
 	for i, r := range s {

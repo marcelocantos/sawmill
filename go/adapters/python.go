@@ -122,3 +122,11 @@ func (a *PythonAdapter) BuildImportPath(targetFile, _, root string) string {
 	// Convert path separators to dots.
 	return strings.ReplaceAll(rel, string(filepath.Separator), ".")
 }
+
+func (a *PythonAdapter) FactoryFuncNames(typeName string) []string {
+	return []string{"__init__", "create_" + strings.ToLower(typeName)}
+}
+
+func (a *PythonAdapter) GenFieldInitializer(fieldName, value string) string {
+	return fmt.Sprintf("%s=%s", fieldName, value)
+}

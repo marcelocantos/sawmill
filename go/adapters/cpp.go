@@ -116,3 +116,11 @@ func (a *CppAdapter) BuildImportPath(targetFile, importingFile, _ string) string
 	// Use forward slashes in includes, with quotes to match the captured node.
 	return `"` + filepath.ToSlash(rel) + `"`
 }
+
+func (a *CppAdapter) FactoryFuncNames(typeName string) []string {
+	return []string{typeName} // C++ constructor has same name as class
+}
+
+func (a *CppAdapter) GenFieldInitializer(_, value string) string {
+	return value // C++ uses positional arguments in constructors
+}

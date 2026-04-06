@@ -144,3 +144,15 @@ func (a *RustAdapter) BuildImportPath(targetFile, importingFile, _ string) strin
 
 	return name
 }
+
+func (a *RustAdapter) StructLiteralQuery() string {
+	return "(struct_expression name: (type_identifier) @name) @literal"
+}
+
+func (a *RustAdapter) FactoryFuncNames(_ string) []string {
+	return []string{"new"}
+}
+
+func (a *RustAdapter) GenFieldInitializer(fieldName, value string) string {
+	return fmt.Sprintf("%s: %s", fieldName, value)
+}

@@ -142,3 +142,11 @@ func (a *TypeScriptAdapter) BuildImportPath(targetFile, importingFile, _ string)
 	// source includes the surrounding quotes.
 	return `"` + rel + `"`
 }
+
+func (a *TypeScriptAdapter) FactoryFuncNames(typeName string) []string {
+	return []string{"constructor", "create" + typeName}
+}
+
+func (a *TypeScriptAdapter) GenFieldInitializer(fieldName, value string) string {
+	return fmt.Sprintf("%s: %s", fieldName, value)
+}

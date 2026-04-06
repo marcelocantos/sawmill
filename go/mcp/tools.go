@@ -1993,3 +1993,79 @@ func formatDiagnostics(diags []lspclient.Diagnostic) string {
 	}
 	return sb.String()
 }
+
+// ---- add_field --------------------------------------------------------------
+
+func (h *Handler) handleAddField(args map[string]any) (string, bool, error) {
+	typeName, err := requireString(args, "type_name")
+	if err != nil {
+		return err.Error(), true, nil
+	}
+	fieldName, err := requireString(args, "field_name")
+	if err != nil {
+		return err.Error(), true, nil
+	}
+	fieldType, err := requireString(args, "field_type")
+	if err != nil {
+		return err.Error(), true, nil
+	}
+	defaultValue, err := requireString(args, "default_value")
+	if err != nil {
+		return err.Error(), true, nil
+	}
+	pathFilter := optString(args, "path")
+	format := optBool(args, "format")
+
+	h.mu.Lock()
+	defer h.mu.Unlock()
+
+	m, err := h.requireModel()
+	if err != nil {
+		return err.Error(), true, nil
+	}
+
+	var changes []forest.FileChange
+	var diffs []string
+
+	for _, file := range m.Forest.Files {
+		if pathFilter != "" && !strings.Contains(file.Path, pathFilter) {
+			continue
+		}
+
+		edits := collectAddFieldEdits(file, typeName, fieldName, fieldType, defaultValue)
+		if len(edits) == 0 {
+			continue
+		}
+
+		newSource := rewrite.ApplyEdits(file.OriginalSource, edits)
+		if string(newSource) == string(file.OriginalSource) {
+			continue
+		}
+
+		if format {
+			newSource, _ = rewrite.FormatSource(file.Adapter, newSource)
+		}
+
+		diff := rewrite.UnifiedDiff(file.Path, file.OriginalSource, newSource)
+		diffs = append(diffs, diff)
+		changes = append(changes, forest.FileChange{
+			Path:      file.Path,
+			Original:  file.OriginalSource,
+			NewSource: newSource,
+		})
+	}
+
+	if len(changes) == 0 {
+		return fmt.Sprintf("Type %q not found.", typeName), false, nil
+	}
+
+	h.pending = &PendingChanges{Changes: changes, Diffs: diffs}
+
+	var sb strings.Builder
+	fmt.Fprintf(&sb, "Added field %q to %q in %d file(s). Call apply to write.\n\n", fieldName, typeName, len(changes))
+	for _, d := range diffs {
+		sb.WriteString(d)
+		sb.WriteString("\n")
+	}
+	return sb.String(), false, nil
+}

@@ -176,7 +176,10 @@ definition, hover on return types).
 See `docs/agent-usage-archaeology.md` §4.3 for full implementation design.
 
 - **Weight**: 8 (value 21 / cost 8)
-- **Status**: designed
+- **Status**: achieved — `add_field` tool implemented for Go, Python,
+  Rust, TypeScript, and C++. Adapter interface extended with
+  `StructLiteralQuery()`, `FactoryFuncNames()`, and
+  `GenFieldInitializer()`. 6 tests passing.
 - **Depends on**: 🎯T13 (for type-aware mode; syntactic mode works without)
 - **Gates**: 🎯T16
 
@@ -235,6 +238,7 @@ See `docs/agent-usage-archaeology.md` §4.7 for full implementation design.
 - **Weight**: 5 (value 13 / cost 5)
 - **Status**: designed
 - **Depends on**: 🎯T13 (for interface checks; basic invariants work without)
+
 
 ## Future
 

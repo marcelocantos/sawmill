@@ -98,6 +98,22 @@ type LanguageAdapter interface {
 	// root is the project root. Returns "" if the adapter cannot build
 	// a suitable import path.
 	BuildImportPath(targetFile, importingFile, root string) string
+
+	// StructLiteralQuery is a Tree-sitter query for struct/class literal
+	// constructions (e.g. Go composite literals, Rust struct expressions).
+	// Must capture @name for the type name and @literal for the whole
+	// expression. Returns empty string if the language has no struct literal
+	// syntax.
+	StructLiteralQuery() string
+
+	// FactoryFuncNames returns the conventional factory function names for
+	// the given type name (e.g. "NewFoo" for Go, "__init__" for Python).
+	FactoryFuncNames(typeName string) []string
+
+	// GenFieldInitializer generates a field initializer for use inside a
+	// struct literal or constructor call (e.g. "Name: value" for Go,
+	// "name: value" for Rust). Returns empty string if not applicable.
+	GenFieldInitializer(fieldName, value string) string
 }
 
 // ForExtension returns the LanguageAdapter for the given file extension

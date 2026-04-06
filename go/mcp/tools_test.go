@@ -1241,3 +1241,219 @@ func TestHoverUnknownExtension(t *testing.T) {
 		t.Errorf("expected 'No language adapter' message, got: %s", text)
 	}
 }
+
+// --- add_field tests ---
+
+func TestAddFieldGoStruct(t *testing.T) {
+	h := testHandler(t, map[string]string{
+		"main.go": `package main
+
+type Foo struct {
+	Name string
+}
+
+func NewFoo(name string) Foo {
+	return Foo{Name: name}
+}
+
+var f = NewFoo("hello")
+`,
+	})
+
+	text, isErr, err := h.handleAddField(map[string]any{
+		"type_name":     "Foo",
+		"field_name":    "Age",
+		"field_type":    "int",
+		"default_value": "0",
+	})
+	if err != nil {
+		t.Fatalf("handleAddField error: %v", err)
+	}
+	if isErr {
+		t.Fatalf("handleAddField returned tool error: %s", text)
+	}
+
+	// Should report success.
+	if !strings.Contains(text, "Added field") {
+		t.Errorf("expected 'Added field' in output, got: %s", text)
+	}
+
+	// Field should be added to struct.
+	if !strings.Contains(text, "Age int") || !strings.Contains(text, "+") {
+		t.Errorf("expected field addition in diff, got: %s", text)
+	}
+
+	// Factory function should get new parameter.
+	if !strings.Contains(text, "Age") {
+		t.Errorf("expected 'Age' parameter in diff, got: %s", text)
+	}
+
+	// Caller should get new argument.
+	if !strings.Contains(text, "0") {
+		t.Errorf("expected default value '0' in diff, got: %s", text)
+	}
+}
+
+func TestAddFieldGoStructLiteral(t *testing.T) {
+	h := testHandler(t, map[string]string{
+		"main.go": `package main
+
+type Point struct {
+	X int
+}
+
+var p = Point{X: 1}
+`,
+	})
+
+	text, isErr, err := h.handleAddField(map[string]any{
+		"type_name":     "Point",
+		"field_name":    "Y",
+		"field_type":    "int",
+		"default_value": "0",
+	})
+	if err != nil {
+		t.Fatalf("handleAddField error: %v", err)
+	}
+	if isErr {
+		t.Fatalf("handleAddField returned tool error: %s", text)
+	}
+
+	// Struct literal should get the new field initializer.
+	if !strings.Contains(text, "Y: 0") {
+		t.Errorf("expected 'Y: 0' field initializer in diff, got: %s", text)
+	}
+}
+
+func TestAddFieldTypeNotFound(t *testing.T) {
+	h := testHandler(t, map[string]string{
+		"main.go": `package main
+
+type Foo struct {
+	Name string
+}
+`,
+	})
+
+	text, _, err := h.handleAddField(map[string]any{
+		"type_name":     "Bar",
+		"field_name":    "Age",
+		"field_type":    "int",
+		"default_value": "0",
+	})
+	if err != nil {
+		t.Fatalf("handleAddField error: %v", err)
+	}
+
+	if !strings.Contains(text, "not found") {
+		t.Errorf("expected 'not found' message, got: %s", text)
+	}
+}
+
+func TestAddFieldNoConstructionSites(t *testing.T) {
+	h := testHandler(t, map[string]string{
+		"main.go": `package main
+
+type Config struct {
+	Debug bool
+}
+`,
+	})
+
+	text, isErr, err := h.handleAddField(map[string]any{
+		"type_name":     "Config",
+		"field_name":    "Verbose",
+		"field_type":    "bool",
+		"default_value": "false",
+	})
+	if err != nil {
+		t.Fatalf("handleAddField error: %v", err)
+	}
+	if isErr {
+		t.Fatalf("handleAddField returned tool error: %s", text)
+	}
+
+	// Should still add the field to the struct.
+	if !strings.Contains(text, "Added field") {
+		t.Errorf("expected 'Added field' in output, got: %s", text)
+	}
+	if !strings.Contains(text, "Verbose bool") {
+		t.Errorf("expected 'Verbose bool' in diff, got: %s", text)
+	}
+}
+
+func TestAddFieldMultipleFiles(t *testing.T) {
+	h := testHandler(t, map[string]string{
+		"types.go": `package main
+
+type Foo struct {
+	Name string
+}
+
+func NewFoo(name string) Foo {
+	return Foo{Name: name}
+}
+`,
+		"use.go": `package main
+
+var f = NewFoo("hello")
+`,
+	})
+
+	text, isErr, err := h.handleAddField(map[string]any{
+		"type_name":     "Foo",
+		"field_name":    "Age",
+		"field_type":    "int",
+		"default_value": "0",
+	})
+	if err != nil {
+		t.Fatalf("handleAddField error: %v", err)
+	}
+	if isErr {
+		t.Fatalf("handleAddField returned tool error: %s", text)
+	}
+
+	// Should affect multiple files.
+	if !strings.Contains(text, "2 file(s)") {
+		t.Errorf("expected '2 file(s)' in output, got: %s", text)
+	}
+}
+
+func TestAddFieldPythonClass(t *testing.T) {
+	h := testHandler(t, map[string]string{
+		"main.py": `class Foo:
+    def __init__(self, name):
+        self.name = name
+
+f = Foo("hello")
+`,
+	})
+
+	text, isErr, err := h.handleAddField(map[string]any{
+		"type_name":     "Foo",
+		"field_name":    "age",
+		"field_type":    "int",
+		"default_value": "0",
+	})
+	if err != nil {
+		t.Fatalf("handleAddField error: %v", err)
+	}
+	if isErr {
+		t.Fatalf("handleAddField returned tool error: %s", text)
+	}
+
+	// Python class should get the field.
+	if !strings.Contains(text, "Added field") {
+		t.Errorf("expected 'Added field' in output, got: %s", text)
+	}
+
+	// The __init__ method should get new parameter.
+	if !strings.Contains(text, "age") {
+		t.Errorf("expected 'age' in diff, got: %s", text)
+	}
+
+	// The caller Foo("hello") should get new argument.
+	if !strings.Contains(text, "0") {
+		t.Errorf("expected '0' in diff, got: %s", text)
+	}
+}

@@ -142,3 +142,15 @@ func (a *GoAdapter) BuildImportPath(targetFile, _, root string) string {
 
 	return `"` + modPath + "/" + filepath.ToSlash(rel) + `"`
 }
+
+func (a *GoAdapter) StructLiteralQuery() string {
+	return "(composite_literal type: (type_identifier) @name) @literal"
+}
+
+func (a *GoAdapter) FactoryFuncNames(typeName string) []string {
+	return []string{"New" + typeName}
+}
+
+func (a *GoAdapter) GenFieldInitializer(fieldName, value string) string {
+	return fmt.Sprintf("%s: %s", fieldName, value)
+}

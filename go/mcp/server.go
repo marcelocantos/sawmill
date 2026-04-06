@@ -119,6 +119,8 @@ func (h *Handler) Call(name string, args map[string]any) (string, bool, error) {
 		return h.handleLspReferences(args)
 	case "diagnostics":
 		return h.handleDiagnostics(args)
+	case "add_field":
+		return h.handleAddField(args)
 	default:
 		return "", false, fmt.Errorf("unknown tool: %s", name)
 	}
@@ -427,6 +429,33 @@ func Definitions() []mcpgo.Tool {
 			),
 			mcpgo.WithBoolean("format",
 				mcpgo.Description("Run the language formatter after modifying"),
+			),
+		),
+
+		// add_field
+		mcpgo.NewTool("add_field",
+			mcpgo.WithDescription("Add a field to a struct/class and propagate to construction sites: factory function signatures, struct literals, and factory callers."),
+			mcpgo.WithString("type_name",
+				mcpgo.Required(),
+				mcpgo.Description("Name of the struct/class/type to modify"),
+			),
+			mcpgo.WithString("field_name",
+				mcpgo.Required(),
+				mcpgo.Description("Name of the new field"),
+			),
+			mcpgo.WithString("field_type",
+				mcpgo.Required(),
+				mcpgo.Description("Type of the new field"),
+			),
+			mcpgo.WithString("default_value",
+				mcpgo.Required(),
+				mcpgo.Description("Expression to use at construction sites"),
+			),
+			mcpgo.WithString("path",
+				mcpgo.Description("Restrict to files matching this path substring"),
+			),
+			mcpgo.WithBoolean("format",
+				mcpgo.Description("Run the language formatter after changes"),
 			),
 		),
 
