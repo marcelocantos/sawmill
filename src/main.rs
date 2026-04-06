@@ -24,7 +24,7 @@ use clap::{CommandFactory, Parser, Subcommand};
 use std::path::PathBuf;
 
 #[derive(Parser)]
-#[command(name = "canopy", version, about = "Codebase operations platform")]
+#[command(name = "sawmill", version, about = "Codebase operations platform")]
 struct Cli {
     /// Print help text followed by the agent guide.
     #[arg(long)]

@@ -1,13 +1,13 @@
-# Canopy Design Document
+# Sawmill Design Document
 
-**Project Name:** Canopy
+**Project Name:** Sawmill
 **Version:** 0.5
 **Date:** April 2026
 **Status:** Revised — two-tier transform model, orthogonal match/act
 
 ## 1. Overview
 
-Canopy is an MCP server that models a codebase as a forest of
+Sawmill is an MCP server that models a codebase as a forest of
 Concrete Syntax Trees (CSTs) and exposes safe, programmable,
 multi-language structural transformations to AI coding agents. It
 allows agents to request refactoring operations without repeatedly
@@ -77,7 +77,7 @@ formatting, comments, whitespace, and language-specific constructs
 ## 3. High-Level Architecture
 
 ```
-AI Agent ──MCP──▶ Canopy Server
+AI Agent ──MCP──▶ Sawmill Server
                     │
                     ├─ Parsing Layer (Tree-sitter)
                     │    └─ Per-language grammars
@@ -522,23 +522,23 @@ For testing and direct invocation:
 
 ```sh
 # Parse and show forest summary
-canopy parse ./src
+sawmill parse ./src
 
 # Find all functions named "process"
-canopy find-symbol process --kind function
+sawmill find-symbol process --kind function
 
 # Rename across codebase (dry-run by default)
-canopy rename old_name new_name --path ./src
+sawmill rename old_name new_name --path ./src
 
 # Structural match + declarative action
-canopy transform \
+sawmill transform \
   --match 'kind=call,name=old_api' \
   --action replace_name \
   --code new_api \
   --path ./src
 
 # Raw query + declarative action
-canopy transform \
+sawmill transform \
   --raw-query '(call_expression function: (identifier) @fn (#eq? @fn "old_api"))' \
   --capture fn \
   --action replace \
@@ -546,13 +546,13 @@ canopy transform \
   --path ./src
 
 # Match + JS function
-canopy transform \
+sawmill transform \
   --match 'kind=function' \
   --transform-fn '(node) => node.name.startsWith("_") ? node.remove() : node' \
   --path ./src
 
 # Apply changes (writes to disk)
-canopy apply --path ./src
+sawmill apply --path ./src
 ```
 
 ## 5. Technology Choices

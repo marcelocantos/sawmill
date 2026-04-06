@@ -27,7 +27,7 @@ struct PendingChanges {
     description: String,
 }
 
-pub struct CanopyServer {
+pub struct SawmillServer {
     tool_router: ToolRouter<Self>,
     pending: Mutex<Option<PendingChanges>>,
     /// Backup paths from the last apply, for undo.
@@ -374,7 +374,7 @@ fn default_position() -> String {
 // --- Tool implementations ---
 
 #[tool_router]
-impl CanopyServer {
+impl SawmillServer {
     #[tool(
         name = "parse",
         description = "Parse source files into the persistent codebase model. First call loads and indexes all files; subsequent calls sync changes. Returns a summary of files and languages."
@@ -1194,7 +1194,7 @@ impl CanopyServer {
 
     #[tool(
         name = "get_agent_prompt",
-        description = "Generate a rich system prompt describing Canopy's capabilities, including any taught recipes and conventions. Call after `parse` to include project-specific context. Without `parse`, returns the static guide only."
+        description = "Generate a rich system prompt describing Sawmill's capabilities, including any taught recipes and conventions. Call after `parse` to include project-specific context. Without `parse`, returns the static guide only."
     )]
     fn get_agent_prompt(&self, Parameters(_params): Parameters<GetAgentPromptParams>) -> String {
         let mut prompt = AGENT_GUIDE.to_string();
@@ -1473,7 +1473,7 @@ impl CanopyServer {
 
     #[tool(
         name = "apply",
-        description = "Apply the pending changes from the last transform to disk. Requires confirm=true. Creates .canopy.bak backups for each changed file — use `undo` to revert. Checks conventions and warns on violations."
+        description = "Apply the pending changes from the last transform to disk. Requires confirm=true. Creates .sawmill.bak backups for each changed file — use `undo` to revert. Checks conventions and warns on violations."
     )]
     fn apply(&self, Parameters(params): Parameters<ApplyParams>) -> String {
         if !params.confirm {
@@ -1515,7 +1515,7 @@ impl CanopyServer {
 
     #[tool(
         name = "undo",
-        description = "Revert the last applied changes by restoring from .canopy.bak backup files."
+        description = "Revert the last applied changes by restoring from .sawmill.bak backup files."
     )]
     fn undo(&self, Parameters(_params): Parameters<UndoParams>) -> String {
         let backups = self.last_backups.lock().unwrap().take();
@@ -1532,14 +1532,14 @@ impl CanopyServer {
 }
 
 #[tool_handler]
-impl ServerHandler for CanopyServer {
+impl ServerHandler for SawmillServer {
     fn get_info(&self) -> ServerInfo {
         ServerInfo::new(ServerCapabilities::builder().enable_tools().build())
             .with_instructions(AGENT_GUIDE.to_string())
     }
 }
 
-impl CanopyServer {
+impl SawmillServer {
     pub fn new() -> Self {
         Self {
             tool_router: Self::tool_router(),
@@ -2024,7 +2024,7 @@ fn find_param_list(file: &ParsedFile, func_name: &str) -> anyhow::Result<Option<
 }
 
 pub async fn serve() -> anyhow::Result<()> {
-    let server = CanopyServer::new();
+    let server = SawmillServer::new();
     let service = server.serve(rmcp::transport::stdio()).await?;
     service.waiting().await?;
     Ok(())

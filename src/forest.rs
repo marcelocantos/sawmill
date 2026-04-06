@@ -53,8 +53,8 @@ impl FileChange {
 /// Apply a set of file changes atomically with backup.
 ///
 /// Strategy:
-/// 1. Write all new content to `.canopy.new` temp files
-/// 2. Back up all originals to `.canopy.bak`
+/// 1. Write all new content to `.sawmill.new` temp files
+/// 2. Back up all originals to `.sawmill.bak`
 /// 3. Rename `.new` files to their final paths
 ///
 /// If anything fails during step 3, the `.bak` files allow recovery.
@@ -65,7 +65,7 @@ pub fn apply_with_backup(changes: &[FileChange]) -> Result<Vec<PathBuf>> {
 
     // Step 1: Write new content to temp files.
     for change in changes {
-        let temp = change.path.with_extension("canopy.new");
+        let temp = change.path.with_extension("sawmill.new");
         std::fs::write(&temp, &change.new_source)
             .with_context(|| format!("writing temp {}", temp.display()))?;
         temp_paths.push(temp);
@@ -73,7 +73,7 @@ pub fn apply_with_backup(changes: &[FileChange]) -> Result<Vec<PathBuf>> {
 
     // Step 2: Back up originals.
     for change in changes {
-        let backup = change.path.with_extension("canopy.bak");
+        let backup = change.path.with_extension("sawmill.bak");
         if change.path.exists() {
             std::fs::copy(&change.path, &backup)
                 .with_context(|| format!("backing up {}", change.path.display()))?;
@@ -99,13 +99,13 @@ pub fn apply_with_backup(changes: &[FileChange]) -> Result<Vec<PathBuf>> {
     Ok(backup_paths)
 }
 
-/// Undo a previously applied change by restoring from `.canopy.bak` files.
+/// Undo a previously applied change by restoring from `.sawmill.bak` files.
 pub fn undo_from_backups(backup_paths: &[PathBuf]) -> Result<usize> {
     let mut restored = 0;
     for backup in backup_paths {
-        // Derive the original path by stripping the ASCII ".canopy.bak" suffix.
+        // Derive the original path by stripping the ASCII ".sawmill.bak" suffix.
         let backup_os = backup.as_os_str().as_encoded_bytes();
-        let suffix = b".canopy.bak";
+        let suffix = b".sawmill.bak";
         let original = if backup_os.ends_with(suffix) {
             // SAFETY: stripping an ASCII suffix from a valid OsStr preserves encoding.
             PathBuf::from(unsafe {
@@ -155,7 +155,7 @@ pub fn cleanup_backups(backup_paths: &[PathBuf]) {
         let new_path = PathBuf::from(
             backup
                 .to_string_lossy()
-                .replace(".canopy.bak", ".canopy.new"),
+                .replace(".sawmill.bak", ".sawmill.new"),
         );
         let _ = std::fs::remove_file(new_path);
     }

@@ -1,4 +1,4 @@
-# Canopy
+# Sawmill
 
 MCP server for AST-level multi-language code transformations. Built in Rust
 with Tree-sitter.
@@ -18,7 +18,7 @@ Rust 2024 edition. Requires rustc 1.85+.
 ```
 src/
   main.rs         — CLI entry point (clap: parse, rename, serve)
-  mcp.rs          — MCP server (CanopyServer, all tool definitions)
+  mcp.rs          — MCP server (SawmillServer, all tool definitions)
   forest.rs       — Forest/ParsedFile, apply_with_backup, undo
   model.rs        — CodebaseModel (persistent state, incremental parsing)
   store.rs        — SQLite store (files, symbols, recipes, conventions)

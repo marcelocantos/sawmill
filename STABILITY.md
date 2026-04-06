@@ -1,4 +1,4 @@
-# Canopy Stability
+# Sawmill Stability
 
 **Current version:** 0.3.0 (pre-1.0)
 
@@ -22,7 +22,7 @@ Each item is marked:
 
 ### 1. CLI (clap derive)
 
-#### Subcommand: `canopy parse`
+#### Subcommand: `sawmill parse`
 
 | Element | Type | Default | Status |
 |---|---|---|---|
@@ -30,7 +30,7 @@ Each item is marked:
 
 Parses files and displays a forest summary.
 
-#### Subcommand: `canopy rename`
+#### Subcommand: `sawmill rename`
 
 | Element | Type | Default | Status |
 |---|---|---|---|
@@ -40,7 +40,7 @@ Parses files and displays a forest summary.
 
 Renames a symbol and prints a unified diff.
 
-#### Subcommand: `canopy serve`
+#### Subcommand: `sawmill serve`
 
 No parameters. Runs the MCP server over stdio.
 
@@ -60,7 +60,7 @@ No parameters. Runs the MCP server over stdio.
 ### 2. MCP Tools
 
 All tools are defined in `src/mcp.rs` via `#[tool(...)]` annotations on
-`CanopyServer`.
+`SawmillServer`.
 
 #### `parse`
 
@@ -327,24 +327,24 @@ Apply pending changes to disk.
 |---|---|---|---|---|
 | `confirm` | bool | yes | -- | Stable |
 
-Creates `.canopy.bak` backups. Checks conventions and warns on
+Creates `.sawmill.bak` backups. Checks conventions and warns on
 violations.
 
 #### `undo`
 
-Revert the last applied changes from `.canopy.bak` backups. No
+Revert the last applied changes from `.sawmill.bak` backups. No
 parameters.
 
 ---
 
 ### 3. File Formats
 
-#### `.canopy/` directory
+#### `.sawmill/` directory
 
 | File | Purpose | Status |
 |---|---|---|
 | `store.db` | SQLite database (persistent state) | Needs review |
-| `*.canopy.bak` | Backup files created by `apply` | Needs review |
+| `*.sawmill.bak` | Backup files created by `apply` | Needs review |
 
 #### `store.db` schema
 
@@ -426,7 +426,7 @@ table; symbol kind vocabulary is not formalised).
    strings. A structured error schema (error codes, categories) would
    let agents handle failures programmatically.
 
-8. **Backup format.** The `.canopy.bak` sidecar approach is simple but
+8. **Backup format.** The `.sawmill.bak` sidecar approach is simple but
    has no multi-step history or atomicity guarantees. Review whether
    the undo model is sufficient for a 1.0 contract.
 

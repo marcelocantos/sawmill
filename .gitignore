@@ -16,8 +16,8 @@ Thumbs.db
 .env
 .env.*
 
-# Canopy
-.canopy/
-*.canopy.bak
-*.canopy.new
+# Sawmill
+.sawmill/
+*.sawmill.bak
+*.sawmill.new
 docs/convergence-report.md

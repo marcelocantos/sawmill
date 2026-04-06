@@ -57,9 +57,9 @@ jobs:
         run: |
           VERSION="${{ github.event.release.tag_name }}"
           VERSION_NUM="${VERSION#v}"
-          ARCHIVE="canopy-${VERSION_NUM}-${{ matrix.suffix }}.tar.gz"
+          ARCHIVE="sawmill-${VERSION_NUM}-${{ matrix.suffix }}.tar.gz"
           cd target/${{ matrix.target }}/release
-          tar czf "../../../${ARCHIVE}" canopy
+          tar czf "../../../${ARCHIVE}" sawmill
           cd ../../..
 
       - name: Upload to release
@@ -68,7 +68,7 @@ jobs:
         run: |
           VERSION="${{ github.event.release.tag_name }}"
           VERSION_NUM="${VERSION#v}"
-          ARCHIVE="canopy-${VERSION_NUM}-${{ matrix.suffix }}.tar.gz"
+          ARCHIVE="sawmill-${VERSION_NUM}-${{ matrix.suffix }}.tar.gz"
           gh release upload "$VERSION" "${ARCHIVE}"
 
   homebrew:
@@ -82,10 +82,10 @@ jobs:
           github_token: ${{ secrets.HOMEBREW_TAP_TOKEN }}
           formula_folder: Formula
           version: ${{ github.event.release.tag_name }}
-          install: 'bin.install "canopy" => "canopy"'
+          install: 'bin.install "sawmill" => "sawmill"'
           target_darwin_arm64: true
           target_linux_amd64: true
           target_linux_arm64: true
-          test: 'system bin/"canopy", "--version"'
+          test: 'system bin/"sawmill", "--version"'
           skip_checksum: true
           update_readme_table: true

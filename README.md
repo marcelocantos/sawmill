@@ -1,12 +1,12 @@
-# Canopy
+# Sawmill
 
-Canopy is an MCP server that models a codebase as a forest of Concrete
+Sawmill is an MCP server that models a codebase as a forest of Concrete
 Syntax Trees and exposes safe, programmable, multi-language structural
 transformations to AI coding agents.
 
 Agents request refactoring operations — renames, structural transforms,
 code generation — without repeatedly processing or regenerating large
-volumes of source code in their context windows. Canopy handles the
+volumes of source code in their context windows. Sawmill handles the
 mechanical rewriting deterministically, producing minimal, git-diff-friendly
 changes that preserve formatting, comments, and whitespace.
 
@@ -34,33 +34,33 @@ changes that preserve formatting, comments, and whitespace.
 **Homebrew** (macOS / Linux):
 
 ```bash
-brew install marcelocantos/tap/canopy
+brew install marcelocantos/tap/sawmill
 ```
 
 **From source** (requires Rust 1.85+):
 
 ```bash
-cargo install --git https://github.com/marcelocantos/canopy
+cargo install --git https://github.com/marcelocantos/sawmill
 ```
 
 Or clone and build:
 
 ```bash
-git clone https://github.com/marcelocantos/canopy.git
-cd canopy
+git clone https://github.com/marcelocantos/sawmill.git
+cd sawmill
 cargo build --release
-# binary is at target/release/canopy
+# binary is at target/release/sawmill
 ```
 
 ### 2. Register the MCP server
 
-Canopy communicates over stdio. Register it with your MCP client so it
+Sawmill communicates over stdio. Register it with your MCP client so it
 starts automatically.
 
 **Claude Code** (one command — installs globally for all projects):
 
 ```bash
-claude mcp add --scope user canopy -- canopy serve
+claude mcp add --scope user sawmill -- sawmill serve
 ```
 
 This writes the server entry to `~/.claude.json`. Restart Claude Code
@@ -72,8 +72,8 @@ to pick up the new server.
 ```json
 {
   "mcpServers": {
-    "canopy": {
-      "command": "canopy",
+    "sawmill": {
+      "command": "sawmill",
       "args": ["serve"]
     }
   }
@@ -83,19 +83,19 @@ to pick up the new server.
 ### 3. Verify
 
 In a new session, call the `parse` tool on your project root. If
-canopy is running, it will respond with a file/language summary.
+sawmill is running, it will respond with a file/language summary.
 
 ## CLI usage
 
 ```bash
 # Parse and summarise a codebase
-canopy parse src/
+sawmill parse src/
 
 # Rename a symbol (prints diff)
-canopy rename old_name new_name --path src/
+sawmill rename old_name new_name --path src/
 
 # Run as MCP server (used by MCP clients — you don't need to run this manually)
-canopy serve
+sawmill serve
 ```
 
 ## MCP tools
@@ -133,7 +133,7 @@ changes. Call `undo` to revert.
 ## How it works
 
 ```
-AI Agent ──MCP──▶ Canopy Server
+AI Agent ──MCP──▶ Sawmill Server
                     │
                     ├─ Parsing Layer (Tree-sitter)
                     ├─ Forest (immutable parsed files)
@@ -164,17 +164,17 @@ AI Agent ──MCP──▶ Canopy Server
 
 ## For AI agents
 
-### Installing canopy (agent instructions)
+### Installing sawmill (agent instructions)
 
-If a user asks you to install canopy, follow these steps:
+If a user asks you to install sawmill, follow these steps:
 
-1. **Install the binary.** Run `brew install marcelocantos/tap/canopy`.
+1. **Install the binary.** Run `brew install marcelocantos/tap/sawmill`.
    If Homebrew is not available, use
-   `cargo install --git https://github.com/marcelocantos/canopy`.
+   `cargo install --git https://github.com/marcelocantos/sawmill`.
 
 2. **Register the MCP server.** For Claude Code, run:
    ```bash
-   claude mcp add --scope user canopy -- canopy serve
+   claude mcp add --scope user sawmill -- sawmill serve
    ```
    For other MCP clients, add the JSON entry shown in the Installation
    section above to the client's MCP configuration.
@@ -182,13 +182,13 @@ If a user asks you to install canopy, follow these steps:
 3. **Tell the user** they need to restart their agent session (or start
    a new one) for the MCP server to become available.
 
-### Using canopy
+### Using sawmill
 
 See [`agents-guide.md`](agents-guide.md) for a full reference on
-canopy's tools, workflows, and gotchas. You can also run:
+sawmill's tools, workflows, and gotchas. You can also run:
 
 ```bash
-canopy --help-agent
+sawmill --help-agent
 ```
 
 ## Design

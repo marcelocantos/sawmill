@@ -40,7 +40,7 @@ pub struct CodebaseModel {
 impl CodebaseModel {
     /// Load a codebase model for the given directory.
     ///
-    /// 1. Opens (or creates) the SQLite store at `{root}/.canopy/store.db`
+    /// 1. Opens (or creates) the SQLite store at `{root}/.sawmill/store.db`
     /// 2. Walks the directory, checks each file against the store
     /// 3. Re-parses only files that have changed (mtime or content hash mismatch)
     /// 4. Builds the symbol index for changed files
@@ -50,8 +50,8 @@ impl CodebaseModel {
             .canonicalize()
             .with_context(|| format!("canonicalising {}", root.display()))?;
 
-        // Ensure .canopy directory exists.
-        let store_dir = root.join(".canopy");
+        // Ensure .sawmill directory exists.
+        let store_dir = root.join(".sawmill");
         std::fs::create_dir_all(&store_dir)
             .with_context(|| format!("creating {}", store_dir.display()))?;
 

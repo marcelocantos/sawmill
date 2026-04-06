@@ -1,13 +1,13 @@
-# Canopy Agents Guide
+# Sawmill Agents Guide
 
-Reference for AI coding agents using Canopy as an MCP server.
+Reference for AI coding agents using Sawmill as an MCP server.
 
-## What Canopy Does
+## What Sawmill Does
 
-Canopy models a codebase as a forest of Concrete Syntax Trees
+Sawmill models a codebase as a forest of Concrete Syntax Trees
 (Tree-sitter) and exposes structural, multi-language transformations
 over MCP. Instead of regenerating large blocks of source code, agents
-describe the transformation they want and Canopy performs the
+describe the transformation they want and Sawmill performs the
 mechanical rewriting -- producing minimal, diff-friendly changes that
 preserve formatting, comments, and whitespace.
 
@@ -20,17 +20,17 @@ Install the binary, then register the MCP server.
 **Step 1 — Install:**
 
 ```bash
-brew install marcelocantos/tap/canopy
+brew install marcelocantos/tap/sawmill
 ```
 
-If Homebrew is not available: `cargo install --git https://github.com/marcelocantos/canopy`
+If Homebrew is not available: `cargo install --git https://github.com/marcelocantos/sawmill`
 
 **Step 2 — Register the MCP server:**
 
 For Claude Code (global install — available in all projects):
 
 ```bash
-claude mcp add --scope user canopy -- canopy serve
+claude mcp add --scope user sawmill -- sawmill serve
 ```
 
 For other MCP clients, add to the client's MCP configuration
@@ -39,8 +39,8 @@ For other MCP clients, add to the client's MCP configuration
 ```json
 {
   "mcpServers": {
-    "canopy": {
-      "command": "canopy",
+    "sawmill": {
+      "command": "sawmill",
       "args": ["serve"]
     }
   }
@@ -48,7 +48,7 @@ For other MCP clients, add to the client's MCP configuration
 ```
 
 **Step 3:** Restart the agent session. MCP servers are loaded at
-session start — canopy won't be available until the next session.
+session start — sawmill won't be available until the next session.
 
 ## Recommended Workflow
 
@@ -61,7 +61,7 @@ session start — canopy won't be available until the next session.
    preview -- no files are modified yet.
 4. **Review the diff.** Inspect the returned diff before proceeding.
 5. **Apply.** Call `apply` with `confirm: true` to write changes to
-   disk. Canopy creates backup files automatically.
+   disk. Sawmill creates backup files automatically.
 6. **Undo if needed.** Call `undo` to revert the last apply.
 
 Only one set of pending changes exists at a time. A new transform
@@ -283,7 +283,7 @@ for (var i = 0; i < types.length; i++) {
 - **Node byte offsets are into original source.** When using
   `ctx.editFile` with raw byte ranges, the offsets refer to the
   original (pre-edit) source. Multiple edits to the same file are
-  resolved by Canopy -- do not adjust offsets yourself.
+  resolved by Sawmill -- do not adjust offsets yourself.
 
 - **`transform_batch` for atomic multi-step edits.** When you need
   several transforms to land together (e.g., rename + add import),
