@@ -29,3 +29,8 @@ maintenance activities. Append-only — newest entries at the bottom.
 - **Deferred**:
   - HOMEBREW_TAP_TOKEN secret not yet set — Homebrew formula push may fail until configured
   - mcp.rs module split (low) — cosmetic, tracked in docs/TODO.md
+
+## 2026-04-06 — /release v0.5.0
+
+- **Commit**: `36e0e92`
+- **Outcome**: Released v0.5.0 (darwin-arm64, linux-amd64, linux-arm64). Renamed project from Canopy to Sawmill (v0.4.0). Split mcp.rs into submodules. HOMEBREW_TAP_TOKEN configured — Homebrew formula updates now fully automated.
