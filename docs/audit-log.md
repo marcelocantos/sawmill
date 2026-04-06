@@ -34,3 +34,8 @@ maintenance activities. Append-only — newest entries at the bottom.
 
 - **Commit**: `36e0e92`
 - **Outcome**: Released v0.5.0 (darwin-arm64, linux-amd64, linux-arm64). Renamed project from Canopy to Sawmill (v0.4.0). Split mcp.rs into submodules. HOMEBREW_TAP_TOKEN configured — Homebrew formula updates now fully automated.
+
+## 2026-04-07 — /release v0.7.0
+
+- **Commit**: `157b3cc`
+- **Outcome**: Released v0.7.0 (darwin-arm64, linux-amd64, linux-arm64). Refactored to mcpbridge library for proxy↔daemon communication. Moved all persistent state to ~/.sawmill/ (zero project footprint). Fixed --help-agent routing bug. Updated STABILITY.md for current architecture. Homebrew formula updated.
