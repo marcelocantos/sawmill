@@ -18,7 +18,10 @@ Rust 2024 edition. Requires rustc 1.85+.
 ```
 src/
   main.rs         — CLI entry point (clap: parse, rename, serve)
-  mcp.rs          — MCP server (SawmillServer, all tool definitions)
+  mcp/            — MCP server module
+    mod.rs        — SawmillServer, tool implementations, serve()
+    params.rs     — Parameter types for all MCP tools
+    helpers.rs    — Free functions for batch transforms and parameter editing
   forest.rs       — Forest/ParsedFile, apply_with_backup, undo
   model.rs        — CodebaseModel (persistent state, incremental parsing)
   store.rs        — SQLite store (files, symbols, recipes, conventions)
