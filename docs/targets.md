@@ -68,7 +68,7 @@ connections via goroutines.
 
 - **Parent**: 🎯T11
 - **Weight**: 1.6 (value 8 / cost 5)
-- **Status**: not started
+- **Status**: achieved (daemon package + CLI entry point)
 - **Depends on**: 🎯T11.2
 - **Gates**: 🎯T11.5, 🎯T11.6
 
@@ -79,7 +79,8 @@ Multi-project aware (parse scopes a connection to a project root).
 
 - **Parent**: 🎯T11
 - **Weight**: 1.6 (value 8 / cost 5)
-- **Status**: not started
+- **Status**: achieved — go/mcp/ package with all 20 tools; `sawmill serve`
+  wired up in CLI. Uses direct stdio transport (not yet proxy to daemon).
 - **Depends on**: 🎯T11.2
 - **Gates**: 🎯T11.5, 🎯T11.7
 
