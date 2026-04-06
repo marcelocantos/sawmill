@@ -22,6 +22,7 @@ import (
 	"github.com/marcelocantos/sawmill/forest"
 	"github.com/marcelocantos/sawmill/index"
 	"github.com/marcelocantos/sawmill/store"
+	"github.com/marcelocantos/sawmill/watcher"
 )
 
 // CodebaseModel is a persistent, live-updating codebase model.
@@ -32,6 +33,10 @@ type CodebaseModel struct {
 	Forest *forest.Forest
 	// SQLite-backed persistent store.
 	Store *store.Store
+	// w watches root for file changes (nil for ephemeral models).
+	w *watcher.Watcher
+	// events is the channel of debounced file events from w.
+	events <-chan watcher.FileEvent
 }
 
 // Load loads a codebase model for the given directory.
@@ -63,7 +68,13 @@ func Load(root string) (*CodebaseModel, error) {
 		return nil, err
 	}
 
-	return &CodebaseModel{Root: absRoot, Forest: f, Store: s}, nil
+	w, events, err := watcher.Watch(absRoot)
+	if err != nil {
+		s.Close()
+		return nil, fmt.Errorf("starting watcher: %w", err)
+	}
+
+	return &CodebaseModel{Root: absRoot, Forest: f, Store: s, w: w, events: events}, nil
 }
 
 // LoadEphemeral loads without persistence (for testing or one-shot CLI use).
@@ -94,8 +105,11 @@ func LoadEphemeral(root string) (*CodebaseModel, error) {
 	return &CodebaseModel{Root: absRoot, Forest: f, Store: s}, nil
 }
 
-// Close releases the store's database connection.
+// Close releases the store's database connection and stops the file watcher.
 func (m *CodebaseModel) Close() error {
+	if m.w != nil {
+		_ = m.w.Close()
+	}
 	return m.Store.Close()
 }
 
@@ -240,9 +254,63 @@ func (m *CodebaseModel) ParseAndIndexFile(path string) (*forest.ParsedFile, erro
 	return parsed, nil
 }
 
-// Sync processes pending file events. Currently a no-op placeholder; file
-// watching will be added in 🎯T11.7.
+// Sync drains pending file events from the watcher and re-parses changed files.
+// It is safe to call Sync from multiple goroutines but events are processed
+// sequentially. Returns nil if there is no watcher (ephemeral model).
 func (m *CodebaseModel) Sync() error {
+	if m.events == nil {
+		return nil
+	}
+	for {
+		select {
+		case ev, ok := <-m.events:
+			if !ok {
+				return nil
+			}
+			if err := m.applyEvent(ev); err != nil {
+				// Log but continue processing remaining events.
+				_ = err
+			}
+		default:
+			return nil
+		}
+	}
+}
+
+// applyEvent updates the in-memory forest and store for a single file event.
+func (m *CodebaseModel) applyEvent(ev watcher.FileEvent) error {
+	switch ev.Kind {
+	case watcher.Removed:
+		// Remove the file from the forest.
+		newFiles := m.Forest.Files[:0]
+		for _, f := range m.Forest.Files {
+			if f.Path != ev.Path {
+				newFiles = append(newFiles, f)
+			}
+		}
+		m.Forest.Files = newFiles
+		_ = m.Store.RemoveFile(ev.Path)
+	case watcher.Created, watcher.Modified:
+		parsed, err := m.ParseAndIndexFile(ev.Path)
+		if err != nil {
+			return err
+		}
+		if parsed == nil {
+			return nil
+		}
+		// Replace or append in the forest.
+		replaced := false
+		for i, f := range m.Forest.Files {
+			if f.Path == ev.Path {
+				m.Forest.Files[i] = parsed
+				replaced = true
+				break
+			}
+		}
+		if !replaced {
+			m.Forest.Files = append(m.Forest.Files, parsed)
+		}
+	}
 	return nil
 }
 
