@@ -5,6 +5,10 @@ package adapters
 
 import (
 	"fmt"
+	"os"
+	"path/filepath"
+	"strings"
+
 	tree_sitter "github.com/tree-sitter/go-tree-sitter"
 
 	tree_sitter_rust "github.com/tree-sitter/tree-sitter-rust/bindings/go"
@@ -82,4 +86,61 @@ func (a *RustAdapter) GenMethodWithDoc(name, params, returnType, body, doc strin
 
 func (a *RustAdapter) GenImport(path string) string {
 	return fmt.Sprintf("use %s;\n", path)
+}
+
+// ResolveImportPath resolves Rust `mod foo;` declarations to filesystem paths.
+// Returns "" for `use` statements (intra-module, not file references).
+func (a *RustAdapter) ResolveImportPath(importText, importingFile, _ string) string {
+	importText = strings.TrimSpace(importText)
+
+	// Only handle `mod <name>` — `use` statements are not file references.
+	// The import text from tree-sitter is just the argument part, not the
+	// full statement. But the ImportQuery captures use_declaration arguments
+	// too, so we filter: mod declarations produce simple identifiers.
+	// If it contains "::" it's a use path, skip.
+	if strings.Contains(importText, "::") {
+		return ""
+	}
+
+	importDir := filepath.Dir(importingFile)
+	name := importText
+
+	// Check <name>.rs
+	candidate := filepath.Join(importDir, name+".rs")
+	if _, err := os.Stat(candidate); err == nil {
+		return candidate
+	}
+
+	// Check <name>/mod.rs
+	candidate = filepath.Join(importDir, name, "mod.rs")
+	if _, err := os.Stat(candidate); err == nil {
+		return candidate
+	}
+
+	return ""
+}
+
+// BuildImportPath produces a Rust module name for targetFile relative to
+// importingFile's directory.
+func (a *RustAdapter) BuildImportPath(targetFile, importingFile, _ string) string {
+	importDir := filepath.Dir(importingFile)
+	rel, err := filepath.Rel(importDir, targetFile)
+	if err != nil {
+		return ""
+	}
+
+	// Strip .rs extension.
+	name := strings.TrimSuffix(rel, ".rs")
+
+	// Handle mod.rs — use the directory name.
+	if strings.HasSuffix(name, string(filepath.Separator)+"mod") {
+		name = strings.TrimSuffix(name, string(filepath.Separator)+"mod")
+	}
+
+	// Should be a simple name, not a path.
+	if strings.Contains(name, string(filepath.Separator)) {
+		return ""
+	}
+
+	return name
 }

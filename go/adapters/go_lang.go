@@ -5,6 +5,10 @@ package adapters
 
 import (
 	"fmt"
+	"os"
+	"path/filepath"
+	"strings"
+
 	tree_sitter "github.com/tree-sitter/go-tree-sitter"
 
 	tree_sitter_go "github.com/tree-sitter/tree-sitter-go/bindings/go"
@@ -75,4 +79,66 @@ func (a *GoAdapter) GenMethodWithDoc(name, params, returnType, body, doc string)
 
 func (a *GoAdapter) GenImport(path string) string {
 	return fmt.Sprintf("import \"%s\"\n", path)
+}
+
+// goModulePath reads the module path from go.mod in root (or an ancestor).
+func goModulePath(root string) string {
+	modPath := filepath.Join(root, "go.mod")
+	data, err := os.ReadFile(modPath)
+	if err != nil {
+		return ""
+	}
+	for _, line := range strings.Split(string(data), "\n") {
+		line = strings.TrimSpace(line)
+		if strings.HasPrefix(line, "module ") {
+			return strings.TrimSpace(strings.TrimPrefix(line, "module"))
+		}
+	}
+	return ""
+}
+
+// ResolveImportPath resolves a Go import path to a directory relative to root.
+// Only works for local imports (matching the go.mod module path).
+func (a *GoAdapter) ResolveImportPath(importText, _, root string) string {
+	// Strip quotes.
+	importText = strings.Trim(strings.TrimSpace(importText), `"`)
+
+	modPath := goModulePath(root)
+	if modPath == "" {
+		return ""
+	}
+
+	if !strings.HasPrefix(importText, modPath) {
+		return ""
+	}
+
+	// Strip module prefix to get the relative directory.
+	rel := strings.TrimPrefix(importText, modPath)
+	rel = strings.TrimPrefix(rel, "/")
+
+	if rel == "" {
+		return "."
+	}
+	return rel
+}
+
+// BuildImportPath produces a Go import path for the directory containing
+// targetFile.
+func (a *GoAdapter) BuildImportPath(targetFile, _, root string) string {
+	modPath := goModulePath(root)
+	if modPath == "" {
+		return ""
+	}
+
+	targetDir := filepath.Dir(targetFile)
+	rel, err := filepath.Rel(root, targetDir)
+	if err != nil {
+		return ""
+	}
+
+	if rel == "." {
+		return `"` + modPath + `"`
+	}
+
+	return `"` + modPath + "/" + filepath.ToSlash(rel) + `"`
 }

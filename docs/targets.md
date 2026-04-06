@@ -149,15 +149,16 @@ See `docs/agent-usage-archaeology.md` §4.1 for full implementation design.
 
 `rename_file` MCP tool — renames a file on disk and updates all
 import/include/require paths that reference it. Each language adapter
-gains a `ResolveImportPath(importText, importingFile, root)` method
-that maps import strings to filesystem paths.
+gains `ResolveImportPath(importText, importingFile, root)` and
+`BuildImportPath(targetFile, importingFile, root)` methods.
 
 Does not require LSP — uses `adapter.ImportQuery()` + the new resolver.
 
 See `docs/agent-usage-archaeology.md` §4.2 for full implementation design.
 
 - **Weight**: 5 (value 8 / cost 3)
-- **Status**: designed
+- **Status**: achieved — `rename_file` tool implemented with import cascade
+  for Python, TypeScript, Go, C/C++, and Rust. 5 tests passing.
 - **Depends on**: (independent)
 
 ### 🎯T15 Add field + propagate to construction sites

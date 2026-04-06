@@ -85,6 +85,12 @@ func GenMethodWithDoc(a LanguageAdapter, name, params, returnType, body, doc str
 	return comment + method
 }
 
+// ResolveImportPath returns "" (unknown resolution).
+func (b *baseAdapter) ResolveImportPath(_, _, _ string) string { return "" }
+
+// BuildImportPath returns "" (unknown resolution).
+func (b *baseAdapter) BuildImportPath(_, _, _ string) string { return "" }
+
 // leadingWhitespace returns the leading whitespace characters of s.
 func leadingWhitespace(s string) string {
 	for i, r := range s {

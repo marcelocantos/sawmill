@@ -11,6 +11,8 @@ import (
 	"path/filepath"
 	"strings"
 
+	tree_sitter "github.com/tree-sitter/go-tree-sitter"
+
 	"github.com/marcelocantos/sawmill/codegen"
 	"github.com/marcelocantos/sawmill/exemplar"
 	"github.com/marcelocantos/sawmill/forest"
@@ -705,21 +707,36 @@ func (h *Handler) handleApply(args map[string]any) (string, bool, error) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 
-	if h.pending == nil || len(h.pending.Changes) == 0 {
+	if h.pending == nil || (len(h.pending.Changes) == 0 && len(h.pending.Renames) == 0) {
 		return "No pending changes to apply.", false, nil
 	}
 
+	totalPending := len(h.pending.Changes) + len(h.pending.Renames)
 	if !confirm {
-		return fmt.Sprintf("Pending %d change(s). Set confirm=true to apply.", len(h.pending.Changes)), false, nil
+		return fmt.Sprintf("Pending %d change(s). Set confirm=true to apply.", totalPending), false, nil
 	}
 
-	backupPaths, err := forest.ApplyWithBackup(h.model.Root, h.pending.Changes)
-	if err != nil {
-		return fmt.Sprintf("applying changes: %v", err), true, nil
+	var backupPaths []string
+	if len(h.pending.Changes) > 0 {
+		bp, err := forest.ApplyWithBackup(h.model.Root, h.pending.Changes)
+		if err != nil {
+			return fmt.Sprintf("applying changes: %v", err), true, nil
+		}
+		backupPaths = append(backupPaths, bp...)
+	}
+
+	// Perform file renames.
+	for _, r := range h.pending.Renames {
+		if err := os.MkdirAll(filepath.Dir(r.To), 0o755); err != nil {
+			return fmt.Sprintf("creating directory for %s: %v", r.To, err), true, nil
+		}
+		if err := os.Rename(r.From, r.To); err != nil {
+			return fmt.Sprintf("renaming %s -> %s: %v", r.From, r.To, err), true, nil
+		}
 	}
 
 	h.lastBackups = &LastBackups{Paths: backupPaths}
-	applied := len(h.pending.Changes)
+	applied := totalPending
 	h.pending = nil
 
 	return fmt.Sprintf("Applied %d change(s). Backups created. Call undo to revert.", applied), false, nil
@@ -1270,6 +1287,159 @@ func (h *Handler) handleRemoveParameter(args map[string]any) (string, bool, erro
 
 	var sb strings.Builder
 	fmt.Fprintf(&sb, "Removed parameter %q from %q in %d file(s). Call apply to write.\n\n", paramName, funcName, len(changes))
+	for _, d := range diffs {
+		sb.WriteString(d)
+		sb.WriteString("\n")
+	}
+	return sb.String(), false, nil
+}
+
+// ---- rename_file ----------------------------------------------------------
+
+func (h *Handler) handleRenameFile(args map[string]any) (string, bool, error) {
+	from, err := requireString(args, "from")
+	if err != nil {
+		return err.Error(), true, nil
+	}
+	to, err := requireString(args, "to")
+	if err != nil {
+		return err.Error(), true, nil
+	}
+	format := optBool(args, "format")
+
+	h.mu.Lock()
+	defer h.mu.Unlock()
+
+	m, err := h.requireModel()
+	if err != nil {
+		return err.Error(), true, nil
+	}
+
+	root := m.Root
+	absFrom := filepath.Join(root, from)
+	absTo := filepath.Join(root, to)
+
+	// Verify the source file exists in the forest.
+	var found bool
+	for _, file := range m.Forest.Files {
+		if file.Path == absFrom {
+			found = true
+			break
+		}
+	}
+	if !found {
+		return fmt.Sprintf("File %q not found in parsed codebase.", from), true, nil
+	}
+
+	var changes []forest.FileChange
+	var diffs []string
+
+	// Scan all files for imports that resolve to absFrom.
+	for _, file := range m.Forest.Files {
+		importQuery := file.Adapter.ImportQuery()
+		if importQuery == "" {
+			continue
+		}
+
+		query, qErr := tree_sitter.NewQuery(file.Adapter.Language(), importQuery)
+		if qErr != nil {
+			continue
+		}
+
+		// Find the @name capture index.
+		nameIdx := uint32(0)
+		nameFound := false
+		for i, name := range query.CaptureNames() {
+			if name == "name" {
+				nameIdx = uint32(i)
+				nameFound = true
+				break
+			}
+		}
+		if !nameFound {
+			query.Close()
+			continue
+		}
+
+		cursor := tree_sitter.NewQueryCursor()
+		matches := cursor.Matches(query, file.Tree.RootNode(), file.OriginalSource)
+
+		var edits []rewrite.Edit
+		for match := matches.Next(); match != nil; match = matches.Next() {
+			for _, capture := range match.Captures {
+				if capture.Index != nameIdx {
+					continue
+				}
+				node := capture.Node
+				importText := string(file.OriginalSource[node.StartByte():node.EndByte()])
+
+				resolved := file.Adapter.ResolveImportPath(importText, file.Path, root)
+				if resolved == "" {
+					continue
+				}
+
+				// ResolveImportPath may return absolute or relative paths
+				// depending on the adapter. Normalise to absolute for comparison.
+				absResolved := resolved
+				if !filepath.IsAbs(resolved) {
+					absResolved = filepath.Join(root, resolved)
+				}
+
+				if absResolved != absFrom {
+					continue
+				}
+
+				// This import references the file being renamed — compute the
+				// new import text.
+				newImport := file.Adapter.BuildImportPath(absTo, file.Path, root)
+				if newImport == "" {
+					continue
+				}
+
+				edits = append(edits, rewrite.Edit{
+					Start:       node.StartByte(),
+					End:         node.EndByte(),
+					Replacement: newImport,
+				})
+			}
+		}
+
+		cursor.Close()
+		query.Close()
+
+		if len(edits) == 0 {
+			continue
+		}
+
+		newSource := rewrite.ApplyEdits(file.OriginalSource, edits)
+
+		if format {
+			newSource, _ = rewrite.FormatSource(file.Adapter, newSource)
+		}
+
+		diff := rewrite.UnifiedDiff(file.Path, file.OriginalSource, newSource)
+		diffs = append(diffs, diff)
+		changes = append(changes, forest.FileChange{
+			Path:      file.Path,
+			Original:  file.OriginalSource,
+			NewSource: newSource,
+		})
+	}
+
+	renames := []FileRename{{From: absFrom, To: absTo}}
+
+	h.pending = &PendingChanges{
+		Changes: changes,
+		Diffs:   diffs,
+		Renames: renames,
+	}
+
+	var sb strings.Builder
+	fmt.Fprintf(&sb, "Rename %q → %q", from, to)
+	if len(changes) > 0 {
+		fmt.Fprintf(&sb, " with import updates in %d file(s)", len(changes))
+	}
+	sb.WriteString(". Call apply to write changes.\n\n")
 	for _, d := range diffs {
 		sb.WriteString(d)
 		sb.WriteString("\n")

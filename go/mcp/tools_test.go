@@ -793,3 +793,161 @@ func TestRemoveParameterNotFound(t *testing.T) {
 		t.Errorf("expected 'not found' message, got: %s", text)
 	}
 }
+
+// --- rename_file tests ---
+
+func TestRenameFilePython(t *testing.T) {
+	h, dir := testHandlerWithDir(t, map[string]string{
+		"utils.py": "def helper():\n    pass\n",
+		"main.py":  "import utils\n\nutils.helper()\n",
+	})
+
+	text, isErr, err := h.handleRenameFile(map[string]any{
+		"from": "utils.py",
+		"to":   "helpers.py",
+	})
+	if err != nil {
+		t.Fatalf("handleRenameFile error: %v", err)
+	}
+	if isErr {
+		t.Fatalf("handleRenameFile returned tool error: %s", text)
+	}
+
+	if !strings.Contains(text, "Rename") {
+		t.Errorf("expected 'Rename' in output, got: %s", text)
+	}
+	if !strings.Contains(text, "helpers") {
+		t.Errorf("expected 'helpers' in diff, got: %s", text)
+	}
+
+	// Apply changes.
+	text, _, err = h.handleApply(map[string]any{"confirm": true})
+	if err != nil {
+		t.Fatalf("handleApply error: %v", err)
+	}
+	if !strings.Contains(text, "Applied") {
+		t.Errorf("expected 'Applied' in output, got: %s", text)
+	}
+
+	// Verify main.py was updated on disk.
+	content, err := os.ReadFile(filepath.Join(dir, "main.py"))
+	if err != nil {
+		t.Fatalf("reading main.py: %v", err)
+	}
+	if !strings.Contains(string(content), "helpers") {
+		t.Errorf("expected 'helpers' import in main.py, got: %s", string(content))
+	}
+	if strings.Contains(string(content), "import utils") {
+		t.Errorf("expected 'utils' import to be replaced, got: %s", string(content))
+	}
+
+	// Verify file was renamed.
+	if _, err := os.Stat(filepath.Join(dir, "helpers.py")); os.IsNotExist(err) {
+		t.Error("expected helpers.py to exist after apply")
+	}
+	if _, err := os.Stat(filepath.Join(dir, "utils.py")); !os.IsNotExist(err) {
+		t.Error("expected utils.py to be renamed away")
+	}
+}
+
+func TestRenameFileTypeScript(t *testing.T) {
+	h, _ := testHandlerWithDir(t, map[string]string{
+		"utils.ts": "export function helper() {}\n",
+		"main.ts":  "import { helper } from \"./utils\";\n\nhelper();\n",
+	})
+
+	text, isErr, err := h.handleRenameFile(map[string]any{
+		"from": "utils.ts",
+		"to":   "helpers.ts",
+	})
+	if err != nil {
+		t.Fatalf("handleRenameFile error: %v", err)
+	}
+	if isErr {
+		t.Fatalf("handleRenameFile returned tool error: %s", text)
+	}
+
+	if !strings.Contains(text, "import updates") {
+		t.Errorf("expected import updates in output, got: %s", text)
+	}
+	if !strings.Contains(text, "helpers") {
+		t.Errorf("expected 'helpers' in diff, got: %s", text)
+	}
+}
+
+func TestRenameFileCpp(t *testing.T) {
+	h, _ := testHandlerWithDir(t, map[string]string{
+		"util.h":  "void helper();\n",
+		"main.cpp": "#include \"util.h\"\n\nint main() { helper(); }\n",
+	})
+
+	text, isErr, err := h.handleRenameFile(map[string]any{
+		"from": "util.h",
+		"to":   "helper.h",
+	})
+	if err != nil {
+		t.Fatalf("handleRenameFile error: %v", err)
+	}
+	if isErr {
+		t.Fatalf("handleRenameFile returned tool error: %s", text)
+	}
+
+	if !strings.Contains(text, "helper.h") {
+		t.Errorf("expected 'helper.h' in diff, got: %s", text)
+	}
+}
+
+func TestRenameFileNoImporters(t *testing.T) {
+	h, dir := testHandlerWithDir(t, map[string]string{
+		"lonely.py": "x = 1\n",
+		"other.py":  "y = 2\n",
+	})
+
+	text, isErr, err := h.handleRenameFile(map[string]any{
+		"from": "lonely.py",
+		"to":   "solo.py",
+	})
+	if err != nil {
+		t.Fatalf("handleRenameFile error: %v", err)
+	}
+	if isErr {
+		t.Fatalf("handleRenameFile returned tool error: %s", text)
+	}
+
+	if !strings.Contains(text, "Rename") {
+		t.Errorf("expected 'Rename' in output, got: %s", text)
+	}
+	// No import updates expected.
+	if strings.Contains(text, "import updates") {
+		t.Errorf("expected no import updates, got: %s", text)
+	}
+
+	// Apply and verify the rename still happens.
+	text, _, err = h.handleApply(map[string]any{"confirm": true})
+	if err != nil {
+		t.Fatalf("handleApply error: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "solo.py")); os.IsNotExist(err) {
+		t.Error("expected solo.py to exist after apply")
+	}
+}
+
+func TestRenameFileNotFound(t *testing.T) {
+	h := testHandler(t, map[string]string{
+		"main.py": "x = 1\n",
+	})
+
+	text, isErr, err := h.handleRenameFile(map[string]any{
+		"from": "nonexistent.py",
+		"to":   "something.py",
+	})
+	if err != nil {
+		t.Fatalf("handleRenameFile error: %v", err)
+	}
+	if !isErr {
+		t.Error("expected tool error for nonexistent file")
+	}
+	if !strings.Contains(text, "not found") {
+		t.Errorf("expected 'not found' in error, got: %s", text)
+	}
+}

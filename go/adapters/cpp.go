@@ -5,6 +5,9 @@ package adapters
 
 import (
 	"fmt"
+	"path/filepath"
+	"strings"
+
 	tree_sitter "github.com/tree-sitter/go-tree-sitter"
 
 	tree_sitter_cpp "github.com/tree-sitter/tree-sitter-cpp/bindings/go"
@@ -77,4 +80,39 @@ func (a *CppAdapter) GenMethodWithDoc(name, params, returnType, body, doc string
 
 func (a *CppAdapter) GenImport(path string) string {
 	return fmt.Sprintf("#include \"%s\"\n", path)
+}
+
+// ResolveImportPath resolves C/C++ #include "path" to a filesystem path
+// relative to root. Returns "" for system includes (#include <...>).
+func (a *CppAdapter) ResolveImportPath(importText, importingFile, root string) string {
+	importText = strings.TrimSpace(importText)
+
+	// System includes — angle brackets.
+	if strings.HasPrefix(importText, "<") {
+		return ""
+	}
+
+	// Strip quotes.
+	importText = strings.Trim(importText, `"`)
+
+	// Resolve relative to the importing file's directory.
+	importDir := filepath.Dir(importingFile)
+	abs := filepath.Join(importDir, importText)
+	rel, err := filepath.Rel(root, abs)
+	if err != nil {
+		return ""
+	}
+	return rel
+}
+
+// BuildImportPath produces a relative #include path from importingFile to
+// targetFile. Returns with quotes to match the tree-sitter string_literal node.
+func (a *CppAdapter) BuildImportPath(targetFile, importingFile, _ string) string {
+	importDir := filepath.Dir(importingFile)
+	rel, err := filepath.Rel(importDir, targetFile)
+	if err != nil {
+		return ""
+	}
+	// Use forward slashes in includes, with quotes to match the captured node.
+	return `"` + filepath.ToSlash(rel) + `"`
 }

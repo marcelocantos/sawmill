@@ -16,11 +16,18 @@ import (
 	"github.com/marcelocantos/sawmill/model"
 )
 
+// FileRename records a pending file rename (from -> to, both absolute).
+type FileRename struct {
+	From string
+	To   string
+}
+
 // PendingChanges holds the last set of pending file changes produced by a
 // transform/rename/codegen call, waiting for an explicit apply.
 type PendingChanges struct {
 	Changes []forest.FileChange
 	Diffs   []string
+	Renames []FileRename // file renames to perform on apply
 }
 
 // LastBackups holds the backup paths written by the most recent apply, so
@@ -64,6 +71,8 @@ func (h *Handler) Call(name string, args map[string]any) (string, bool, error) {
 		return h.handleParse(args)
 	case "rename":
 		return h.handleRename(args)
+	case "rename_file":
+		return h.handleRenameFile(args)
 	case "query":
 		return h.handleQuery(args)
 	case "find_symbol":
@@ -133,6 +142,22 @@ func Definitions() []mcpgo.Tool {
 			),
 			mcpgo.WithBoolean("format",
 				mcpgo.Description("Run the language formatter after renaming"),
+			),
+		),
+
+		// rename_file
+		mcpgo.NewTool("rename_file",
+			mcpgo.WithDescription("Rename a file and update all import/include/require paths that reference it across the codebase. Produces a diff preview; call apply to write changes."),
+			mcpgo.WithString("from",
+				mcpgo.Required(),
+				mcpgo.Description("Current file path (relative to project root)"),
+			),
+			mcpgo.WithString("to",
+				mcpgo.Required(),
+				mcpgo.Description("New file path (relative to project root)"),
+			),
+			mcpgo.WithBoolean("format",
+				mcpgo.Description("Run the language formatter on files with updated imports"),
 			),
 		),
 

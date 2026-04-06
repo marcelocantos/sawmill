@@ -85,6 +85,19 @@ type LanguageAdapter interface {
 
 	// GenImport generates an import statement for the given path.
 	GenImport(path string) string
+
+	// ResolveImportPath maps an import string (as it appears in source code)
+	// to the filesystem path it refers to, relative to root. importingFile is
+	// the absolute path of the file containing the import. Returns "" if the
+	// import cannot be resolved to a local file (e.g. external packages,
+	// system headers, intra-module use statements).
+	ResolveImportPath(importText, importingFile, root string) string
+
+	// BuildImportPath produces the import text that should appear in
+	// importingFile to reference targetFile. Both paths are absolute.
+	// root is the project root. Returns "" if the adapter cannot build
+	// a suitable import path.
+	BuildImportPath(targetFile, importingFile, root string) string
 }
 
 // ForExtension returns the LanguageAdapter for the given file extension
