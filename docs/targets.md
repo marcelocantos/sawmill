@@ -80,7 +80,7 @@ Multi-project aware (parse scopes a connection to a project root).
 - **Parent**: 🎯T11
 - **Weight**: 1.6 (value 8 / cost 5)
 - **Status**: achieved — go/mcp/ package with all 20 tools; `sawmill serve`
-  wired up in CLI. Uses direct stdio transport (not yet proxy to daemon).
+  now proxies to daemon (🎯T11.5) when running, falls back to in-process.
 - **Depends on**: 🎯T11.2
 - **Gates**: 🎯T11.5, 🎯T11.7
 
@@ -92,7 +92,9 @@ running.
 
 - **Parent**: 🎯T11
 - **Weight**: 2.7 (value 5 / cost 2)
-- **Status**: not started
+- **Status**: achieved — go/proxy/proxy.go with Run(); `sawmill serve`
+  uses proxy mode when daemon is running, falls back to in-process with
+  a warning otherwise. Tested in go/proxy/proxy_test.go.
 - **Depends on**: 🎯T11.3, 🎯T11.4
 
 #### 🎯T11.6 Brew services
