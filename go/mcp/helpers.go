@@ -81,15 +81,18 @@ func addParamInFile(file *forest.ParsedFile, funcName, paramText, position strin
 	}
 	defer query.Close()
 
-	// Find the @name capture index.
+	// Find the @name and @func capture indices.
 	nameIdx := -1
+	funcIdx := -1
 	for i, n := range query.CaptureNames() {
-		if n == "name" {
+		switch n {
+		case "name":
 			nameIdx = i
-			break
+		case "func":
+			funcIdx = i
 		}
 	}
-	if nameIdx < 0 {
+	if nameIdx < 0 || funcIdx < 0 {
 		return file.OriginalSource, nil
 	}
 
@@ -101,11 +104,11 @@ func addParamInFile(file *forest.ParsedFile, funcName, paramText, position strin
 	var edits []rewrite.Edit
 
 	for m := matches.Next(); m != nil; m = matches.Next() {
-		// Find the whole function node (first capture) and the name node.
+		// Find the whole function node (@func capture) and the name node (@name capture).
 		var funcNode, nameNode *tree_sitter.Node
 		for i := range m.Captures {
 			c := &m.Captures[i]
-			if c.Index == 0 && funcNode == nil {
+			if c.Index == uint32(funcIdx) && funcNode == nil {
 				funcNode = &c.Node
 			}
 			if c.Index == uint32(nameIdx) && nameNode == nil {
@@ -251,13 +254,16 @@ func removeParamInFile(file *forest.ParsedFile, funcName, paramName string) ([]b
 	defer query.Close()
 
 	nameIdx := -1
+	funcIdx := -1
 	for i, n := range query.CaptureNames() {
-		if n == "name" {
+		switch n {
+		case "name":
 			nameIdx = i
-			break
+		case "func":
+			funcIdx = i
 		}
 	}
-	if nameIdx < 0 {
+	if nameIdx < 0 || funcIdx < 0 {
 		return file.OriginalSource, nil
 	}
 
@@ -272,7 +278,7 @@ func removeParamInFile(file *forest.ParsedFile, funcName, paramName string) ([]b
 		var funcNode, nameNode *tree_sitter.Node
 		for i := range m.Captures {
 			c := &m.Captures[i]
-			if c.Index == 0 && funcNode == nil {
+			if c.Index == uint32(funcIdx) && funcNode == nil {
 				funcNode = &c.Node
 			}
 			if c.Index == uint32(nameIdx) && nameNode == nil {

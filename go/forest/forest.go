@@ -198,7 +198,7 @@ func ApplyWithBackup(changes []FileChange) ([]string, error) {
 
 	// Step 1: Write new content to temp files.
 	for _, change := range changes {
-		temp := replaceExt(change.Path, "sawmill.new")
+		temp := appendExt(change.Path, "sawmill.new")
 		if err := os.WriteFile(temp, change.NewSource, 0o644); err != nil {
 			return nil, fmt.Errorf("writing temp %s: %w", temp, err)
 		}
@@ -207,7 +207,7 @@ func ApplyWithBackup(changes []FileChange) ([]string, error) {
 
 	// Step 2: Back up originals.
 	for _, change := range changes {
-		backup := replaceExt(change.Path, "sawmill.bak")
+		backup := appendExt(change.Path, "sawmill.bak")
 		if _, err := os.Stat(change.Path); err == nil {
 			if err := copyFile(change.Path, backup); err != nil {
 				return nil, fmt.Errorf("backing up %s: %w", change.Path, err)
@@ -294,12 +294,10 @@ func CleanupBackups(backupPaths []string) {
 	}
 }
 
-// replaceExt replaces the file extension of path with newExt.
-// e.g. replaceExt("foo/bar.go", "sawmill.bak") → "foo/bar.sawmill.bak"
-func replaceExt(path, newExt string) string {
-	ext := filepath.Ext(path)
-	base := strings.TrimSuffix(path, ext)
-	return base + "." + newExt
+// appendExt appends a new extension to the file path (preserving the original).
+// e.g. appendExt("foo/bar.go", "sawmill.bak") → "foo/bar.go.sawmill.bak"
+func appendExt(path, newExt string) string {
+	return path + "." + newExt
 }
 
 // copyFile copies src to dst, preserving content and permissions.
