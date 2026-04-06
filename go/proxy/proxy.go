@@ -15,20 +15,14 @@ import (
 	"net"
 	"os"
 	"sync"
+
+	"github.com/marcelocantos/sawmill/handshake"
 )
 
-// statusResponse mirrors the handshake JSON sent by the daemon.
-type statusResponse struct {
-	Status string `json:"status"`
-	Root   string `json:"root"`
-	Files  int    `json:"files"`
-	Error  string `json:"error,omitempty"`
-}
-
-// Run connects to the daemon Unix socket at socketPath, sends projectRoot as
-// the handshake line, verifies the daemon accepted the project, then relays
-// MCP JSON-RPC between os.Stdin/os.Stdout and the socket until either
-// direction reaches EOF or an error.
+// Run connects to the daemon Unix socket at socketPath, sends a JSON
+// handshake (project root + binary hash), verifies the daemon accepted the
+// connection, then relays MCP JSON-RPC between os.Stdin/os.Stdout and the
+// socket until either direction reaches EOF or an error.
 //
 // Returns nil on a clean EOF from either side.
 func Run(socketPath, projectRoot string) error {
@@ -38,25 +32,29 @@ func Run(socketPath, projectRoot string) error {
 	}
 	defer conn.Close()
 
-	// Send handshake: project root terminated by newline.
-	if _, err := fmt.Fprintf(conn, "%s\n", projectRoot); err != nil {
-		return fmt.Errorf("sending project root to daemon: %w", err)
+	// Send JSON handshake with project root and binary hash.
+	hs := handshake.Handshake{
+		Root:       projectRoot,
+		BinaryHash: handshake.BinaryHash(),
+	}
+	if err := json.NewEncoder(conn).Encode(hs); err != nil {
+		return fmt.Errorf("sending handshake to daemon: %w", err)
 	}
 
-	// Read the daemon's JSON status line.
+	// Read the daemon's JSON response line.
 	reader := bufio.NewReader(conn)
 	statusLine, err := reader.ReadString('\n')
 	if err != nil {
-		return fmt.Errorf("reading daemon status: %w", err)
+		return fmt.Errorf("reading daemon response: %w", err)
 	}
 
-	var status statusResponse
-	if err := json.Unmarshal([]byte(statusLine), &status); err != nil {
-		return fmt.Errorf("parsing daemon status %q: %w", statusLine, err)
+	var resp handshake.Response
+	if err := json.Unmarshal([]byte(statusLine), &resp); err != nil {
+		return fmt.Errorf("parsing daemon response %q: %w", statusLine, err)
 	}
-	if status.Status == "error" {
-		fmt.Fprintf(os.Stderr, "sawmill: daemon error: %s\n", status.Error)
-		return fmt.Errorf("daemon rejected project root: %s", status.Error)
+	if resp.Status == "error" {
+		fmt.Fprintf(os.Stderr, "sawmill: %s\n", resp.Error)
+		return fmt.Errorf("daemon: %s", resp.Error)
 	}
 
 	// Bidirectional relay: stdin→socket and socket→stdout concurrently.

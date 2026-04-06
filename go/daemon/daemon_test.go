@@ -6,7 +6,6 @@ package daemon_test
 import (
 	"bufio"
 	"encoding/json"
-	"fmt"
 	"net"
 	"os"
 	"path/filepath"
@@ -55,9 +54,12 @@ func connectAndSend(t *testing.T, socketPath, root string) map[string]any {
 	}
 	defer conn.Close()
 
-	// Send root path.
-	if _, err := fmt.Fprintf(conn, "%s\n", root); err != nil {
-		t.Fatalf("write root: %v", err)
+	// Send JSON handshake.
+	hs := map[string]string{"root": root, "binary_hash": ""}
+	hsData, _ := json.Marshal(hs)
+	hsData = append(hsData, '\n')
+	if _, err := conn.Write(hsData); err != nil {
+		t.Fatalf("write handshake: %v", err)
 	}
 
 	// Read JSON response line.

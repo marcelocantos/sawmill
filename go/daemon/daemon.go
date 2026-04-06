@@ -22,6 +22,7 @@ import (
 	"syscall"
 
 	"github.com/marcelocantos/sawmill/mcp"
+	"github.com/marcelocantos/sawmill/handshake"
 	"github.com/marcelocantos/sawmill/model"
 )
 
@@ -109,49 +110,57 @@ func (d *Daemon) Shutdown() {
 	}
 }
 
-// statusResponse is the JSON envelope sent back after loading a model.
-type statusResponse struct {
-	Status string `json:"status"`
-	Root   string `json:"root"`
-	Files  int    `json:"files"`
-	Error  string `json:"error,omitempty"`
-}
 
-// handleConn reads the project root from the first line of the connection,
-// loads (or retrieves) the corresponding model, writes back a JSON status, and
-// then keeps the connection open for future MCP protocol messages (🎯T11.4).
+// handleConn reads a JSON handshake from the connection, validates the
+// binary hash, loads the model, writes back a JSON response, and then
+// serves MCP JSON-RPC over the connection.
 func (d *Daemon) handleConn(conn net.Conn) {
 	defer conn.Close()
 
 	scanner := bufio.NewScanner(conn)
 	if !scanner.Scan() {
 		if err := scanner.Err(); err != nil {
-			log.Printf("reading root from %s: %v", conn.RemoteAddr(), err)
+			log.Printf("reading handshake: %v", err)
 		}
 		return
 	}
 
-	root := strings.TrimSpace(scanner.Text())
-	if root == "" {
-		writeStatus(conn, statusResponse{
+	var hs handshake.Handshake
+	if err := json.Unmarshal(scanner.Bytes(), &hs); err != nil {
+		// Fall back to treating the line as a plain root path (backwards compat).
+		hs.Root = strings.TrimSpace(scanner.Text())
+	}
+
+	if hs.Root == "" {
+		writeResponse(conn, handshake.Response{
 			Status: "error",
 			Error:  "empty project root",
 		})
 		return
 	}
 
-	m, err := d.GetOrLoadModel(root)
-	if err != nil {
-		log.Printf("loading model for %q: %v", root, err)
-		writeStatus(conn, statusResponse{
+	// Validate binary hash — reject if both hashes are known and differ.
+	serverHash := handshake.BinaryHash()
+	if serverHash != "" && hs.BinaryHash != "" && hs.BinaryHash != serverHash {
+		writeResponse(conn, handshake.Response{
 			Status: "error",
-			Root:   root,
+			Error:  "binary mismatch: the sawmill proxy and daemon are different binaries — restart the service with 'brew services restart sawmill'",
+		})
+		return
+	}
+
+	m, err := d.GetOrLoadModel(hs.Root)
+	if err != nil {
+		log.Printf("loading model for %q: %v", hs.Root, err)
+		writeResponse(conn, handshake.Response{
+			Status: "error",
+			Root:   hs.Root,
 			Error:  err.Error(),
 		})
 		return
 	}
 
-	writeStatus(conn, statusResponse{
+	writeResponse(conn, handshake.Response{
 		Status: "ok",
 		Root:   m.Root,
 		Files:  m.FileCount(),
@@ -171,11 +180,11 @@ func (d *Daemon) handleConn(conn net.Conn) {
 
 	srv := mcp.NewServerWithModel(m)
 	if err := srv.ServeConn(ctx, conn); err != nil {
-		log.Printf("MCP session for %q ended: %v", root, err)
+		log.Printf("MCP session for %q ended: %v", hs.Root, err)
 	}
 }
 
-func writeStatus(conn net.Conn, resp statusResponse) {
+func writeResponse(conn net.Conn, resp handshake.Response) {
 	data, err := json.Marshal(resp)
 	if err != nil {
 		log.Printf("marshalling status: %v", err)

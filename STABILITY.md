@@ -1,460 +1,99 @@
-# Sawmill Stability
+# Stability
 
-**Current version:** 0.5.0 (pre-1.0)
+## Commitment
 
-## Stability Commitment
+Version 1.0 will represent a backwards-compatibility contract. After 1.0,
+breaking changes to the CLI interface, MCP tool surface, configuration
+conventions, or wire formats require forking into a new product. The
+pre-1.0 period exists to get these right.
 
-A 1.0 release signals a backwards-compatibility contract. From that
-point, every element of the public interaction surface documented below
-will follow semantic versioning: breaking changes require a major
-version bump, new additive features bump the minor version. Until 1.0,
-any part of the surface may change between releases.
+## Interaction surface catalogue
 
-## Interaction Surface Catalogue
+Snapshot as of v0.6.0. 107 public surface items.
 
-Each item is marked:
+### CLI
 
-- **Stable** -- design is settled; breaking changes unlikely before 1.0.
-- **Needs review** -- works but the interface may change after real-world usage.
-- **Fluid** -- actively evolving or stub-only; expect changes.
+| Item | Type | Stability |
+|---|---|---|
+| `sawmill` (default) | MCP stdio mode | **Stable** |
+| `sawmill serve` | Background daemon | **Stable** |
+| `sawmill version` | Print version | **Stable** |
+| `sawmill --help` | Usage | **Stable** |
+| `sawmill --help-agent` | Agent guide | **Stable** |
+| `--socket` (both modes) | string, default `~/.sawmill/sawmill.sock` | **Stable** |
+| `--root` (default mode) | string, default cwd | **Stable** |
 
----
+### MCP tools (20 tools, 63 parameters)
 
-### 1. CLI (clap derive)
-
-#### Subcommand: `sawmill parse`
-
-| Element | Type | Default | Status |
+| Tool | Required params | Optional params | Stability |
 |---|---|---|---|
-| `path` (positional) | PathBuf | `"."` | Stable |
-
-Parses files and displays a forest summary.
-
-#### Subcommand: `sawmill rename`
-
-| Element | Type | Default | Status |
-|---|---|---|---|
-| `from` (positional, required) | String | -- | Stable |
-| `to` (positional, required) | String | -- | Stable |
-| `--path` | PathBuf | `"."` | Stable |
-
-Renames a symbol and prints a unified diff.
-
-#### Subcommand: `sawmill serve`
-
-No parameters. Runs the MCP server over stdio.
-
-| Element | Status |
-|---|---|
-| Stdio transport | Stable |
-
-#### Global flags (clap built-in)
-
-| Flag | Status |
-|---|---|
-| `--version` | Stable |
-| `--help` / `-h` | Stable |
-
----
-
-### 2. MCP Tools
-
-All tools are defined in `src/mcp.rs` via `#[tool(...)]` annotations on
-`SawmillServer`.
-
-#### `parse`
-
-Parse source files into the persistent codebase model.
-
-| Parameter | Type | Required | Default | Status |
-|---|---|---|---|---|
-| `path` | string | yes | -- | Stable |
-
-#### `rename`
-
-Rename a symbol across the codebase. Returns a diff preview.
-
-| Parameter | Type | Required | Default | Status |
-|---|---|---|---|---|
-| `from` | string | yes | -- | Stable |
-| `to` | string | yes | -- | Stable |
-| `path` | string | no | `"."` | Stable |
-| `format` | bool | no | `false` | Needs review |
-
-#### `query`
-
-Search for structural patterns by abstract node kind.
-
-| Parameter | Type | Required | Default | Status |
-|---|---|---|---|---|
-| `path` | string | no | `"."` | Stable |
-| `kind` | string | yes | -- | Needs review |
-| `name` | string | no | `null` | Needs review |
-| `file` | string | no | `null` | Stable |
-
-`kind` accepts `"function"`, `"class"`, `"call"`, `"import"`. The set
-of supported kinds may expand before 1.0.
-
-#### `find_symbol`
-
-Find all definitions of a symbol by name.
-
-| Parameter | Type | Required | Default | Status |
-|---|---|---|---|---|
-| `symbol` | string | yes | -- | Stable |
-| `path` | string | no | `"."` | Stable |
-
-#### `find_references`
-
-Find all references (usages) of a symbol by name (syntactic).
-
-| Parameter | Type | Required | Default | Status |
-|---|---|---|---|---|
-| `symbol` | string | yes | -- | Stable |
-| `path` | string | no | `"."` | Stable |
-
-#### `transform`
-
-Apply a structural transformation via match/act.
-
-| Parameter | Type | Required | Default | Status |
-|---|---|---|---|---|
-| `path` | string | no | `"."` | Stable |
-| `kind` | string | no | `null` | Needs review |
-| `name` | string | no | `null` | Needs review |
-| `file` | string | no | `null` | Stable |
-| `raw_query` | string | no | `null` | Needs review |
-| `capture` | string | no | `null` (first) | Needs review |
-| `action` | string | no | `null` | Needs review |
-| `code` | string | no | `null` | Needs review |
-| `before` | string | no | `null` | Needs review |
-| `after` | string | no | `null` | Needs review |
-| `transform_fn` | string | no | `null` | Fluid |
-| `format` | bool | no | `false` | Needs review |
-
-`action` accepts: `"replace"`, `"wrap"`, `"unwrap"`,
-`"prepend_statement"`, `"append_statement"`, `"remove"`,
-`"replace_name"`, `"replace_body"`. The set may change.
-
-`transform_fn` is a JavaScript function receiving a node object with
-properties (`kind`, `name`, `text`, `body`, `parameters`, `file`,
-`startLine`, `endLine`) and mutation methods (`replaceText`,
-`replaceBody`, `replaceName`, `remove`, `wrap`, `insertBefore`,
-`insertAfter`). The JS node API is fluid and likely to gain new
-properties/methods.
-
-#### `transform_batch`
-
-Apply multiple transforms sequentially.
-
-| Parameter | Type | Required | Default | Status |
-|---|---|---|---|---|
-| `path` | string | no | `"."` | Stable |
-| `format` | bool | no | `false` | Needs review |
-| `transforms` | array of JSON objects | yes | -- | Needs review |
-
-Each element is either `{"rename": {"from": "...", "to": "..."}}` or a
-match/act transform with the same fields as `transform`.
-
-#### `add_parameter`
-
-Add a parameter to a function definition.
-
-| Parameter | Type | Required | Default | Status |
-|---|---|---|---|---|
-| `path` | string | no | `"."` | Stable |
-| `function` | string | yes | -- | Stable |
-| `param_name` | string | yes | -- | Stable |
-| `param_type` | string | no | `null` | Stable |
-| `default_value` | string | no | `null` | Stable |
-| `position` | string | no | `"last"` | Needs review |
-| `format` | bool | no | `false` | Needs review |
-
-`position` accepts `"first"`, `"last"`, or `"after:<param_name>"`.
-
-#### `remove_parameter`
-
-Remove a parameter from a function definition by name.
-
-| Parameter | Type | Required | Default | Status |
-|---|---|---|---|---|
-| `path` | string | no | `"."` | Stable |
-| `function` | string | yes | -- | Stable |
-| `param_name` | string | yes | -- | Stable |
-| `format` | bool | no | `false` | Needs review |
-
-#### `teach_by_example`
-
-Teach a reusable pattern from an exemplar file.
-
-| Parameter | Type | Required | Default | Status |
-|---|---|---|---|---|
-| `name` | string | yes | -- | Stable |
-| `description` | string | no | `""` | Stable |
-| `exemplar` | string | yes | -- | Stable |
-| `parameters` | object (string -> string) | yes | -- | Needs review |
-| `also_affects` | array of strings | no | `[]` | Needs review |
-
-#### `teach_recipe`
-
-Teach a named sequence of transform steps with parameter variables.
-
-| Parameter | Type | Required | Default | Status |
-|---|---|---|---|---|
-| `name` | string | yes | -- | Stable |
-| `description` | string | no | `""` | Stable |
-| `params` | array of strings | yes | -- | Stable |
-| `steps` | JSON value | yes | -- | Needs review |
-
-#### `instantiate`
-
-Instantiate a taught recipe or teach-by-example template.
-
-| Parameter | Type | Required | Default | Status |
-|---|---|---|---|---|
-| `recipe` | string | yes | -- | Stable |
-| `params` | object (string -> string) | yes | -- | Stable |
-| `path` | string | no | `"."` | Stable |
-| `format` | bool | no | `false` | Needs review |
-
-#### `list_recipes`
-
-List all taught recipes. No parameters.
-
-#### `teach_convention`
-
-Define an enforceable project convention.
-
-| Parameter | Type | Required | Default | Status |
-|---|---|---|---|---|
-| `name` | string | yes | -- | Stable |
-| `description` | string | no | `""` | Stable |
-| `check_program` | string (JavaScript) | yes | -- | Fluid |
-
-The `check_program` JS API (`ctx` object) is shared with `codegen` and
-is fluid.
-
-#### `check_conventions`
-
-Scan the codebase for convention violations.
-
-| Parameter | Type | Required | Default | Status |
-|---|---|---|---|---|
-| `path` | string | no | `"."` | Stable |
-
-#### `list_conventions`
-
-List all taught conventions. No parameters.
-
-#### `get_agent_prompt`
-
-Generate a rich system prompt describing capabilities, recipes, and
-conventions. No parameters. Returns the agents-guide content plus
-dynamic project-specific recipes and conventions if `parse` has been
-called. **Needs review** — new in v0.2.0; output format may evolve.
-
-#### `hover`
-
-Get type information at a position via LSP.
-
-| Parameter | Type | Required | Default | Status |
-|---|---|---|---|---|
-| `file` | string | yes | -- | Stable |
-| `line` | u32 | yes | -- | Stable |
-| `column` | u32 | yes | -- | Stable |
-
-Line and column are 1-based.
-
-#### `definition`
-
-Go to definition at a position via LSP.
-
-| Parameter | Type | Required | Default | Status |
-|---|---|---|---|---|
-| `file` | string | yes | -- | Stable |
-| `line` | u32 | yes | -- | Stable |
-| `column` | u32 | yes | -- | Stable |
-
-#### `lsp_references`
-
-Find all references at a position via LSP.
-
-| Parameter | Type | Required | Default | Status |
-|---|---|---|---|---|
-| `file` | string | yes | -- | Stable |
-| `line` | u32 | yes | -- | Stable |
-| `column` | u32 | yes | -- | Stable |
-
-#### `diagnostics`
-
-Get compile diagnostics for a file from LSP.
-
-| Parameter | Type | Required | Default | Status |
-|---|---|---|---|---|
-| `file` | string | yes | -- | Stable |
-| `content` | string | no | `null` | Needs review |
-
-#### `codegen`
-
-Execute a JavaScript code generator against the codebase model.
-
-| Parameter | Type | Required | Default | Status |
-|---|---|---|---|---|
-| `path` | string | no | `"."` | Stable |
-| `program` | string (JavaScript) | yes | -- | Fluid |
-| `format` | bool | no | `false` | Needs review |
-| `validate` | bool | no | `true` | Needs review |
-
-The `ctx` object API available to `program`:
-- `ctx.findFunction(name)` -- array of nodes
-- `ctx.findType(name)` -- array of nodes
-- `ctx.query({kind, name, file})` -- array of nodes (name supports glob)
-- `ctx.references(name)` -- array of call-site nodes
-- `ctx.readFile(path)` -- file content string or null
-- `ctx.addFile(path, content)` -- create a new file
-- `ctx.editFile(path, startByte, endByte, replacement)` -- raw byte-range edit
-- Node methods: `replaceText`, `replaceBody`, `replaceName`, `remove`, `insertBefore`, `insertAfter`
-- Rich ctx: `fields()`, `methods()`, `addField()`, `addMethod()`, `addImport()`
-
-This API is **fluid** and will gain new methods (see Frontier E: LSP on
-`ctx`).
-
-#### `apply`
-
-Apply pending changes to disk.
-
-| Parameter | Type | Required | Default | Status |
-|---|---|---|---|---|
-| `confirm` | bool | yes | -- | Stable |
-
-Creates `.sawmill.bak` backups. Checks conventions and warns on
-violations.
-
-#### `undo`
-
-Revert the last applied changes from `.sawmill.bak` backups. No
-parameters.
-
----
-
-### 3. File Formats
-
-#### `.sawmill/` directory
-
-| File | Purpose | Status |
+| `parse` | — | `path` | **Stable** |
+| `rename` | `from`, `to` | `path`, `format` | **Stable** |
+| `query` | — | `kind`, `name`, `file`, `raw_query`, `capture`, `path` | **Stable** |
+| `find_symbol` | `symbol` | `kind` | **Stable** |
+| `find_references` | `symbol` | — | **Stable** |
+| `transform` | — | `path`, `kind`, `name`, `file`, `raw_query`, `capture`, `action`, `code`, `before`, `after`, `transform_fn`, `format` | **Stable** |
+| `transform_batch` | `transforms` | `path`, `format` | **Needs review** — `transforms` is a JSON string, not a native array |
+| `codegen` | `program` | `path`, `format`, `validate` | **Stable** |
+| `apply` | `confirm` | — | **Stable** |
+| `undo` | — | — | **Stable** |
+| `teach_recipe` | `name`, `steps` | `description`, `params` | **Stable** |
+| `instantiate` | `recipe` | `params`, `path`, `format` | **Stable** |
+| `list_recipes` | — | — | **Stable** |
+| `teach_convention` | `name`, `check_program` | `description` | **Stable** |
+| `check_conventions` | — | `path` | **Stable** |
+| `list_conventions` | — | — | **Stable** |
+| `get_agent_prompt` | — | — | **Stable** |
+| `teach_by_example` | `name`, `exemplar`, `parameters` | `description`, `also_affects` | **Needs review** — `parameters` and `also_affects` are JSON strings |
+| `add_parameter` | `function`, `param_name` | `path`, `param_type`, `default_value`, `position`, `format` | **Stable** |
+| `remove_parameter` | `function`, `param_name` | `path`, `format` | **Stable** |
+
+### Configuration conventions
+
+| Item | Value | Stability |
 |---|---|---|
-| `store.db` | SQLite database (persistent state) | Needs review |
-| `*.sawmill.bak` | Backup files created by `apply` | Needs review |
+| Socket path | `~/.sawmill/sawmill.sock` | **Stable** |
+| Store path | `<root>/.sawmill/store.db` | **Stable** |
+| Backup suffix | `.sawmill.bak` | **Stable** |
+| Staging suffix | `.sawmill.new` | **Stable** |
+| Languages | Python, TypeScript, Rust, Go, C/C++ | **Stable** (additive only) |
+| JS runtime | QuickJS ES5 | **Needs review** — may upgrade to ES2020+ |
 
-#### `store.db` schema
+### Wire format
 
-**Table: `files`**
-
-| Column | Type | Notes |
+| Item | Value | Stability |
 |---|---|---|
-| `path` | TEXT | Primary key |
-| `language` | TEXT | NOT NULL |
-| `mtime_secs` | INTEGER | NOT NULL |
-| `mtime_nanos` | INTEGER | NOT NULL |
-| `content_hash` | TEXT | NOT NULL (BLAKE3) |
+| Handshake: client→daemon | `<root>\n` | **Stable** |
+| Handshake: daemon→client | `{"status":"ok","root":"...","files":N}\n` | **Stable** |
+| MCP protocol | JSON-RPC 2.0 | **Stable** (standard) |
+| Transport (stdio) | stdin/stdout | **Stable** |
+| Transport (daemon) | Unix domain socket | **Stable** |
 
-**Table: `symbols`**
+## Gaps and prerequisites for 1.0
 
-| Column | Type | Notes |
-|---|---|---|
-| `id` | INTEGER | Primary key |
-| `name` | TEXT | NOT NULL |
-| `kind` | TEXT | NOT NULL |
-| `file_path` | TEXT | NOT NULL, FK -> files(path) ON DELETE CASCADE |
-| `start_line` | INTEGER | NOT NULL |
-| `start_col` | INTEGER | NOT NULL |
-| `end_line` | INTEGER | NOT NULL |
-| `end_col` | INTEGER | NOT NULL |
+- **LSP integration**: The Rust version had `hover`, `definition`,
+  `lsp_references`, `diagnostics` tools. These are documented in the
+  agents-guide but not yet ported to Go. Must be implemented or
+  explicitly removed from documentation before 1.0.
+- **JSON string parameters**: `transform_batch.transforms`,
+  `teach_by_example.parameters`, and `teach_by_example.also_affects` are
+  passed as JSON-encoded strings rather than native JSON arrays/objects.
+  This is an mcp-go limitation — review whether the library supports
+  structured parameters before freezing.
+- **QuickJS ES version**: The JS runtime is ES5-only (no `let`, `const`,
+  arrow functions). Evaluate upgrading before 1.0 — changing later would
+  break user-saved recipes and conventions.
+- **File watcher robustness**: The watcher is new and lightly tested (4
+  tests). Needs soak time before 1.0.
+- **Delete recipe tool**: No `delete_recipe` MCP tool exists (only
+  `delete_convention`). Add for symmetry.
+- **Error recovery**: No test coverage for daemon crashes, socket
+  disconnections, or store corruption.
 
-Indexes: `idx_symbols_name(name)`, `idx_symbols_file(file_path)`,
-`idx_symbols_kind(kind)`.
+## Out of scope for 1.0
 
-**Table: `recipes`**
-
-| Column | Type | Notes |
-|---|---|---|
-| `name` | TEXT | Primary key |
-| `description` | TEXT | NOT NULL, default `''` |
-| `params_json` | TEXT | NOT NULL (JSON array of param names) |
-| `steps_json` | TEXT | NOT NULL (JSON array of transform steps) |
-
-**Table: `conventions`**
-
-| Column | Type | Notes |
-|---|---|---|
-| `name` | TEXT | Primary key |
-| `description` | TEXT | NOT NULL, default `''` |
-| `check_program` | TEXT | NOT NULL (JavaScript source) |
-
-Schema status: **Needs review.** The schema will likely gain columns
-(e.g., teach-by-example templates are not yet persisted as a distinct
-table; symbol kind vocabulary is not formalised).
-
----
-
-## Gaps and Prerequisites for 1.0
-
-1. **JavaScript runtime API stabilisation.** The `ctx` object (used by
-   `codegen`, `transform_fn`, and `teach_convention`) is the most
-   fluid surface. The node property set, mutation methods, and ctx
-   query methods need to be inventoried, documented, and frozen.
-
-2. **Action vocabulary.** The set of `action` strings accepted by
-   `transform` (`"replace"`, `"wrap"`, etc.) is not validated against
-   a closed enum -- invalid values produce runtime errors. Needs an
-   explicit enum with versioning semantics.
-
-3. **`kind` vocabulary.** The abstract node kinds (`"function"`,
-   `"class"`, `"call"`, `"import"`) accepted by `query` and
-   `transform` are implicit. Formalise as a documented, closed set.
-
-4. **Schema migration strategy.** `store.db` has no versioning or
-   migration mechanism. Adding columns or tables in a future release
-   would break existing databases silently. Needs at minimum a
-   `schema_version` table and migration runner.
-
-5. ~~**Frontier D (structural pre-flight checks).**~~ Done (v0.2.0).
-
-6. ~~**Frontier E (LSP on `ctx`).**~~ Done (v0.2.0).
-
-7. **Error contract.** MCP tool error responses are unstructured
-   strings. A structured error schema (error codes, categories) would
-   let agents handle failures programmatically.
-
-8. **Backup format.** The `.sawmill.bak` sidecar approach is simple but
-   has no multi-step history or atomicity guarantees. Review whether
-   the undo model is sufficient for a 1.0 contract.
-
-9. **Language coverage.** Adapters exist for Python, Rust,
-   TypeScript, Go, and C++. The adapter trait surface and the
-   per-language query behaviour need documented guarantees (which
-   `kind` values each language maps, what rename covers, etc.).
-
-10. **`format` flag.** Multiple tools accept `format: bool` but the
-    formatter integration (which formatter, how it is discovered) is
-    not documented or configurable.
-
-11. **Test coverage for MCP tools.** The codebase has 35 unit tests.
-    Integration-level tests exercising the MCP tool surface
-    end-to-end (parse -> transform -> apply -> undo cycle) are needed
-    before committing to stability.
-
-## Out of Scope for 1.0
-
-- **Plugin system / user-defined language adapters** (Frontier J).
-- **Multi-workspace / monorepo support** (Frontier H).
-- **Automatic LSP server management** (Frontier I).
-- **WASM / browser build** (Frontier L).
-- **Change decomposition / sharding** (Frontier G).
-- ~~**Agent prompt generation** (Frontier K)~~ -- done (v0.2.0).
-- **Incremental Tree-sitter re-parse** (Frontier F) -- current
-  whole-file re-parse is fast enough for the target codebase sizes.
-- **Deep semantic analysis** (type checking, control flow) beyond what
-  LSP provides.
-- **Non-stdio MCP transports** (HTTP, SSE). Stdio is sufficient for
-  the agent-tool use case.
+- Windows support (Unix socket architecture)
+- Remote/networked daemon access
+- Multi-user access control
+- Plugin system for custom language adapters
+- LSP server mode (sawmill as an LSP, not just MCP)

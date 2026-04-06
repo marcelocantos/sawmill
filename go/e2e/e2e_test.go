@@ -87,8 +87,9 @@ func dialMCP(t *testing.T, socketPath, projectRoot string) *mcpConn {
 	}
 	t.Cleanup(func() { conn.Close() })
 
-	// Handshake: send project root.
-	fmt.Fprintf(conn, "%s\n", projectRoot)
+	// Handshake: send JSON with project root and binary hash.
+	hs := map[string]string{"root": projectRoot, "binary_hash": ""}
+	json.NewEncoder(conn).Encode(hs)
 
 	reader := bufio.NewReader(conn)
 
