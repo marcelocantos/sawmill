@@ -21,6 +21,7 @@ import (
 	"github.com/marcelocantos/sawmill/adapters"
 	"github.com/marcelocantos/sawmill/forest"
 	"github.com/marcelocantos/sawmill/index"
+	"github.com/marcelocantos/sawmill/paths"
 	"github.com/marcelocantos/sawmill/store"
 	"github.com/marcelocantos/sawmill/watcher"
 )
@@ -41,7 +42,7 @@ type CodebaseModel struct {
 
 // Load loads a codebase model for the given directory.
 //
-//  1. Opens (or creates) the SQLite store at {root}/.sawmill/store.db
+//  1. Opens (or creates) the SQLite store at ~/.sawmill/stores/<hash>/store.db
 //  2. Walks the directory, checks each file against the store
 //  3. Re-parses only files that have changed (mtime or content hash mismatch)
 //  4. Builds the symbol index for changed files
@@ -51,13 +52,13 @@ func Load(root string) (*CodebaseModel, error) {
 		return nil, fmt.Errorf("resolving root %s: %w", root, err)
 	}
 
-	// Ensure .sawmill directory exists.
-	storeDir := filepath.Join(absRoot, ".sawmill")
+	// Store lives centrally under ~/.sawmill/stores/<hash>/.
+	storeDir := paths.StoreDir(absRoot)
 	if err := os.MkdirAll(storeDir, 0o755); err != nil {
 		return nil, fmt.Errorf("creating %s: %w", storeDir, err)
 	}
 
-	s, err := store.Open(filepath.Join(storeDir, "store.db"))
+	s, err := store.Open(paths.StorePath(absRoot))
 	if err != nil {
 		return nil, err
 	}
@@ -319,7 +320,7 @@ var skipDirs = map[string]bool{
 	"node_modules": true, "target": true, "__pycache__": true,
 	".git": true, ".svn": true, ".hg": true,
 	"vendor": true, "dist": true, "build": true,
-	".idea": true, ".vscode": true, ".sawmill": true,
+	".idea": true, ".vscode": true,
 }
 
 func shouldSkipDir(name string) bool {

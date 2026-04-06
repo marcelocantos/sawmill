@@ -18,7 +18,4 @@ Thumbs.db
 .env.*
 
 # Sawmill
-.sawmill/
-*.sawmill.bak
-*.sawmill.new
 docs/convergence-report.md

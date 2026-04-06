@@ -720,7 +720,7 @@ func (s *SawmillServer) handleApply(_ context.Context, req mcpgo.CallToolRequest
 		return toolText(fmt.Sprintf("Pending %d change(s). Set confirm=true to apply.", len(s.pending.Changes)))
 	}
 
-	backupPaths, err := forest.ApplyWithBackup(s.pending.Changes)
+	backupPaths, err := forest.ApplyWithBackup(s.model.Root, s.pending.Changes)
 	if err != nil {
 		return toolErr(fmt.Errorf("applying changes: %w", err))
 	}
@@ -742,7 +742,7 @@ func (s *SawmillServer) handleUndo(_ context.Context, _ mcpgo.CallToolRequest) (
 		return toolText("No backups available to restore.")
 	}
 
-	restored, err := forest.UndoFromBackups(s.lastBackups.Paths)
+	restored, err := forest.UndoFromBackups(s.model.Root, s.lastBackups.Paths)
 	if err != nil {
 		return toolErr(fmt.Errorf("undoing changes: %w", err))
 	}

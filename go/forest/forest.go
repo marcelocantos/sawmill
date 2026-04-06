@@ -8,6 +8,8 @@ package forest
 import (
 	"fmt"
 	"io/fs"
+
+	"github.com/marcelocantos/sawmill/paths"
 	"os"
 	"path/filepath"
 	"strings"
@@ -183,22 +185,26 @@ type QueryResult struct {
 	Text      string
 }
 
-// ApplyWithBackup applies a set of file changes atomically with backup files.
+// ApplyWithBackup applies a set of file changes atomically with backups stored
+// under the central ~/.sawmill/backups/ directory (not in the project tree).
 //
 // Strategy:
-//  1. Write all new content to ".sawmill.new" temp files.
-//  2. Back up all originals to ".sawmill.bak".
-//  3. Rename ".new" files to their final paths.
+//  1. Write all new content to staging files under ~/.sawmill/backups/<hash>/
+//  2. Back up all originals to the same directory
+//  3. Rename staging files to their final paths
 //
-// If anything fails during step 3 the ".bak" files allow recovery.
+// If anything fails during step 3 the backup files allow recovery.
 // Returns the list of backup paths on success.
-func ApplyWithBackup(changes []FileChange) ([]string, error) {
+func ApplyWithBackup(root string, changes []FileChange) ([]string, error) {
 	tempPaths := make([]string, 0, len(changes))
 	backupPaths := make([]string, 0, len(changes))
 
-	// Step 1: Write new content to temp files.
+	// Step 1: Write new content to staging files.
 	for _, change := range changes {
-		temp := appendExt(change.Path, "sawmill.new")
+		temp := paths.TempPath(root, change.Path)
+		if err := os.MkdirAll(filepath.Dir(temp), 0o755); err != nil {
+			return nil, fmt.Errorf("creating staging dir: %w", err)
+		}
 		if err := os.WriteFile(temp, change.NewSource, 0o644); err != nil {
 			return nil, fmt.Errorf("writing temp %s: %w", temp, err)
 		}
@@ -207,7 +213,10 @@ func ApplyWithBackup(changes []FileChange) ([]string, error) {
 
 	// Step 2: Back up originals.
 	for _, change := range changes {
-		backup := appendExt(change.Path, "sawmill.bak")
+		backup := paths.BackupPath(root, change.Path)
+		if err := os.MkdirAll(filepath.Dir(backup), 0o755); err != nil {
+			return nil, fmt.Errorf("creating backup dir: %w", err)
+		}
 		if _, err := os.Stat(change.Path); err == nil {
 			if err := copyFile(change.Path, backup); err != nil {
 				return nil, fmt.Errorf("backing up %s: %w", change.Path, err)
@@ -221,9 +230,8 @@ func ApplyWithBackup(changes []FileChange) ([]string, error) {
 		backupPaths = append(backupPaths, backup)
 	}
 
-	// Step 3: Rename temp files to final paths.
+	// Step 3: Rename staging files to final paths.
 	for i, change := range changes {
-		// Ensure parent directory exists (for new files).
 		if parent := filepath.Dir(change.Path); parent != "" {
 			if err := os.MkdirAll(parent, 0o755); err != nil {
 				return nil, fmt.Errorf("creating directory %s: %w", parent, err)
@@ -237,16 +245,20 @@ func ApplyWithBackup(changes []FileChange) ([]string, error) {
 	return backupPaths, nil
 }
 
-// UndoFromBackups restores files from their ".sawmill.bak" backups.
+// UndoFromBackups restores files from their central backup locations.
+// root is the project root used to derive original paths from backup paths.
 // Returns the number of files successfully restored.
-func UndoFromBackups(backupPaths []string) (int, error) {
+func UndoFromBackups(root string, backupPaths []string) (int, error) {
 	restored := 0
 	for _, backup := range backupPaths {
-		const suffix = ".sawmill.bak"
-		if !strings.HasSuffix(backup, suffix) {
+		if !strings.HasSuffix(backup, ".bak") {
 			continue
 		}
-		original := strings.TrimSuffix(backup, suffix)
+
+		original := paths.OriginalPath(root, backup)
+		if original == "" {
+			continue
+		}
 
 		if _, err := os.Stat(backup); os.IsNotExist(err) {
 			continue
@@ -261,7 +273,6 @@ func UndoFromBackups(backupPaths []string) (int, error) {
 		origExists := !os.IsNotExist(origErr)
 
 		if len(backupContent) == 0 && !origExists {
-			// Empty marker for a file that was newly created — nothing to restore.
 			_ = os.Remove(backup)
 			continue
 		}
@@ -270,7 +281,6 @@ func UndoFromBackups(backupPaths []string) (int, error) {
 			// File was newly created — remove it.
 			_ = os.Remove(original)
 		} else {
-			// Restore original content.
 			if err := os.WriteFile(original, backupContent, 0o644); err != nil {
 				return restored, fmt.Errorf("restoring %s: %w", original, err)
 			}
@@ -282,22 +292,11 @@ func UndoFromBackups(backupPaths []string) (int, error) {
 	return restored, nil
 }
 
-// CleanupBackups removes backup files after the user has confirmed the
-// applied changes are good. Stale ".sawmill.new" files are also removed.
+// CleanupBackups removes backup and staging files.
 func CleanupBackups(backupPaths []string) {
 	for _, backup := range backupPaths {
 		_ = os.Remove(backup)
 	}
-	for _, backup := range backupPaths {
-		newPath := strings.ReplaceAll(backup, ".sawmill.bak", ".sawmill.new")
-		_ = os.Remove(newPath)
-	}
-}
-
-// appendExt appends a new extension to the file path (preserving the original).
-// e.g. appendExt("foo/bar.go", "sawmill.bak") → "foo/bar.go.sawmill.bak"
-func appendExt(path, newExt string) string {
-	return path + "." + newExt
 }
 
 // copyFile copies src to dst, preserving content and permissions.
