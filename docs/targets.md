@@ -120,8 +120,6 @@ added (`go/rewrite/rewrite_test.go`). Go CI workflow created
 - **Status**: achieved
 - **Depends on**: 🎯T11.1, 🎯T11.4
 
-## Active
-
 ### 🎯T13 LSP client integration
 
 Sawmill can query language servers (gopls, rust-analyzer, pyright,
@@ -260,5 +258,5 @@ transpilation as set relations. The intra-language case is a tractable
 extraction that avoids the type-bridge and grammar-extension problems of
 the general case. See `docs/papers/equivalences.md` for the research paper.
 
-- **Weight**: not yet estimated
+- **Weight**: 1 (value 21 / cost 21)
 - **Status**: research — paper written, not yet designed or planned
