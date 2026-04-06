@@ -40,9 +40,9 @@ func main() {
 		fmt.Fprintf(os.Stderr, "  version   Print version and exit\n")
 	}
 
-	// No args or first arg starts with "-" → MCP stdio mode.
-	if len(os.Args) < 2 || strings.HasPrefix(os.Args[1], "-") {
-		runMCP(os.Args[1:])
+	// No args → MCP stdio mode.
+	if len(os.Args) < 2 {
+		runMCP(nil)
 		return
 	}
 
@@ -52,15 +52,18 @@ func main() {
 	switch cmd {
 	case "serve":
 		runServe(args)
-	case "version":
+	case "version", "--version", "-version":
 		fmt.Printf("sawmill %s\n", version)
-	case "--version", "-version":
-		fmt.Printf("sawmill %s\n", version)
-	case "--help", "-help", "help":
+	case "help", "--help", "-help":
 		flag.Usage()
 	case "--help-agent", "-help-agent":
 		printAgentHelp()
 	default:
+		// Anything else (including unknown flags) → MCP stdio mode.
+		if strings.HasPrefix(cmd, "-") {
+			runMCP(os.Args[1:])
+			return
+		}
 		fmt.Fprintf(os.Stderr, "unknown command %q\n", cmd)
 		flag.Usage()
 		os.Exit(1)

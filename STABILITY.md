@@ -9,19 +9,18 @@ pre-1.0 period exists to get these right.
 
 ## Interaction surface catalogue
 
-Snapshot as of v0.6.0. 107 public surface items.
+Snapshot as of v0.7.0. 104 public surface items.
 
 ### CLI
 
 | Item | Type | Stability |
 |---|---|---|
-| `sawmill` (default) | MCP stdio mode | **Stable** |
+| `sawmill` (default) | MCP stdio proxy (auto-starts daemon) | **Stable** |
 | `sawmill serve` | Background daemon | **Stable** |
 | `sawmill version` | Print version | **Stable** |
 | `sawmill --help` | Usage | **Stable** |
 | `sawmill --help-agent` | Agent guide | **Stable** |
-| `--socket` (both modes) | string, default `~/.sawmill/sawmill.sock` | **Stable** |
-| `--root` (default mode) | string, default cwd | **Stable** |
+| `--root` (both modes) | string, default cwd | **Stable** |
 
 ### MCP tools (20 tools, 63 parameters)
 
@@ -52,10 +51,12 @@ Snapshot as of v0.6.0. 107 public surface items.
 
 | Item | Value | Stability |
 |---|---|---|
-| Socket path | `~/.sawmill/sawmill.sock` | **Stable** |
-| Store path | `<root>/.sawmill/store.db` | **Stable** |
-| Backup suffix | `.sawmill.bak` | **Stable** |
-| Staging suffix | `.sawmill.new` | **Stable** |
+| Socket dir | `~/.sawmill/sockets/` | **Stable** |
+| Socket naming | `<sha256-hash-of-root>.sock` | **Stable** |
+| Store path | `~/.sawmill/stores/<hash>/store.db` | **Stable** |
+| Backup dir | `~/.sawmill/backups/<hash>/` | **Stable** |
+| Backup suffix | `.bak` | **Stable** |
+| Staging suffix | `.new` | **Stable** |
 | Languages | Python, TypeScript, Rust, Go, C/C++ | **Stable** (additive only) |
 | JS runtime | QuickJS ES5 | **Needs review** — may upgrade to ES2020+ |
 
@@ -63,18 +64,13 @@ Snapshot as of v0.6.0. 107 public surface items.
 
 | Item | Value | Stability |
 |---|---|---|
-| Handshake: client→daemon | `<root>\n` | **Stable** |
-| Handshake: daemon→client | `{"status":"ok","root":"...","files":N}\n` | **Stable** |
-| MCP protocol | JSON-RPC 2.0 | **Stable** (standard) |
-| Transport (stdio) | stdin/stdout | **Stable** |
-| Transport (daemon) | Unix domain socket | **Stable** |
+| Proxy ↔ daemon | mcpbridge RPC over Unix domain socket | **Stable** |
+| MCP protocol | JSON-RPC 2.0 (via mcp-go) | **Stable** (standard) |
+| Transport (stdio) | stdin/stdout (mcpbridge proxy) | **Stable** |
+| Transport (daemon) | Per-project Unix domain socket | **Stable** |
 
 ## Gaps and prerequisites for 1.0
 
-- **LSP integration**: The Rust version had `hover`, `definition`,
-  `lsp_references`, `diagnostics` tools. These are documented in the
-  agents-guide but not yet ported to Go. Must be implemented or
-  explicitly removed from documentation before 1.0.
 - **JSON string parameters**: `transform_batch.transforms`,
   `teach_by_example.parameters`, and `teach_by_example.also_affects` are
   passed as JSON-encoded strings rather than native JSON arrays/objects.
