@@ -119,3 +119,28 @@ added (`go/rewrite/rewrite_test.go`). Go CI workflow created
 - **Weight**: 1 (value 5 / cost 5)
 - **Status**: achieved
 - **Depends on**: 🎯T11.1, 🎯T11.4
+
+## Future
+
+### 🎯T12 Intra-language pattern equivalences
+
+Declare bidirectional equivalences between code patterns within a single
+language. A declaration like:
+
+```
+//python{logging.getLogger(${name}).${level}(${msg})}
+<=>
+//python{log.${level}(${msg}, logger=${name})}
+```
+
+states that two patterns are semantically equivalent. From this, the tool
+derives bidirectional refactoring, convention enforcement with automatic
+fixes, and migration planning via transitive equivalence chains.
+
+Originates from Marcelo Cantos's arr.ai work on cross-language
+transpilation as set relations. The intra-language case is a tractable
+extraction that avoids the type-bridge and grammar-extension problems of
+the general case. See `docs/papers/equivalences.md` for the research paper.
+
+- **Weight**: not yet estimated
+- **Status**: research — paper written, not yet designed or planned
