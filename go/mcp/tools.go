@@ -5,6 +5,7 @@ package mcp
 
 import (
 	"context"
+	_ "embed"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -21,6 +22,9 @@ import (
 	"github.com/marcelocantos/sawmill/rewrite"
 	"github.com/marcelocantos/sawmill/transform"
 )
+
+//go:embed agents-guide.md
+var embeddedAgentsGuide string
 
 // optString returns the string argument named key, or "" if absent/not a string.
 func optString(req mcpgo.CallToolRequest, key string) string {
@@ -1032,8 +1036,12 @@ func (s *SawmillServer) handleListConventions(_ context.Context, _ mcpgo.CallToo
 // ---- get_agent_prompt -----------------------------------------------------
 
 func (s *SawmillServer) handleGetAgentPrompt(_ context.Context, _ mcpgo.CallToolRequest) (*mcpgo.CallToolResult, error) {
-	// Try to read agents-guide.md from the binary's directory or from the
-	// project root. Fall back to a minimal inline description.
+	// Prefer the embedded guide (always available in release binaries).
+	if embeddedAgentsGuide != "" {
+		return toolText(embeddedAgentsGuide)
+	}
+
+	// Fall back to reading from disk (development).
 	for _, candidate := range agentsGuideSearchPaths() {
 		data, err := os.ReadFile(candidate)
 		if err == nil {
@@ -1041,10 +1049,7 @@ func (s *SawmillServer) handleGetAgentPrompt(_ context.Context, _ mcpgo.CallTool
 		}
 	}
 
-	// Minimal fallback.
-	return toolText(`Sawmill: AST-level multi-language code transformations via MCP.
-Tools: parse, rename, query, find_symbol, find_references, transform, transform_batch, codegen, apply, undo, teach_recipe, instantiate, list_recipes, teach_convention, check_conventions, list_conventions, teach_by_example, add_parameter, remove_parameter.
-Call parse <path> first, then use any other tool. Call apply after transforms to write changes to disk.`)
+	return toolText("Sawmill: AST-level multi-language code transformations via MCP. Call parse <path> first.")
 }
 
 // agentsGuideSearchPaths returns candidate paths for agents-guide.md.
