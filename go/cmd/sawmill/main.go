@@ -1,11 +1,12 @@
 // Copyright 2026 Marcelo Cantos
 // SPDX-License-Identifier: Apache-2.0
 
-// sawmill is the CLI entry point for the sawmill MCP server and daemon.
+// sawmill is an MCP server for AST-level multi-language code transformations.
 //
 // Usage:
 //
-//	sawmill daemon [--socket PATH]   start the daemon
+//	sawmill                          MCP stdio server (for MCP clients)
+//	sawmill serve [--socket PATH]    start the background daemon
 //	sawmill version                  print version and exit
 package main
 
@@ -38,16 +39,17 @@ func defaultSocketPath() string {
 
 func main() {
 	flag.Usage = func() {
-		fmt.Fprintf(os.Stderr, "Usage: sawmill <command> [options]\n\n")
+		fmt.Fprintf(os.Stderr, "Usage: sawmill [command] [options]\n\n")
 		fmt.Fprintf(os.Stderr, "Commands:\n")
-		fmt.Fprintf(os.Stderr, "  serve     Start the MCP server (stdio transport)\n")
-		fmt.Fprintf(os.Stderr, "  daemon    Start the sawmill daemon\n")
+		fmt.Fprintf(os.Stderr, "  (none)    MCP stdio server — auto-starts daemon if needed\n")
+		fmt.Fprintf(os.Stderr, "  serve     Start the background daemon (for brew services)\n")
 		fmt.Fprintf(os.Stderr, "  version   Print version and exit\n")
 	}
 
-	if len(os.Args) < 2 {
-		flag.Usage()
-		os.Exit(1)
+	// No args or first arg starts with "-" → MCP stdio mode.
+	if len(os.Args) < 2 || strings.HasPrefix(os.Args[1], "-") {
+		runMCP(os.Args[1:])
+		return
 	}
 
 	cmd := os.Args[1]
@@ -56,8 +58,6 @@ func main() {
 	switch cmd {
 	case "serve":
 		runServe(args)
-	case "daemon":
-		runDaemon(args)
 	case "version":
 		fmt.Printf("sawmill %s\n", version)
 	case "--version", "-version":
@@ -73,7 +73,7 @@ func main() {
 	}
 }
 
-// daemonRunning returns true if a daemon is already listening on socketPath.
+// daemonRunning returns true if a daemon is listening on socketPath.
 func daemonRunning(socketPath string) bool {
 	conn, err := net.Dial("unix", socketPath)
 	if err != nil {
@@ -83,13 +83,54 @@ func daemonRunning(socketPath string) bool {
 	return true
 }
 
-func runServe(args []string) {
-	fs := flag.NewFlagSet("serve", flag.ExitOnError)
-	socketPath := fs.String("socket", defaultSocketPath(), "Unix socket path of the running daemon")
-	rootPath := fs.String("root", "", "Project root to pass to the daemon (default: current directory)")
-	fs.Parse(args) //nolint:errcheck // ExitOnError handles errors
+// expandSocket expands ~ and returns the resolved socket path.
+func expandSocket(path string) string {
+	if strings.HasPrefix(path, "~/") {
+		if home, err := os.UserHomeDir(); err == nil {
+			return filepath.Join(home, path[2:])
+		}
+	}
+	return path
+}
 
-	// Resolve project root.
+// ensureDaemon starts the daemon if it isn't already running.
+func ensureDaemon(sockPath string) {
+	if daemonRunning(sockPath) {
+		return
+	}
+
+	exe, err := os.Executable()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "cannot find own executable: %v\n", err)
+		os.Exit(1)
+	}
+	cmd := exec.Command(exe, "serve", "--socket", sockPath)
+	cmd.Stdout = nil
+	cmd.Stderr = nil
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
+	if err := cmd.Start(); err != nil {
+		fmt.Fprintf(os.Stderr, "failed to start daemon: %v\n", err)
+		os.Exit(1)
+	}
+	_ = cmd.Process.Release()
+
+	for range 30 {
+		time.Sleep(100 * time.Millisecond)
+		if daemonRunning(sockPath) {
+			return
+		}
+	}
+	fmt.Fprintf(os.Stderr, "daemon did not start within 3 seconds\n")
+	os.Exit(1)
+}
+
+// runMCP is the default mode: MCP stdio server that proxies to the daemon.
+func runMCP(args []string) {
+	fs := flag.NewFlagSet("sawmill", flag.ExitOnError)
+	socketPath := fs.String("socket", defaultSocketPath(), "Unix socket path of the daemon")
+	rootPath := fs.String("root", "", "Project root (default: current directory)")
+	fs.Parse(args) //nolint:errcheck
+
 	root := *rootPath
 	if root == "" {
 		var err error
@@ -100,48 +141,23 @@ func runServe(args []string) {
 		}
 	}
 
-	// Expand ~ in socket path.
-	sockPath := *socketPath
-	if strings.HasPrefix(sockPath, "~/") {
-		if home, err := os.UserHomeDir(); err == nil {
-			sockPath = filepath.Join(home, sockPath[2:])
-		}
-	}
-
-	if !daemonRunning(sockPath) {
-		// Auto-start the daemon in the background.
-		exe, err := os.Executable()
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "cannot find own executable: %v\n", err)
-			os.Exit(1)
-		}
-		cmd := exec.Command(exe, "daemon", "--socket", sockPath)
-		cmd.Stdout = nil
-		cmd.Stderr = nil
-		// Detach: the daemon runs independently of this process.
-		cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
-		if err := cmd.Start(); err != nil {
-			fmt.Fprintf(os.Stderr, "failed to start daemon: %v\n", err)
-			os.Exit(1)
-		}
-		// Release the child so it isn't reaped with us.
-		_ = cmd.Process.Release()
-
-		// Wait for the daemon to become ready (up to 3 seconds).
-		for range 30 {
-			time.Sleep(100 * time.Millisecond)
-			if daemonRunning(sockPath) {
-				break
-			}
-		}
-		if !daemonRunning(sockPath) {
-			fmt.Fprintf(os.Stderr, "daemon did not start within 3 seconds\n")
-			os.Exit(1)
-		}
-	}
+	sockPath := expandSocket(*socketPath)
+	ensureDaemon(sockPath)
 
 	if err := proxy.Run(sockPath, root); err != nil {
-		fmt.Fprintf(os.Stderr, "proxy error: %v\n", err)
+		fmt.Fprintf(os.Stderr, "error: %v\n", err)
+		os.Exit(1)
+	}
+}
+
+// runServe starts the background daemon (for brew services or manual use).
+func runServe(args []string) {
+	fs := flag.NewFlagSet("serve", flag.ExitOnError)
+	socketPath := fs.String("socket", defaultSocketPath(), "Unix socket path")
+	fs.Parse(args) //nolint:errcheck
+
+	if err := daemon.Start(expandSocket(*socketPath)); err != nil {
+		fmt.Fprintf(os.Stderr, "serve error: %v\n", err)
 		os.Exit(1)
 	}
 }
@@ -149,41 +165,22 @@ func runServe(args []string) {
 func printAgentHelp() {
 	fmt.Printf(`sawmill %s — MCP server for AST-level multi-language code transformations
 
-COMMANDS
-  serve               Start the MCP server (stdio transport). Reads JSON-RPC
-                      on stdin, writes responses on stdout. Use this as the
-                      command for MCP clients (e.g. Claude Desktop).
+USAGE
+  sawmill                   MCP stdio server. Reads JSON-RPC on stdin,
+                            writes responses on stdout. Auto-starts the
+                            background daemon if needed.
 
-  daemon [--socket PATH]
-                      Start the sawmill daemon. Listens on a Unix socket
-                      (default: ~/.sawmill/sawmill.sock) and manages shared
-                      state across multiple MCP sessions. Recommended for
-                      long-running use via "brew services start sawmill".
+  sawmill serve             Start the background daemon. Listens on a Unix
+                            socket (default: ~/.sawmill/sawmill.sock).
+                            Use "brew services start sawmill" for auto-start.
 
-  version             Print version and exit.
+  sawmill version           Print version and exit.
+
+FLAGS
+  --socket PATH             Unix socket path (default: ~/.sawmill/sawmill.sock)
+  --root PATH               Project root (default: current directory)
 
 AGENT GUIDE
-  See agents-guide.md (served as MCP instructions) for the full guide on
-  available MCP tools, recipes, and conventions.
+  See agents-guide.md (embedded, also served via get_agent_prompt tool).
 `, version)
-}
-
-func runDaemon(args []string) {
-	fs := flag.NewFlagSet("daemon", flag.ExitOnError)
-	socketPath := fs.String("socket", defaultSocketPath(), "Unix socket path for the daemon")
-	fs.Parse(args) //nolint:errcheck // ExitOnError handles errors
-
-	// Expand ~ if not already done by the flag default.
-	path := *socketPath
-	if strings.HasPrefix(path, "~/") {
-		home, err := os.UserHomeDir()
-		if err == nil {
-			path = filepath.Join(home, path[2:])
-		}
-	}
-
-	if err := daemon.Start(path); err != nil {
-		fmt.Fprintf(os.Stderr, "daemon error: %v\n", err)
-		os.Exit(1)
-	}
 }

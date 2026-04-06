@@ -13,7 +13,7 @@ class Sawmill < Formula
   end
 
   service do
-    run [opt_bin/"sawmill", "daemon"]
+    run [opt_bin/"sawmill", "serve"]
     keep_alive true
     log_path var/"log/sawmill/sawmill.log"
     error_log_path var/"log/sawmill/sawmill.log"
