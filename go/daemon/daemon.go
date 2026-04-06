@@ -9,6 +9,7 @@ package daemon
 
 import (
 	"bufio"
+	"context"
 	"encoding/json"
 	"fmt"
 	"log"
@@ -20,6 +21,7 @@ import (
 	"sync"
 	"syscall"
 
+	"github.com/marcelocantos/sawmill/mcp"
 	"github.com/marcelocantos/sawmill/model"
 )
 
@@ -155,10 +157,21 @@ func (d *Daemon) handleConn(conn net.Conn) {
 		Files:  m.FileCount(),
 	})
 
-	// Connection remains open; MCP protocol will be layered here in 🎯T11.4.
-	// Block until the client closes the connection or the daemon shuts down.
-	select {
-	case <-d.done:
+	// Serve MCP JSON-RPC over the connection until the client disconnects or
+	// the daemon shuts down.
+	ctx, cancel := context.WithCancel(context.Background())
+	go func() {
+		select {
+		case <-d.done:
+			cancel()
+		case <-ctx.Done():
+		}
+	}()
+	defer cancel()
+
+	srv := mcp.NewServerWithModel(m)
+	if err := srv.ServeConn(ctx, conn); err != nil {
+		log.Printf("MCP session for %q ended: %v", root, err)
 	}
 }
 

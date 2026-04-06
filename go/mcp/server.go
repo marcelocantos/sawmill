@@ -8,6 +8,7 @@ package mcp
 
 import (
 	"context"
+	"io"
 	"sync"
 
 	mcpgo "github.com/mark3labs/mcp-go/mcp"
@@ -46,6 +47,32 @@ type SawmillServer struct {
 // successful parse call.
 func NewServer() *SawmillServer {
 	return &SawmillServer{}
+}
+
+// NewServerWithModel creates a SawmillServer pre-loaded with an existing
+// CodebaseModel. Use this when the daemon has already resolved the project
+// root and loaded the model; the MCP parse tool will still work but the
+// server can also operate on the pre-loaded state immediately.
+func NewServerWithModel(m *model.CodebaseModel) *SawmillServer {
+	return &SawmillServer{model: m}
+}
+
+// ServeConn serves MCP JSON-RPC over an arbitrary ReadWriteCloser (e.g. a
+// net.Conn). It blocks until the connection is closed or an error occurs.
+// The connection is closed before ServeConn returns.
+func (s *SawmillServer) ServeConn(ctx context.Context, conn io.ReadWriteCloser) error {
+	defer conn.Close()
+
+	srv := server.NewMCPServer(
+		"sawmill",
+		"0.5.0",
+		server.WithToolCapabilities(false),
+		server.WithRecovery(),
+	)
+	s.registerTools(srv)
+
+	stdioSrv := server.NewStdioServer(srv)
+	return stdioSrv.Listen(ctx, conn, conn)
 }
 
 // Serve registers all tools, then blocks serving MCP requests over stdio until

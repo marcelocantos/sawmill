@@ -102,7 +102,9 @@ launchd plist for `brew services start sawmill`. Daemon logs to
 
 - **Parent**: 🎯T11
 - **Weight**: 2.5 (value 5 / cost 2)
-- **Status**: not started
+- **Status**: achieved — `homebrew/sawmill.rb` formula with `service` block;
+  `homebrew/io.sawmill.daemon.plist` for non-Homebrew users; ldflags version
+  injection in CLI; `--help-agent` flag added.
 - **Depends on**: 🎯T11.3
 
 #### 🎯T11.7 Feature parity
