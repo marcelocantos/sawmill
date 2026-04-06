@@ -111,6 +111,14 @@ func (h *Handler) Call(name string, args map[string]any) (string, bool, error) {
 		return h.handleRemoveParameter(args)
 	case "clone_and_adapt":
 		return h.handleCloneAndAdapt(args)
+	case "hover":
+		return h.handleHover(args)
+	case "definition":
+		return h.handleDefinition(args)
+	case "lsp_references":
+		return h.handleLspReferences(args)
+	case "diagnostics":
+		return h.handleDiagnostics(args)
 	default:
 		return "", false, fmt.Errorf("unknown tool: %s", name)
 	}
@@ -461,6 +469,66 @@ func Definitions() []mcpgo.Tool {
 			),
 			mcpgo.WithBoolean("format",
 				mcpgo.Description("Run the language formatter after insertion"),
+			),
+		),
+
+		// hover
+		mcpgo.NewTool("hover",
+			mcpgo.WithDescription("Query the language server for type/hover information at a position."),
+			mcpgo.WithString("file",
+				mcpgo.Required(),
+				mcpgo.Description("Absolute file path"),
+			),
+			mcpgo.WithNumber("line",
+				mcpgo.Required(),
+				mcpgo.Description("Line number (1-based)"),
+			),
+			mcpgo.WithNumber("column",
+				mcpgo.Required(),
+				mcpgo.Description("Column number (1-based)"),
+			),
+		),
+
+		// definition
+		mcpgo.NewTool("definition",
+			mcpgo.WithDescription("Query the language server for the definition location of a symbol at a position."),
+			mcpgo.WithString("file",
+				mcpgo.Required(),
+				mcpgo.Description("Absolute file path"),
+			),
+			mcpgo.WithNumber("line",
+				mcpgo.Required(),
+				mcpgo.Description("Line number (1-based)"),
+			),
+			mcpgo.WithNumber("column",
+				mcpgo.Required(),
+				mcpgo.Description("Column number (1-based)"),
+			),
+		),
+
+		// lsp_references
+		mcpgo.NewTool("lsp_references",
+			mcpgo.WithDescription("Query the language server for all references to a symbol at a position."),
+			mcpgo.WithString("file",
+				mcpgo.Required(),
+				mcpgo.Description("Absolute file path"),
+			),
+			mcpgo.WithNumber("line",
+				mcpgo.Required(),
+				mcpgo.Description("Line number (1-based)"),
+			),
+			mcpgo.WithNumber("column",
+				mcpgo.Required(),
+				mcpgo.Description("Column number (1-based)"),
+			),
+		),
+
+		// diagnostics
+		mcpgo.NewTool("diagnostics",
+			mcpgo.WithDescription("Query the language server for diagnostics (errors, warnings) in a file."),
+			mcpgo.WithString("file",
+				mcpgo.Required(),
+				mcpgo.Description("Absolute file path"),
 			),
 		),
 	}

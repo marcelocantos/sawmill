@@ -1111,3 +1111,133 @@ func TestCloneAndAdaptTargetNotFound(t *testing.T) {
 		t.Errorf("expected 'not found' message, got: %s", text)
 	}
 }
+
+// --- LSP tool tests (graceful degradation) ---
+
+func TestHoverNoModel(t *testing.T) {
+	h := NewHandler()
+	text, isErr, err := h.handleHover(map[string]any{
+		"file":   "/tmp/test.py",
+		"line":   float64(1),
+		"column": float64(1),
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !isErr {
+		t.Error("expected tool error when no model is loaded")
+	}
+	if !strings.Contains(text, "no codebase loaded") {
+		t.Errorf("expected 'no codebase loaded', got: %s", text)
+	}
+}
+
+func TestHoverNoLSP(t *testing.T) {
+	// Use a file extension with no real LSP server (.test) to test degradation.
+	h := testHandler(t, map[string]string{
+		"hello.py": "def hello():\n    pass\n",
+	})
+	text, isErr, err := h.handleHover(map[string]any{
+		"file":   "/tmp/test.foobar",
+		"line":   float64(1),
+		"column": float64(1),
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if isErr {
+		t.Errorf("expected graceful degradation, not tool error: %s", text)
+	}
+	// Should return a helpful message about no adapter for this extension.
+	if !strings.Contains(text, "No language adapter") {
+		t.Errorf("expected 'No language adapter' message, got: %s", text)
+	}
+}
+
+func TestDefinitionNoModel(t *testing.T) {
+	h := NewHandler()
+	text, isErr, err := h.handleDefinition(map[string]any{
+		"file":   "/tmp/test.go",
+		"line":   float64(1),
+		"column": float64(1),
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !isErr {
+		t.Error("expected tool error when no model is loaded")
+	}
+	if !strings.Contains(text, "no codebase loaded") {
+		t.Errorf("expected 'no codebase loaded', got: %s", text)
+	}
+}
+
+func TestLspReferencesNoModel(t *testing.T) {
+	h := NewHandler()
+	text, isErr, err := h.handleLspReferences(map[string]any{
+		"file":   "/tmp/test.rs",
+		"line":   float64(1),
+		"column": float64(1),
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !isErr {
+		t.Error("expected tool error when no model is loaded")
+	}
+	if !strings.Contains(text, "no codebase loaded") {
+		t.Errorf("expected 'no codebase loaded', got: %s", text)
+	}
+}
+
+func TestDiagnosticsNoModel(t *testing.T) {
+	h := NewHandler()
+	text, isErr, err := h.handleDiagnostics(map[string]any{
+		"file": "/tmp/test.ts",
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !isErr {
+		t.Error("expected tool error when no model is loaded")
+	}
+	if !strings.Contains(text, "no codebase loaded") {
+		t.Errorf("expected 'no codebase loaded', got: %s", text)
+	}
+}
+
+func TestHoverMissingParams(t *testing.T) {
+	h := NewHandler()
+	text, isErr, err := h.handleHover(map[string]any{
+		"file": "/tmp/test.py",
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !isErr {
+		t.Error("expected tool error for missing line param")
+	}
+	if !strings.Contains(text, "line is required") {
+		t.Errorf("expected 'line is required', got: %s", text)
+	}
+}
+
+func TestHoverUnknownExtension(t *testing.T) {
+	h := testHandler(t, map[string]string{
+		"hello.py": "x = 1\n",
+	})
+	text, isErr, err := h.handleHover(map[string]any{
+		"file":   "/tmp/test.xyz",
+		"line":   float64(1),
+		"column": float64(1),
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if isErr {
+		t.Errorf("expected graceful degradation, not tool error: %s", text)
+	}
+	if !strings.Contains(text, "No language adapter") {
+		t.Errorf("expected 'No language adapter' message, got: %s", text)
+	}
+}

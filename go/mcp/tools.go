@@ -4,22 +4,24 @@
 package mcp
 
 import (
+	"context"
 	_ "embed"
 	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
-	"strings"
-
 	"sort"
 	"strconv"
+	"strings"
 
 	tree_sitter "github.com/tree-sitter/go-tree-sitter"
 
+	"github.com/marcelocantos/sawmill/adapters"
 	"github.com/marcelocantos/sawmill/codegen"
 	"github.com/marcelocantos/sawmill/exemplar"
 	"github.com/marcelocantos/sawmill/forest"
 	"github.com/marcelocantos/sawmill/jsengine"
+	"github.com/marcelocantos/sawmill/lspclient"
 	"github.com/marcelocantos/sawmill/model"
 	"github.com/marcelocantos/sawmill/rewrite"
 	"github.com/marcelocantos/sawmill/transform"
@@ -646,7 +648,12 @@ func (h *Handler) handleCodegen(args map[string]any) (string, bool, error) {
 		return err.Error(), true, nil
 	}
 
-	changes, err := codegen.RunCodegen(m.Forest, program)
+	var changes []forest.FileChange
+	if m.LSP != nil {
+		changes, err = codegen.RunCodegenWithLSP(m.Forest, program, m.LSP, m.Root)
+	} else {
+		changes, err = codegen.RunCodegen(m.Forest, program)
+	}
 	if err != nil {
 		return fmt.Sprintf("codegen: %v", err), true, nil
 	}
@@ -1780,4 +1787,209 @@ func resolveInsertPosition(file *forest.ParsedFile, position string) (uint, erro
 	default:
 		return 0, fmt.Errorf("invalid position %q: must be end, start, or after:<symbol_name>", position)
 	}
+}
+
+// ---- LSP tools --------------------------------------------------------------
+
+// requireInt extracts a required integer argument from the args map.
+// JSON numbers arrive as float64.
+func requireInt(args map[string]any, key string) (uint32, error) {
+	v, ok := args[key]
+	if !ok {
+		return 0, fmt.Errorf("%s is required", key)
+	}
+	switch n := v.(type) {
+	case float64:
+		return uint32(n), nil
+	case int:
+		return uint32(n), nil
+	case json.Number:
+		i, err := n.Int64()
+		if err != nil {
+			return 0, fmt.Errorf("%s: %w", key, err)
+		}
+		return uint32(i), nil
+	default:
+		return 0, fmt.Errorf("%s must be a number", key)
+	}
+}
+
+// getLSPClient returns the LSP client for the given file, or (nil, msg) when
+// no LSP is available. The second return is a user-facing message.
+func (h *Handler) getLSPClient(m *model.CodebaseModel, file string) (*lspclient.Client, string) {
+	ext := strings.TrimPrefix(filepath.Ext(file), ".")
+	adapter := adapters.ForExtension(ext)
+	if adapter == nil {
+		return nil, fmt.Sprintf("No language adapter for .%s files", ext)
+	}
+	if adapter.LSPCommand() == nil {
+		return nil, fmt.Sprintf("No LSP server configured for %s", adapter.LSPLanguageID())
+	}
+	if m.LSP == nil {
+		return nil, "LSP pool not initialized"
+	}
+	client := m.LSP.Get(adapter, m.Root)
+	if client == nil {
+		cmd := adapter.LSPCommand()
+		return nil, fmt.Sprintf("LSP server %q not available (not installed or failed to start)", cmd[0])
+	}
+	return client, ""
+}
+
+func (h *Handler) handleHover(args map[string]any) (string, bool, error) {
+	file, err := requireString(args, "file")
+	if err != nil {
+		return err.Error(), true, nil
+	}
+	line, err := requireInt(args, "line")
+	if err != nil {
+		return err.Error(), true, nil
+	}
+	col, err := requireInt(args, "column")
+	if err != nil {
+		return err.Error(), true, nil
+	}
+
+	h.mu.Lock()
+	defer h.mu.Unlock()
+
+	m, err := h.requireModel()
+	if err != nil {
+		return err.Error(), true, nil
+	}
+
+	client, msg := h.getLSPClient(m, file)
+	if client == nil {
+		return msg, false, nil
+	}
+
+	text, err := client.Hover(context.Background(), file, line, col)
+	if err != nil {
+		return fmt.Sprintf("hover: %v", err), true, nil
+	}
+	if text == "" {
+		return "No type information available", false, nil
+	}
+	return text, false, nil
+}
+
+func (h *Handler) handleDefinition(args map[string]any) (string, bool, error) {
+	file, err := requireString(args, "file")
+	if err != nil {
+		return err.Error(), true, nil
+	}
+	line, err := requireInt(args, "line")
+	if err != nil {
+		return err.Error(), true, nil
+	}
+	col, err := requireInt(args, "column")
+	if err != nil {
+		return err.Error(), true, nil
+	}
+
+	h.mu.Lock()
+	defer h.mu.Unlock()
+
+	m, err := h.requireModel()
+	if err != nil {
+		return err.Error(), true, nil
+	}
+
+	client, msg := h.getLSPClient(m, file)
+	if client == nil {
+		return msg, false, nil
+	}
+
+	locs, err := client.Definition(context.Background(), file, line, col)
+	if err != nil {
+		return fmt.Sprintf("definition: %v", err), true, nil
+	}
+	if len(locs) == 0 {
+		return "No definition found", false, nil
+	}
+	return formatLocations(locs), false, nil
+}
+
+func (h *Handler) handleLspReferences(args map[string]any) (string, bool, error) {
+	file, err := requireString(args, "file")
+	if err != nil {
+		return err.Error(), true, nil
+	}
+	line, err := requireInt(args, "line")
+	if err != nil {
+		return err.Error(), true, nil
+	}
+	col, err := requireInt(args, "column")
+	if err != nil {
+		return err.Error(), true, nil
+	}
+
+	h.mu.Lock()
+	defer h.mu.Unlock()
+
+	m, err := h.requireModel()
+	if err != nil {
+		return err.Error(), true, nil
+	}
+
+	client, msg := h.getLSPClient(m, file)
+	if client == nil {
+		return msg, false, nil
+	}
+
+	locs, err := client.References(context.Background(), file, line, col)
+	if err != nil {
+		return fmt.Sprintf("references: %v", err), true, nil
+	}
+	if len(locs) == 0 {
+		return "No references found", false, nil
+	}
+	return formatLocations(locs), false, nil
+}
+
+func (h *Handler) handleDiagnostics(args map[string]any) (string, bool, error) {
+	file, err := requireString(args, "file")
+	if err != nil {
+		return err.Error(), true, nil
+	}
+
+	h.mu.Lock()
+	defer h.mu.Unlock()
+
+	m, err := h.requireModel()
+	if err != nil {
+		return err.Error(), true, nil
+	}
+
+	client, msg := h.getLSPClient(m, file)
+	if client == nil {
+		return msg, false, nil
+	}
+
+	diags, err := client.Diagnostics(context.Background(), file)
+	if err != nil {
+		return fmt.Sprintf("diagnostics: %v", err), true, nil
+	}
+	if len(diags) == 0 {
+		return "No diagnostics", false, nil
+	}
+	return formatDiagnostics(diags), false, nil
+}
+
+// formatLocations formats a slice of Locations as "file:line:col" entries.
+func formatLocations(locs []lspclient.Location) string {
+	var sb strings.Builder
+	for _, l := range locs {
+		fmt.Fprintf(&sb, "%s:%d:%d\n", l.File, l.Line, l.Column)
+	}
+	return sb.String()
+}
+
+// formatDiagnostics formats a slice of Diagnostics as "file:line:col [severity] message".
+func formatDiagnostics(diags []lspclient.Diagnostic) string {
+	var sb strings.Builder
+	for _, d := range diags {
+		fmt.Fprintf(&sb, "%s:%d:%d [%s] %s\n", d.File, d.Line, d.Column, d.Severity, d.Message)
+	}
+	return sb.String()
 }

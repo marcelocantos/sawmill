@@ -142,7 +142,13 @@ Degrades gracefully when the language server binary is not installed.
 See `docs/agent-usage-archaeology.md` §4.1 for full implementation design.
 
 - **Weight**: 13 (value 21 / cost 8)
-- **Status**: designed — adapter plumbing exists, ctx stubs exist, need client implementation
+- **Status**: achieved — `go/lspclient/` package with raw JSON-RPC 2.0 client,
+  `Pool` for per-language-per-root management, `Client` with hover/definition/
+  references/diagnostics. Four MCP tools (`hover`, `definition`, `lsp_references`,
+  `diagnostics`) in `go/mcp/`. `RunCodegenWithLSP` wires `ctx.typeOf`,
+  `ctx.definition`, `ctx.lspReferences`, `ctx.diagnostics`, `ctx.hasLsp` in
+  the codegen QuickJS runtime. Degrades gracefully when no LSP binary is
+  installed. 17 new tests passing.
 - **Gates**: 🎯T15, 🎯T16, 🎯T17, 🎯T19
 
 ### 🎯T14 File rename with import cascade
