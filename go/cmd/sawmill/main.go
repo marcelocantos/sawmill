@@ -5,12 +5,13 @@
 //
 // Usage:
 //
-//	sawmill                          MCP stdio server (for MCP clients)
-//	sawmill serve [--socket PATH]    start the background daemon
+//	sawmill                          MCP stdio proxy (for MCP clients)
+//	sawmill serve [--root PATH]      start a background daemon for a project
 //	sawmill version                  print version and exit
 package main
 
 import (
+	"context"
 	"flag"
 	"fmt"
 	"net"
@@ -21,34 +22,27 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/marcelocantos/mcpbridge"
+
 	"github.com/marcelocantos/sawmill/daemon"
-	"github.com/marcelocantos/sawmill/proxy"
+	"github.com/marcelocantos/sawmill/paths"
 )
 
 // version is set by ldflags at build time.
 var version = "dev"
 
-// defaultSocketPath returns the default Unix socket path (~/.sawmill/sawmill.sock).
-func defaultSocketPath() string {
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return ".sawmill/sawmill.sock"
-	}
-	return filepath.Join(home, ".sawmill", "sawmill.sock")
-}
-
 func main() {
 	flag.Usage = func() {
 		fmt.Fprintf(os.Stderr, "Usage: sawmill [command] [options]\n\n")
 		fmt.Fprintf(os.Stderr, "Commands:\n")
-		fmt.Fprintf(os.Stderr, "  (none)    MCP stdio server — auto-starts daemon if needed\n")
-		fmt.Fprintf(os.Stderr, "  serve     Start the background daemon (for brew services)\n")
+		fmt.Fprintf(os.Stderr, "  (none)    MCP stdio proxy — auto-starts daemon if needed\n")
+		fmt.Fprintf(os.Stderr, "  serve     Start a background daemon for a project\n")
 		fmt.Fprintf(os.Stderr, "  version   Print version and exit\n")
 	}
 
-	// No args or first arg starts with "-" → MCP stdio mode.
-	if len(os.Args) < 2 || strings.HasPrefix(os.Args[1], "-") {
-		runMCP(os.Args[1:])
+	// No args → MCP stdio mode.
+	if len(os.Args) < 2 {
+		runMCP(nil)
 		return
 	}
 
@@ -58,19 +52,40 @@ func main() {
 	switch cmd {
 	case "serve":
 		runServe(args)
-	case "version":
+	case "version", "--version", "-version":
 		fmt.Printf("sawmill %s\n", version)
-	case "--version", "-version":
-		fmt.Printf("sawmill %s\n", version)
-	case "--help", "-help", "help":
+	case "help", "--help", "-help":
 		flag.Usage()
 	case "--help-agent", "-help-agent":
 		printAgentHelp()
 	default:
+		// Anything else (including unknown flags) → MCP stdio mode.
+		if strings.HasPrefix(cmd, "-") {
+			runMCP(os.Args[1:])
+			return
+		}
 		fmt.Fprintf(os.Stderr, "unknown command %q\n", cmd)
 		flag.Usage()
 		os.Exit(1)
 	}
+}
+
+// resolveRoot resolves the project root from the flag or cwd.
+func resolveRoot(rootFlag string) string {
+	if rootFlag != "" {
+		abs, err := filepath.Abs(rootFlag)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "resolving root: %v\n", err)
+			os.Exit(1)
+		}
+		return abs
+	}
+	root, err := os.Getwd()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "resolving working directory: %v\n", err)
+		os.Exit(1)
+	}
+	return root
 }
 
 // daemonRunning returns true if a daemon is listening on socketPath.
@@ -83,18 +98,8 @@ func daemonRunning(socketPath string) bool {
 	return true
 }
 
-// expandSocket expands ~ and returns the resolved socket path.
-func expandSocket(path string) string {
-	if strings.HasPrefix(path, "~/") {
-		if home, err := os.UserHomeDir(); err == nil {
-			return filepath.Join(home, path[2:])
-		}
-	}
-	return path
-}
-
-// ensureDaemon starts the daemon if it isn't already running.
-func ensureDaemon(sockPath string) {
+// ensureDaemon starts a daemon for the given root if it isn't already running.
+func ensureDaemon(sockPath, root string) {
 	if daemonRunning(sockPath) {
 		return
 	}
@@ -104,7 +109,7 @@ func ensureDaemon(sockPath string) {
 		fmt.Fprintf(os.Stderr, "cannot find own executable: %v\n", err)
 		os.Exit(1)
 	}
-	cmd := exec.Command(exe, "serve", "--socket", sockPath)
+	cmd := exec.Command(exe, "serve", "--root", root)
 	cmd.Stdout = nil
 	cmd.Stderr = nil
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
@@ -124,39 +129,38 @@ func ensureDaemon(sockPath string) {
 	os.Exit(1)
 }
 
-// runMCP is the default mode: MCP stdio server that proxies to the daemon.
+// runMCP is the default mode: MCP stdio proxy that connects to a per-project daemon.
 func runMCP(args []string) {
 	fs := flag.NewFlagSet("sawmill", flag.ExitOnError)
-	socketPath := fs.String("socket", defaultSocketPath(), "Unix socket path of the daemon")
 	rootPath := fs.String("root", "", "Project root (default: current directory)")
 	fs.Parse(args) //nolint:errcheck
 
-	root := *rootPath
-	if root == "" {
-		var err error
-		root, err = os.Getwd()
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "resolving working directory: %v\n", err)
-			os.Exit(1)
-		}
-	}
+	root := resolveRoot(*rootPath)
+	sockPath := paths.SocketPath(root)
 
-	sockPath := expandSocket(*socketPath)
-	ensureDaemon(sockPath)
+	ensureDaemon(sockPath, root)
 
-	if err := proxy.Run(sockPath, root); err != nil {
+	if err := mcpbridge.RunProxy(context.Background(), mcpbridge.ProxyConfig{
+		SocketPath: sockPath,
+		ServerName: "sawmill",
+		Version:    version,
+	}); err != nil {
 		fmt.Fprintf(os.Stderr, "error: %v\n", err)
+		fmt.Fprintf(os.Stderr, "hint: the daemon may have stopped — it will auto-start on next invocation\n")
 		os.Exit(1)
 	}
 }
 
-// runServe starts the background daemon (for brew services or manual use).
+// runServe starts the background daemon for a specific project root.
 func runServe(args []string) {
 	fs := flag.NewFlagSet("serve", flag.ExitOnError)
-	socketPath := fs.String("socket", defaultSocketPath(), "Unix socket path")
+	rootPath := fs.String("root", "", "Project root (default: current directory)")
 	fs.Parse(args) //nolint:errcheck
 
-	if err := daemon.Start(expandSocket(*socketPath)); err != nil {
+	root := resolveRoot(*rootPath)
+	sockPath := paths.SocketPath(root)
+
+	if err := daemon.Start(sockPath, root); err != nil {
 		fmt.Fprintf(os.Stderr, "serve error: %v\n", err)
 		os.Exit(1)
 	}
@@ -166,18 +170,17 @@ func printAgentHelp() {
 	fmt.Printf(`sawmill %s — MCP server for AST-level multi-language code transformations
 
 USAGE
-  sawmill                   MCP stdio server. Reads JSON-RPC on stdin,
+  sawmill                   MCP stdio proxy. Reads JSON-RPC on stdin,
                             writes responses on stdout. Auto-starts the
                             background daemon if needed.
 
-  sawmill serve             Start the background daemon. Listens on a Unix
-                            socket (default: ~/.sawmill/sawmill.sock).
-                            Use "brew services start sawmill" for auto-start.
+  sawmill serve             Start a background daemon for the current
+                            project root. Listens on a per-project Unix
+                            socket under ~/.sawmill/sockets/.
 
   sawmill version           Print version and exit.
 
 FLAGS
-  --socket PATH             Unix socket path (default: ~/.sawmill/sawmill.sock)
   --root PATH               Project root (default: current directory)
 
 AGENT GUIDE

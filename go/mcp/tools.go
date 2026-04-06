@@ -4,15 +4,12 @@
 package mcp
 
 import (
-	"context"
 	_ "embed"
 	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
-
-	mcpgo "github.com/mark3labs/mcp-go/mcp"
 
 	"github.com/marcelocantos/sawmill/codegen"
 	"github.com/marcelocantos/sawmill/exemplar"
@@ -26,15 +23,24 @@ import (
 //go:embed agents-guide.md
 var embeddedAgentsGuide string
 
+// requireString returns the string argument named key, or an error if absent/empty.
+func requireString(args map[string]any, key string) (string, error) {
+	v, ok := args[key].(string)
+	if !ok || v == "" {
+		return "", fmt.Errorf("%s is required", key)
+	}
+	return v, nil
+}
+
 // optString returns the string argument named key, or "" if absent/not a string.
-func optString(req mcpgo.CallToolRequest, key string) string {
-	v, _ := req.RequireString(key)
+func optString(args map[string]any, key string) string {
+	v, _ := args[key].(string)
 	return v
 }
 
 // optBool returns the bool argument named key, or false if absent.
-func optBool(req mcpgo.CallToolRequest, key string) bool {
-	v, _ := req.RequireBool(key)
+func optBool(args map[string]any, key string) bool {
+	v, _ := args[key].(bool)
 	return v
 }
 
@@ -46,85 +52,75 @@ func ptr(s string) *string {
 	return &s
 }
 
-// toolErr returns a tool-error result for the given error.
-func toolErr(err error) (*mcpgo.CallToolResult, error) {
-	return mcpgo.NewToolResultError(err.Error()), nil
-}
-
-// toolText returns a successful tool result with the given text.
-func toolText(text string) (*mcpgo.CallToolResult, error) {
-	return mcpgo.NewToolResultText(text), nil
-}
-
 // requireModel returns the active model or an error if parse has not been called.
-func (s *SawmillServer) requireModel() (*model.CodebaseModel, error) {
-	if s.model == nil {
+func (h *Handler) requireModel() (*model.CodebaseModel, error) {
+	if h.model == nil {
 		return nil, fmt.Errorf("no codebase loaded — call parse first")
 	}
-	return s.model, nil
+	return h.model, nil
 }
 
 // ---- parse ----------------------------------------------------------------
 
-func (s *SawmillServer) handleParse(_ context.Context, req mcpgo.CallToolRequest) (*mcpgo.CallToolResult, error) {
-	path := optString(req, "path")
+func (h *Handler) handleParse(args map[string]any) (string, bool, error) {
+	path := optString(args, "path")
 
-	s.mu.Lock()
-	defer s.mu.Unlock()
+	h.mu.Lock()
+	defer h.mu.Unlock()
 
-	if path == "" && s.model != nil {
+	if path == "" && h.model != nil {
 		// No path and model already loaded (e.g. by daemon handshake) — just
 		// sync and return the summary.
-		_ = s.model.Sync()
+		_ = h.model.Sync()
 	} else {
 		// Load a new model (or re-load if path changed).
 		if path == "" {
-			return toolErr(fmt.Errorf("path is required when no model is pre-loaded"))
+			return "path is required when no model is pre-loaded", true, nil
 		}
-		if s.model != nil {
-			_ = s.model.Close()
+		if h.model != nil {
+			_ = h.model.Close()
 		}
-		s.pending = nil
-		s.lastBackups = nil
+		h.pending = nil
+		h.lastBackups = nil
 
 		m, err := model.Load(path)
 		if err != nil {
-			return toolErr(fmt.Errorf("parsing %q: %w", path, err))
+			return fmt.Sprintf("parsing %q: %v", path, err), true, nil
 		}
-		s.model = m
+		h.model = m
 	}
 
 	// Build summary.
-	summary := s.model.SummaryByLanguage()
+	summary := h.model.SummaryByLanguage()
 	var sb strings.Builder
-	fmt.Fprintf(&sb, "Parsed %d file(s) in %s\n", s.model.FileCount(), s.model.Root)
+	fmt.Fprintf(&sb, "Parsed %d file(s) in %s\n", h.model.FileCount(), h.model.Root)
 	for lang, count := range summary {
 		fmt.Fprintf(&sb, "  %s: %d\n", lang, count)
 	}
 
-	return toolText(sb.String())
+	return sb.String(), false, nil
 }
 
 // ---- rename ---------------------------------------------------------------
 
-func (s *SawmillServer) handleRename(_ context.Context, req mcpgo.CallToolRequest) (*mcpgo.CallToolResult, error) {
-	from, err := req.RequireString("from")
+func (h *Handler) handleRename(args map[string]any) (string, bool, error) {
+	from, err := requireString(args, "from")
 	if err != nil {
-		return toolErr(err)
+		return err.Error(), true, nil
 	}
-	to, err := req.RequireString("to")
+	to, err := requireString(args, "to")
 	if err != nil {
-		return toolErr(err)
+		return err.Error(), true, nil
 	}
-	pathFilter := optString(req, "path")
-	format := optBool(req, "format")
+	pathFilter := optString(args, "path")
+	format := optBool(args, "format")
 
-	s.mu.Lock()
-	defer s.mu.Unlock()
+	h.mu.Lock()
+	defer h.mu.Unlock()
 
-	m, err := s.requireModel()
+	m, err := h.requireModel()
 	if err != nil {
-		return toolErr(err)
+		return err.Error(), true, nil
 	}
 
 	var changes []forest.FileChange
@@ -137,7 +133,7 @@ func (s *SawmillServer) handleRename(_ context.Context, req mcpgo.CallToolReques
 
 		newSource, err := rewrite.RenameInFile(file.OriginalSource, file.Tree, file.Adapter, from, to)
 		if err != nil {
-			return toolErr(fmt.Errorf("renaming in %s: %w", file.Path, err))
+			return fmt.Sprintf("renaming in %s: %v", file.Path, err), true, nil
 		}
 
 		if string(newSource) == string(file.OriginalSource) {
@@ -159,10 +155,10 @@ func (s *SawmillServer) handleRename(_ context.Context, req mcpgo.CallToolReques
 	}
 
 	if len(changes) == 0 {
-		return toolText(fmt.Sprintf("No occurrences of %q found.", from))
+		return fmt.Sprintf("No occurrences of %q found.", from), false, nil
 	}
 
-	s.pending = &PendingChanges{Changes: changes, Diffs: diffs}
+	h.pending = &PendingChanges{Changes: changes, Diffs: diffs}
 
 	var sb strings.Builder
 	fmt.Fprintf(&sb, "Renamed %q → %q in %d file(s). Call apply to write changes.\n\n", from, to, len(changes))
@@ -170,25 +166,25 @@ func (s *SawmillServer) handleRename(_ context.Context, req mcpgo.CallToolReques
 		sb.WriteString(d)
 		sb.WriteString("\n")
 	}
-	return toolText(sb.String())
+	return sb.String(), false, nil
 }
 
 // ---- query ----------------------------------------------------------------
 
-func (s *SawmillServer) handleQuery(_ context.Context, req mcpgo.CallToolRequest) (*mcpgo.CallToolResult, error) {
-	kind := optString(req, "kind")
-	name := optString(req, "name")
-	fileFilter := optString(req, "file")
-	rawQuery := optString(req, "raw_query")
-	capture := optString(req, "capture")
-	pathFilter := optString(req, "path")
+func (h *Handler) handleQuery(args map[string]any) (string, bool, error) {
+	kind := optString(args, "kind")
+	name := optString(args, "name")
+	fileFilter := optString(args, "file")
+	rawQuery := optString(args, "raw_query")
+	capture := optString(args, "capture")
+	pathFilter := optString(args, "path")
 
-	s.mu.Lock()
-	defer s.mu.Unlock()
+	h.mu.Lock()
+	defer h.mu.Unlock()
 
-	m, err := s.requireModel()
+	m, err := h.requireModel()
 	if err != nil {
-		return toolErr(err)
+		return err.Error(), true, nil
 	}
 
 	var matchSpec *transform.Match
@@ -197,7 +193,7 @@ func (s *SawmillServer) handleQuery(_ context.Context, req mcpgo.CallToolRequest
 	} else if kind != "" {
 		matchSpec = transform.AbstractMatch(kind, name, fileFilter)
 	} else {
-		return toolErr(fmt.Errorf("provide either kind or raw_query"))
+		return "provide either kind or raw_query", true, nil
 	}
 
 	var results []forest.QueryResult
@@ -207,13 +203,13 @@ func (s *SawmillServer) handleQuery(_ context.Context, req mcpgo.CallToolRequest
 		}
 		fileResults, err := transform.QueryFile(file, matchSpec)
 		if err != nil {
-			return toolErr(fmt.Errorf("querying %s: %w", file.Path, err))
+			return fmt.Sprintf("querying %s: %v", file.Path, err), true, nil
 		}
 		results = append(results, fileResults...)
 	}
 
 	if len(results) == 0 {
-		return toolText("No matches found.")
+		return "No matches found.", false, nil
 	}
 
 	var sb strings.Builder
@@ -225,33 +221,33 @@ func (s *SawmillServer) handleQuery(_ context.Context, req mcpgo.CallToolRequest
 			fmt.Fprintf(&sb, "  %s:%d:%d  [%s]\n    %s\n", r.Path, r.StartLine, r.StartCol, r.Kind, r.Text)
 		}
 	}
-	return toolText(sb.String())
+	return sb.String(), false, nil
 }
 
 // ---- find_symbol ----------------------------------------------------------
 
-func (s *SawmillServer) handleFindSymbol(_ context.Context, req mcpgo.CallToolRequest) (*mcpgo.CallToolResult, error) {
-	symbol, err := req.RequireString("symbol")
+func (h *Handler) handleFindSymbol(args map[string]any) (string, bool, error) {
+	symbol, err := requireString(args, "symbol")
 	if err != nil {
-		return toolErr(err)
+		return err.Error(), true, nil
 	}
-	kind := optString(req, "kind")
+	kind := optString(args, "kind")
 
-	s.mu.Lock()
-	defer s.mu.Unlock()
+	h.mu.Lock()
+	defer h.mu.Unlock()
 
-	m, err := s.requireModel()
+	m, err := h.requireModel()
 	if err != nil {
-		return toolErr(err)
+		return err.Error(), true, nil
 	}
 
 	records, err := m.FindSymbols(symbol, kind)
 	if err != nil {
-		return toolErr(fmt.Errorf("finding symbols: %w", err))
+		return fmt.Sprintf("finding symbols: %v", err), true, nil
 	}
 
 	if len(records) == 0 {
-		return toolText(fmt.Sprintf("Symbol %q not found.", symbol))
+		return fmt.Sprintf("Symbol %q not found.", symbol), false, nil
 	}
 
 	var sb strings.Builder
@@ -259,32 +255,32 @@ func (s *SawmillServer) handleFindSymbol(_ context.Context, req mcpgo.CallToolRe
 	for _, r := range records {
 		fmt.Fprintf(&sb, "  %s:%d  [%s] %s\n", r.FilePath, r.StartLine, r.Kind, r.Name)
 	}
-	return toolText(sb.String())
+	return sb.String(), false, nil
 }
 
 // ---- find_references ------------------------------------------------------
 
-func (s *SawmillServer) handleFindReferences(_ context.Context, req mcpgo.CallToolRequest) (*mcpgo.CallToolResult, error) {
-	symbol, err := req.RequireString("symbol")
+func (h *Handler) handleFindReferences(args map[string]any) (string, bool, error) {
+	symbol, err := requireString(args, "symbol")
 	if err != nil {
-		return toolErr(err)
+		return err.Error(), true, nil
 	}
 
-	s.mu.Lock()
-	defer s.mu.Unlock()
+	h.mu.Lock()
+	defer h.mu.Unlock()
 
-	m, err := s.requireModel()
+	m, err := h.requireModel()
 	if err != nil {
-		return toolErr(err)
+		return err.Error(), true, nil
 	}
 
 	records, err := m.FindSymbols(symbol, "call")
 	if err != nil {
-		return toolErr(fmt.Errorf("finding references: %w", err))
+		return fmt.Sprintf("finding references: %v", err), true, nil
 	}
 
 	if len(records) == 0 {
-		return toolText(fmt.Sprintf("No call sites found for %q.", symbol))
+		return fmt.Sprintf("No call sites found for %q.", symbol), false, nil
 	}
 
 	var sb strings.Builder
@@ -292,7 +288,7 @@ func (s *SawmillServer) handleFindReferences(_ context.Context, req mcpgo.CallTo
 	for _, r := range records {
 		fmt.Fprintf(&sb, "  %s:%d\n", r.FilePath, r.StartLine)
 	}
-	return toolText(sb.String())
+	return sb.String(), false, nil
 }
 
 // ---- transform ------------------------------------------------------------
@@ -313,20 +309,20 @@ type transformSpec struct {
 	Path        string  `json:"path"`
 }
 
-func (s *SawmillServer) handleTransform(_ context.Context, req mcpgo.CallToolRequest) (*mcpgo.CallToolResult, error) {
+func (h *Handler) handleTransform(args map[string]any) (string, bool, error) {
 	spec := transformSpec{
-		Kind:        optString(req, "kind"),
-		Name:        optString(req, "name"),
-		File:        optString(req, "file"),
-		RawQuery:    optString(req, "raw_query"),
-		Capture:     optString(req, "capture"),
-		Action:      optString(req, "action"),
-		TransformFn: optString(req, "transform_fn"),
-		Path:        optString(req, "path"),
+		Kind:        optString(args, "kind"),
+		Name:        optString(args, "name"),
+		File:        optString(args, "file"),
+		RawQuery:    optString(args, "raw_query"),
+		Capture:     optString(args, "capture"),
+		Action:      optString(args, "action"),
+		TransformFn: optString(args, "transform_fn"),
+		Path:        optString(args, "path"),
 	}
-	code := optString(req, "code")
-	before := optString(req, "before")
-	after := optString(req, "after")
+	code := optString(args, "code")
+	before := optString(args, "before")
+	after := optString(args, "after")
 	if code != "" {
 		spec.Code = &code
 	}
@@ -336,26 +332,26 @@ func (s *SawmillServer) handleTransform(_ context.Context, req mcpgo.CallToolReq
 	if after != "" {
 		spec.After = &after
 	}
-	format := optBool(req, "format")
+	format := optBool(args, "format")
 
-	s.mu.Lock()
-	defer s.mu.Unlock()
+	h.mu.Lock()
+	defer h.mu.Unlock()
 
-	m, err := s.requireModel()
+	m, err := h.requireModel()
 	if err != nil {
-		return toolErr(err)
+		return err.Error(), true, nil
 	}
 
 	changes, diffs, err := applyTransformSpec(m, spec, format)
 	if err != nil {
-		return toolErr(err)
+		return err.Error(), true, nil
 	}
 
 	if len(changes) == 0 {
-		return toolText("No matches found; no changes made.")
+		return "No matches found; no changes made.", false, nil
 	}
 
-	s.pending = &PendingChanges{Changes: changes, Diffs: diffs}
+	h.pending = &PendingChanges{Changes: changes, Diffs: diffs}
 
 	var sb strings.Builder
 	fmt.Fprintf(&sb, "Transform produced changes in %d file(s). Call apply to write.\n\n", len(changes))
@@ -363,7 +359,7 @@ func (s *SawmillServer) handleTransform(_ context.Context, req mcpgo.CallToolReq
 		sb.WriteString(d)
 		sb.WriteString("\n")
 	}
-	return toolText(sb.String())
+	return sb.String(), false, nil
 }
 
 // applyTransformSpec applies a single transformSpec to the model's forest and
@@ -448,25 +444,25 @@ func applyTransformSpec(m *model.CodebaseModel, spec transformSpec, format bool)
 
 // ---- transform_batch ------------------------------------------------------
 
-func (s *SawmillServer) handleTransformBatch(_ context.Context, req mcpgo.CallToolRequest) (*mcpgo.CallToolResult, error) {
-	transformsJSON, err := req.RequireString("transforms")
+func (h *Handler) handleTransformBatch(args map[string]any) (string, bool, error) {
+	transformsJSON, err := requireString(args, "transforms")
 	if err != nil {
-		return toolErr(err)
+		return err.Error(), true, nil
 	}
-	pathFilter := optString(req, "path")
-	format := optBool(req, "format")
+	pathFilter := optString(args, "path")
+	format := optBool(args, "format")
 
 	var specs []transformSpec
 	if err := json.Unmarshal([]byte(transformsJSON), &specs); err != nil {
-		return toolErr(fmt.Errorf("parsing transforms JSON: %w", err))
+		return fmt.Sprintf("parsing transforms JSON: %v", err), true, nil
 	}
 
-	s.mu.Lock()
-	defer s.mu.Unlock()
+	h.mu.Lock()
+	defer h.mu.Unlock()
 
-	m, err := s.requireModel()
+	m, err := h.requireModel()
 	if err != nil {
-		return toolErr(err)
+		return err.Error(), true, nil
 	}
 
 	// Apply path filter override from the batch request.
@@ -486,7 +482,7 @@ func (s *SawmillServer) handleTransformBatch(_ context.Context, req mcpgo.CallTo
 	for stepIdx, spec := range specs {
 		changes, diffs, err := applyTransformSpecWithOverrides(m, spec, format, pending)
 		if err != nil {
-			return toolErr(fmt.Errorf("step %d: %w", stepIdx+1, err))
+			return fmt.Sprintf("step %d: %v", stepIdx+1, err), true, nil
 		}
 
 		// Merge into the accumulated pending map.
@@ -498,10 +494,10 @@ func (s *SawmillServer) handleTransformBatch(_ context.Context, req mcpgo.CallTo
 	}
 
 	if len(allChanges) == 0 {
-		return toolText("No matches found; no changes made.")
+		return "No matches found; no changes made.", false, nil
 	}
 
-	s.pending = &PendingChanges{Changes: allChanges, Diffs: allDiffs}
+	h.pending = &PendingChanges{Changes: allChanges, Diffs: allDiffs}
 
 	var sb strings.Builder
 	fmt.Fprintf(&sb, "Batch transform produced changes in %d file(s). Call apply to write.\n\n", len(allChanges))
@@ -509,7 +505,7 @@ func (s *SawmillServer) handleTransformBatch(_ context.Context, req mcpgo.CallTo
 		sb.WriteString(d)
 		sb.WriteString("\n")
 	}
-	return toolText(sb.String())
+	return sb.String(), false, nil
 }
 
 // applyTransformSpecWithOverrides is like applyTransformSpec but reads from
@@ -629,29 +625,29 @@ func mergeChanges(accumulated, newChanges []forest.FileChange) []forest.FileChan
 
 // ---- codegen --------------------------------------------------------------
 
-func (s *SawmillServer) handleCodegen(_ context.Context, req mcpgo.CallToolRequest) (*mcpgo.CallToolResult, error) {
-	program, err := req.RequireString("program")
+func (h *Handler) handleCodegen(args map[string]any) (string, bool, error) {
+	program, err := requireString(args, "program")
 	if err != nil {
-		return toolErr(err)
+		return err.Error(), true, nil
 	}
-	format := optBool(req, "format")
-	validate := optBool(req, "validate")
+	format := optBool(args, "format")
+	validate := optBool(args, "validate")
 
-	s.mu.Lock()
-	defer s.mu.Unlock()
+	h.mu.Lock()
+	defer h.mu.Unlock()
 
-	m, err := s.requireModel()
+	m, err := h.requireModel()
 	if err != nil {
-		return toolErr(err)
+		return err.Error(), true, nil
 	}
 
 	changes, err := codegen.RunCodegen(m.Forest, program)
 	if err != nil {
-		return toolErr(fmt.Errorf("codegen: %w", err))
+		return fmt.Sprintf("codegen: %v", err), true, nil
 	}
 
 	if len(changes) == 0 {
-		return toolText("Codegen produced no changes.")
+		return "Codegen produced no changes.", false, nil
 	}
 
 	var warnings []string
@@ -683,7 +679,7 @@ func (s *SawmillServer) handleCodegen(_ context.Context, req mcpgo.CallToolReque
 		diffs = append(diffs, rewrite.UnifiedDiff(c.Path, c.Original, c.NewSource))
 	}
 
-	s.pending = &PendingChanges{Changes: changes, Diffs: diffs}
+	h.pending = &PendingChanges{Changes: changes, Diffs: diffs}
 
 	var sb strings.Builder
 	fmt.Fprintf(&sb, "Codegen produced changes in %d file(s). Call apply to write.\n", len(changes))
@@ -698,135 +694,132 @@ func (s *SawmillServer) handleCodegen(_ context.Context, req mcpgo.CallToolReque
 		sb.WriteString(d)
 		sb.WriteString("\n")
 	}
-	return toolText(sb.String())
+	return sb.String(), false, nil
 }
 
 // ---- apply ----------------------------------------------------------------
 
-func (s *SawmillServer) handleApply(_ context.Context, req mcpgo.CallToolRequest) (*mcpgo.CallToolResult, error) {
-	confirm, err := req.RequireBool("confirm")
-	if err != nil {
-		return toolErr(err)
-	}
+func (h *Handler) handleApply(args map[string]any) (string, bool, error) {
+	confirm := optBool(args, "confirm")
 
-	s.mu.Lock()
-	defer s.mu.Unlock()
+	h.mu.Lock()
+	defer h.mu.Unlock()
 
-	if s.pending == nil || len(s.pending.Changes) == 0 {
-		return toolText("No pending changes to apply.")
+	if h.pending == nil || len(h.pending.Changes) == 0 {
+		return "No pending changes to apply.", false, nil
 	}
 
 	if !confirm {
-		return toolText(fmt.Sprintf("Pending %d change(s). Set confirm=true to apply.", len(s.pending.Changes)))
+		return fmt.Sprintf("Pending %d change(s). Set confirm=true to apply.", len(h.pending.Changes)), false, nil
 	}
 
-	backupPaths, err := forest.ApplyWithBackup(s.model.Root, s.pending.Changes)
+	backupPaths, err := forest.ApplyWithBackup(h.model.Root, h.pending.Changes)
 	if err != nil {
-		return toolErr(fmt.Errorf("applying changes: %w", err))
+		return fmt.Sprintf("applying changes: %v", err), true, nil
 	}
 
-	s.lastBackups = &LastBackups{Paths: backupPaths}
-	applied := len(s.pending.Changes)
-	s.pending = nil
+	h.lastBackups = &LastBackups{Paths: backupPaths}
+	applied := len(h.pending.Changes)
+	h.pending = nil
 
-	return toolText(fmt.Sprintf("Applied %d change(s). Backups created. Call undo to revert.", applied))
+	return fmt.Sprintf("Applied %d change(s). Backups created. Call undo to revert.", applied), false, nil
 }
 
 // ---- undo -----------------------------------------------------------------
 
-func (s *SawmillServer) handleUndo(_ context.Context, _ mcpgo.CallToolRequest) (*mcpgo.CallToolResult, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
+func (h *Handler) handleUndo(_ map[string]any) (string, bool, error) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
 
-	if s.lastBackups == nil || len(s.lastBackups.Paths) == 0 {
-		return toolText("No backups available to restore.")
+	if h.lastBackups == nil || len(h.lastBackups.Paths) == 0 {
+		return "No backups available to restore.", false, nil
 	}
 
-	restored, err := forest.UndoFromBackups(s.model.Root, s.lastBackups.Paths)
+	restored, err := forest.UndoFromBackups(h.model.Root, h.lastBackups.Paths)
 	if err != nil {
-		return toolErr(fmt.Errorf("undoing changes: %w", err))
+		return fmt.Sprintf("undoing changes: %v", err), true, nil
 	}
 
-	s.lastBackups = nil
-	return toolText(fmt.Sprintf("Restored %d file(s) from backup.", restored))
+	h.lastBackups = nil
+	return fmt.Sprintf("Restored %d file(s) from backup.", restored), false, nil
 }
 
 // ---- teach_recipe ---------------------------------------------------------
 
-func (s *SawmillServer) handleTeachRecipe(_ context.Context, req mcpgo.CallToolRequest) (*mcpgo.CallToolResult, error) {
-	name, err := req.RequireString("name")
+func (h *Handler) handleTeachRecipe(args map[string]any) (string, bool, error) {
+	name, err := requireString(args, "name")
 	if err != nil {
-		return toolErr(err)
+		return err.Error(), true, nil
 	}
-	description := optString(req, "description")
-	paramsJSON := optString(req, "params")
-	stepsJSON, err := req.RequireString("steps")
+	description := optString(args, "description")
+	paramsJSON := optString(args, "params")
+	stepsJSON, err := requireString(args, "steps")
 	if err != nil {
-		return toolErr(err)
+		return err.Error(), true, nil
 	}
 
 	var params []string
 	if paramsJSON != "" {
 		if err := json.Unmarshal([]byte(paramsJSON), &params); err != nil {
-			return toolErr(fmt.Errorf("parsing params JSON: %w", err))
+			return fmt.Sprintf("parsing params JSON: %v", err), true, nil
 		}
 	}
 
 	// Validate steps JSON.
 	if !json.Valid([]byte(stepsJSON)) {
-		return toolErr(fmt.Errorf("steps is not valid JSON"))
+		return "steps is not valid JSON", true, nil
 	}
 
-	s.mu.Lock()
-	defer s.mu.Unlock()
+	h.mu.Lock()
+	defer h.mu.Unlock()
 
-	m, err := s.requireModel()
+	m, err := h.requireModel()
 	if err != nil {
-		return toolErr(err)
+		return err.Error(), true, nil
 	}
 
 	if err := m.SaveRecipe(name, description, params, []byte(stepsJSON)); err != nil {
-		return toolErr(fmt.Errorf("saving recipe: %w", err))
+		return fmt.Sprintf("saving recipe: %v", err), true, nil
 	}
 
-	return toolText(fmt.Sprintf("Recipe %q saved.", name))
+	return fmt.Sprintf("Recipe %q saved.", name), false, nil
 }
 
 // ---- instantiate ----------------------------------------------------------
 
-func (s *SawmillServer) handleInstantiate(_ context.Context, req mcpgo.CallToolRequest) (*mcpgo.CallToolResult, error) {
-	recipeName, err := req.RequireString("recipe")
+func (h *Handler) handleInstantiate(args map[string]any) (string, bool, error) {
+	recipeName, err := requireString(args, "recipe")
 	if err != nil {
-		return toolErr(err)
+		return err.Error(), true, nil
 	}
-	paramsJSON := optString(req, "params")
-	pathFilter := optString(req, "path")
-	format := optBool(req, "format")
+	paramsJSON := optString(args, "params")
+	pathFilter := optString(args, "path")
+	format := optBool(args, "format")
 
 	var params map[string]string
 	if paramsJSON != "" {
 		if err := json.Unmarshal([]byte(paramsJSON), &params); err != nil {
-			return toolErr(fmt.Errorf("parsing params JSON: %w", err))
+			return fmt.Sprintf("parsing params JSON: %v", err), true, nil
 		}
 	}
 
-	s.mu.Lock()
-	defer s.mu.Unlock()
+	h.mu.Lock()
+	defer h.mu.Unlock()
 
-	m, err := s.requireModel()
+	m, err := h.requireModel()
 	if err != nil {
-		return toolErr(err)
+		return err.Error(), true, nil
 	}
 
 	recipe, err := m.LoadRecipe(recipeName)
 	if err != nil {
-		return toolErr(fmt.Errorf("loading recipe %q: %w", recipeName, err))
+		return fmt.Sprintf("loading recipe %q: %v", recipeName, err), true, nil
 	}
 
 	// Unmarshal the steps.
 	var steps []json.RawMessage
 	if err := json.Unmarshal(recipe.Steps, &steps); err != nil {
-		return toolErr(fmt.Errorf("parsing recipe steps: %w", err))
+		return fmt.Sprintf("parsing recipe steps: %v", err), true, nil
 	}
 
 	// Substitute parameters in each step.
@@ -840,7 +833,7 @@ func (s *SawmillServer) handleInstantiate(_ context.Context, req mcpgo.CallToolR
 
 		var spec transformSpec
 		if err := json.Unmarshal([]byte(stepStr), &spec); err != nil {
-			return toolErr(fmt.Errorf("parsing step %d: %w", i+1, err))
+			return fmt.Sprintf("parsing step %d: %v", i+1, err), true, nil
 		}
 		if pathFilter != "" && spec.Path == "" {
 			spec.Path = pathFilter
@@ -855,7 +848,7 @@ func (s *SawmillServer) handleInstantiate(_ context.Context, req mcpgo.CallToolR
 	for stepIdx, spec := range specs {
 		changes, diffs, err := applyTransformSpecWithOverrides(m, spec, format, pending)
 		if err != nil {
-			return toolErr(fmt.Errorf("step %d: %w", stepIdx+1, err))
+			return fmt.Sprintf("step %d: %v", stepIdx+1, err), true, nil
 		}
 		for _, c := range changes {
 			pending[c.Path] = c.NewSource
@@ -865,10 +858,10 @@ func (s *SawmillServer) handleInstantiate(_ context.Context, req mcpgo.CallToolR
 	}
 
 	if len(allChanges) == 0 {
-		return toolText("Recipe produced no changes.")
+		return "Recipe produced no changes.", false, nil
 	}
 
-	s.pending = &PendingChanges{Changes: allChanges, Diffs: allDiffs}
+	h.pending = &PendingChanges{Changes: allChanges, Diffs: allDiffs}
 
 	var sb strings.Builder
 	fmt.Fprintf(&sb, "Recipe %q produced changes in %d file(s). Call apply to write.\n\n", recipeName, len(allChanges))
@@ -876,27 +869,27 @@ func (s *SawmillServer) handleInstantiate(_ context.Context, req mcpgo.CallToolR
 		sb.WriteString(d)
 		sb.WriteString("\n")
 	}
-	return toolText(sb.String())
+	return sb.String(), false, nil
 }
 
 // ---- list_recipes ---------------------------------------------------------
 
-func (s *SawmillServer) handleListRecipes(_ context.Context, _ mcpgo.CallToolRequest) (*mcpgo.CallToolResult, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
+func (h *Handler) handleListRecipes(_ map[string]any) (string, bool, error) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
 
-	m, err := s.requireModel()
+	m, err := h.requireModel()
 	if err != nil {
-		return toolErr(err)
+		return err.Error(), true, nil
 	}
 
 	recipes, err := m.ListRecipes()
 	if err != nil {
-		return toolErr(fmt.Errorf("listing recipes: %w", err))
+		return fmt.Sprintf("listing recipes: %v", err), true, nil
 	}
 
 	if len(recipes) == 0 {
-		return toolText("No recipes saved.")
+		return "No recipes saved.", false, nil
 	}
 
 	var sb strings.Builder
@@ -911,57 +904,57 @@ func (s *SawmillServer) handleListRecipes(_ context.Context, _ mcpgo.CallToolReq
 		}
 		sb.WriteString("\n")
 	}
-	return toolText(sb.String())
+	return sb.String(), false, nil
 }
 
 // ---- teach_convention -----------------------------------------------------
 
-func (s *SawmillServer) handleTeachConvention(_ context.Context, req mcpgo.CallToolRequest) (*mcpgo.CallToolResult, error) {
-	name, err := req.RequireString("name")
+func (h *Handler) handleTeachConvention(args map[string]any) (string, bool, error) {
+	name, err := requireString(args, "name")
 	if err != nil {
-		return toolErr(err)
+		return err.Error(), true, nil
 	}
-	description := optString(req, "description")
-	checkProgram, err := req.RequireString("check_program")
+	description := optString(args, "description")
+	checkProgram, err := requireString(args, "check_program")
 	if err != nil {
-		return toolErr(err)
+		return err.Error(), true, nil
 	}
 
-	s.mu.Lock()
-	defer s.mu.Unlock()
+	h.mu.Lock()
+	defer h.mu.Unlock()
 
-	m, err := s.requireModel()
+	m, err := h.requireModel()
 	if err != nil {
-		return toolErr(err)
+		return err.Error(), true, nil
 	}
 
 	if err := m.SaveConvention(name, description, checkProgram); err != nil {
-		return toolErr(fmt.Errorf("saving convention: %w", err))
+		return fmt.Sprintf("saving convention: %v", err), true, nil
 	}
 
-	return toolText(fmt.Sprintf("Convention %q saved.", name))
+	return fmt.Sprintf("Convention %q saved.", name), false, nil
 }
 
 // ---- check_conventions ----------------------------------------------------
 
-func (s *SawmillServer) handleCheckConventions(_ context.Context, req mcpgo.CallToolRequest) (*mcpgo.CallToolResult, error) {
-	pathFilter := optString(req, "path")
+func (h *Handler) handleCheckConventions(args map[string]any) (string, bool, error) {
+	pathFilter := optString(args, "path")
 
-	s.mu.Lock()
-	defer s.mu.Unlock()
+	h.mu.Lock()
+	defer h.mu.Unlock()
 
-	m, err := s.requireModel()
+	m, err := h.requireModel()
 	if err != nil {
-		return toolErr(err)
+		return err.Error(), true, nil
 	}
 
 	conventions, err := m.ListConventions()
 	if err != nil {
-		return toolErr(fmt.Errorf("listing conventions: %w", err))
+		return fmt.Sprintf("listing conventions: %v", err), true, nil
 	}
 
 	if len(conventions) == 0 {
-		return toolText("No conventions defined.")
+		return "No conventions defined.", false, nil
 	}
 
 	// Build a filtered forest view if a path filter is given.
@@ -1002,27 +995,27 @@ func (s *SawmillServer) handleCheckConventions(_ context.Context, req mcpgo.Call
 		sb.WriteString("\nAll conventions satisfied.\n")
 	}
 
-	return toolText(sb.String())
+	return sb.String(), false, nil
 }
 
 // ---- list_conventions -----------------------------------------------------
 
-func (s *SawmillServer) handleListConventions(_ context.Context, _ mcpgo.CallToolRequest) (*mcpgo.CallToolResult, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
+func (h *Handler) handleListConventions(_ map[string]any) (string, bool, error) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
 
-	m, err := s.requireModel()
+	m, err := h.requireModel()
 	if err != nil {
-		return toolErr(err)
+		return err.Error(), true, nil
 	}
 
 	conventions, err := m.ListConventions()
 	if err != nil {
-		return toolErr(fmt.Errorf("listing conventions: %w", err))
+		return fmt.Sprintf("listing conventions: %v", err), true, nil
 	}
 
 	if len(conventions) == 0 {
-		return toolText("No conventions saved.")
+		return "No conventions saved.", false, nil
 	}
 
 	var sb strings.Builder
@@ -1034,26 +1027,26 @@ func (s *SawmillServer) handleListConventions(_ context.Context, _ mcpgo.CallToo
 		}
 		sb.WriteString("\n")
 	}
-	return toolText(sb.String())
+	return sb.String(), false, nil
 }
 
 // ---- get_agent_prompt -----------------------------------------------------
 
-func (s *SawmillServer) handleGetAgentPrompt(_ context.Context, _ mcpgo.CallToolRequest) (*mcpgo.CallToolResult, error) {
+func (h *Handler) handleGetAgentPrompt(_ map[string]any) (string, bool, error) {
 	// Prefer the embedded guide (always available in release binaries).
 	if embeddedAgentsGuide != "" {
-		return toolText(embeddedAgentsGuide)
+		return embeddedAgentsGuide, false, nil
 	}
 
 	// Fall back to reading from disk (development).
 	for _, candidate := range agentsGuideSearchPaths() {
 		data, err := os.ReadFile(candidate)
 		if err == nil {
-			return toolText(string(data))
+			return string(data), false, nil
 		}
 	}
 
-	return toolText("Sawmill: AST-level multi-language code transformations via MCP. Call parse <path> first.")
+	return "Sawmill: AST-level multi-language code transformations via MCP. Call parse <path> first.", false, nil
 }
 
 // agentsGuideSearchPaths returns candidate paths for agents-guide.md.
@@ -1075,25 +1068,25 @@ func agentsGuideSearchPaths() []string {
 
 // ---- teach_by_example -----------------------------------------------------
 
-func (s *SawmillServer) handleTeachByExample(_ context.Context, req mcpgo.CallToolRequest) (*mcpgo.CallToolResult, error) {
-	name, err := req.RequireString("name")
+func (h *Handler) handleTeachByExample(args map[string]any) (string, bool, error) {
+	name, err := requireString(args, "name")
 	if err != nil {
-		return toolErr(err)
+		return err.Error(), true, nil
 	}
-	description := optString(req, "description")
-	exem, err := req.RequireString("exemplar")
+	description := optString(args, "description")
+	exem, err := requireString(args, "exemplar")
 	if err != nil {
-		return toolErr(err)
+		return err.Error(), true, nil
 	}
-	parametersJSON, err := req.RequireString("parameters")
+	parametersJSON, err := requireString(args, "parameters")
 	if err != nil {
-		return toolErr(err)
+		return err.Error(), true, nil
 	}
-	alsoAffectsJSON := optString(req, "also_affects")
+	alsoAffectsJSON := optString(args, "also_affects")
 
 	var params map[string]string
 	if err := json.Unmarshal([]byte(parametersJSON), &params); err != nil {
-		return toolErr(fmt.Errorf("parsing parameters JSON: %w", err))
+		return fmt.Sprintf("parsing parameters JSON: %v", err), true, nil
 	}
 
 	template := exemplar.Templatize(exem, params)
@@ -1101,7 +1094,7 @@ func (s *SawmillServer) handleTeachByExample(_ context.Context, req mcpgo.CallTo
 	var alsoAffects []string
 	if alsoAffectsJSON != "" {
 		if err := json.Unmarshal([]byte(alsoAffectsJSON), &alsoAffects); err != nil {
-			return toolErr(fmt.Errorf("parsing also_affects JSON: %w", err))
+			return fmt.Sprintf("parsing also_affects JSON: %v", err), true, nil
 		}
 	}
 
@@ -1120,19 +1113,19 @@ func (s *SawmillServer) handleTeachByExample(_ context.Context, req mcpgo.CallTo
 	}
 	stepsData, err := json.Marshal([]any{step})
 	if err != nil {
-		return toolErr(fmt.Errorf("marshalling steps: %w", err))
+		return fmt.Sprintf("marshalling steps: %v", err), true, nil
 	}
 
-	s.mu.Lock()
-	defer s.mu.Unlock()
+	h.mu.Lock()
+	defer h.mu.Unlock()
 
-	m, err := s.requireModel()
+	m, err := h.requireModel()
 	if err != nil {
-		return toolErr(err)
+		return err.Error(), true, nil
 	}
 
 	if err := m.SaveRecipe(name, description, paramNames, stepsData); err != nil {
-		return toolErr(fmt.Errorf("saving recipe: %w", err))
+		return fmt.Sprintf("saving recipe: %v", err), true, nil
 	}
 
 	var sb strings.Builder
@@ -1142,34 +1135,34 @@ func (s *SawmillServer) handleTeachByExample(_ context.Context, req mcpgo.CallTo
 	if len(alsoAffects) > 0 {
 		fmt.Fprintf(&sb, "Also affects: %s\n", strings.Join(alsoAffects, ", "))
 	}
-	return toolText(sb.String())
+	return sb.String(), false, nil
 }
 
 // ---- add_parameter --------------------------------------------------------
 
-func (s *SawmillServer) handleAddParameter(_ context.Context, req mcpgo.CallToolRequest) (*mcpgo.CallToolResult, error) {
-	funcName, err := req.RequireString("function")
+func (h *Handler) handleAddParameter(args map[string]any) (string, bool, error) {
+	funcName, err := requireString(args, "function")
 	if err != nil {
-		return toolErr(err)
+		return err.Error(), true, nil
 	}
-	paramName, err := req.RequireString("param_name")
+	paramName, err := requireString(args, "param_name")
 	if err != nil {
-		return toolErr(err)
+		return err.Error(), true, nil
 	}
-	pathFilter := optString(req, "path")
-	paramType := optString(req, "param_type")
-	defaultValue := optString(req, "default_value")
-	position := optString(req, "position")
-	format := optBool(req, "format")
+	pathFilter := optString(args, "path")
+	paramType := optString(args, "param_type")
+	defaultValue := optString(args, "default_value")
+	position := optString(args, "position")
+	format := optBool(args, "format")
 
 	paramText := buildParamText(paramName, ptr(paramType), ptr(defaultValue))
 
-	s.mu.Lock()
-	defer s.mu.Unlock()
+	h.mu.Lock()
+	defer h.mu.Unlock()
 
-	m, err := s.requireModel()
+	m, err := h.requireModel()
 	if err != nil {
-		return toolErr(err)
+		return err.Error(), true, nil
 	}
 
 	var changes []forest.FileChange
@@ -1182,7 +1175,7 @@ func (s *SawmillServer) handleAddParameter(_ context.Context, req mcpgo.CallTool
 
 		newSource, err := addParamInFile(file, funcName, paramText, position)
 		if err != nil {
-			return toolErr(fmt.Errorf("adding param to %s: %w", file.Path, err))
+			return fmt.Sprintf("adding param to %s: %v", file.Path, err), true, nil
 		}
 
 		if string(newSource) == string(file.OriginalSource) {
@@ -1203,10 +1196,10 @@ func (s *SawmillServer) handleAddParameter(_ context.Context, req mcpgo.CallTool
 	}
 
 	if len(changes) == 0 {
-		return toolText(fmt.Sprintf("Function %q not found.", funcName))
+		return fmt.Sprintf("Function %q not found.", funcName), false, nil
 	}
 
-	s.pending = &PendingChanges{Changes: changes, Diffs: diffs}
+	h.pending = &PendingChanges{Changes: changes, Diffs: diffs}
 
 	var sb strings.Builder
 	fmt.Fprintf(&sb, "Added parameter %q to %q in %d file(s). Call apply to write.\n\n", paramName, funcName, len(changes))
@@ -1214,29 +1207,29 @@ func (s *SawmillServer) handleAddParameter(_ context.Context, req mcpgo.CallTool
 		sb.WriteString(d)
 		sb.WriteString("\n")
 	}
-	return toolText(sb.String())
+	return sb.String(), false, nil
 }
 
 // ---- remove_parameter -----------------------------------------------------
 
-func (s *SawmillServer) handleRemoveParameter(_ context.Context, req mcpgo.CallToolRequest) (*mcpgo.CallToolResult, error) {
-	funcName, err := req.RequireString("function")
+func (h *Handler) handleRemoveParameter(args map[string]any) (string, bool, error) {
+	funcName, err := requireString(args, "function")
 	if err != nil {
-		return toolErr(err)
+		return err.Error(), true, nil
 	}
-	paramName, err := req.RequireString("param_name")
+	paramName, err := requireString(args, "param_name")
 	if err != nil {
-		return toolErr(err)
+		return err.Error(), true, nil
 	}
-	pathFilter := optString(req, "path")
-	format := optBool(req, "format")
+	pathFilter := optString(args, "path")
+	format := optBool(args, "format")
 
-	s.mu.Lock()
-	defer s.mu.Unlock()
+	h.mu.Lock()
+	defer h.mu.Unlock()
 
-	m, err := s.requireModel()
+	m, err := h.requireModel()
 	if err != nil {
-		return toolErr(err)
+		return err.Error(), true, nil
 	}
 
 	var changes []forest.FileChange
@@ -1249,7 +1242,7 @@ func (s *SawmillServer) handleRemoveParameter(_ context.Context, req mcpgo.CallT
 
 		newSource, err := removeParamInFile(file, funcName, paramName)
 		if err != nil {
-			return toolErr(fmt.Errorf("removing param from %s: %w", file.Path, err))
+			return fmt.Sprintf("removing param from %s: %v", file.Path, err), true, nil
 		}
 
 		if string(newSource) == string(file.OriginalSource) {
@@ -1270,10 +1263,10 @@ func (s *SawmillServer) handleRemoveParameter(_ context.Context, req mcpgo.CallT
 	}
 
 	if len(changes) == 0 {
-		return toolText(fmt.Sprintf("Parameter %q not found in function %q.", paramName, funcName))
+		return fmt.Sprintf("Parameter %q not found in function %q.", paramName, funcName), false, nil
 	}
 
-	s.pending = &PendingChanges{Changes: changes, Diffs: diffs}
+	h.pending = &PendingChanges{Changes: changes, Diffs: diffs}
 
 	var sb strings.Builder
 	fmt.Fprintf(&sb, "Removed parameter %q from %q in %d file(s). Call apply to write.\n\n", paramName, funcName, len(changes))
@@ -1281,5 +1274,5 @@ func (s *SawmillServer) handleRemoveParameter(_ context.Context, req mcpgo.CallT
 		sb.WriteString(d)
 		sb.WriteString("\n")
 	}
-	return toolText(sb.String())
+	return sb.String(), false, nil
 }

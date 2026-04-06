@@ -30,6 +30,12 @@ func rootHash(root string) string {
 	return hex.EncodeToString(h[:8])
 }
 
+// SocketPath returns the Unix domain socket path for a project's daemon.
+// e.g. ~/.sawmill/sockets/a1b2c3d4e5f6a7b8.sock
+func SocketPath(root string) string {
+	return filepath.Join(Base(), "sockets", rootHash(root)+".sock")
+}
+
 // StoreDir returns the directory for a project's SQLite store.
 // e.g. ~/.sawmill/stores/a1b2c3d4e5f6a7b8/
 func StoreDir(root string) string {

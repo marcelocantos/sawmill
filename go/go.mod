@@ -3,6 +3,8 @@ module github.com/marcelocantos/sawmill
 go 1.26.1
 
 require (
+	github.com/fsnotify/fsnotify v1.9.0
+	github.com/marcelocantos/mcpbridge v0.0.0-20260406154701-a16a2c102bf2
 	github.com/mark3labs/mcp-go v0.47.0
 	github.com/pmezard/go-difflib v1.0.0
 	github.com/tree-sitter/go-tree-sitter v0.25.0
@@ -17,7 +19,6 @@ require (
 
 require (
 	github.com/dustin/go-humanize v1.0.1 // indirect
-	github.com/fsnotify/fsnotify v1.9.0 // indirect
 	github.com/google/jsonschema-go v0.4.2 // indirect
 	github.com/google/uuid v1.6.0 // indirect
 	github.com/mattn/go-isatty v0.0.20 // indirect

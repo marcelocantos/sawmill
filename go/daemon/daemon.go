@@ -1,254 +1,59 @@
 // Copyright 2026 Marcelo Cantos
 // SPDX-License-Identifier: Apache-2.0
 
-// Package daemon implements the sawmill daemon that manages a pool of
-// CodebaseModel instances (one per project root) and serves them over a Unix
-// domain socket. Each connection sends a project root path and then uses the
-// connection for MCP protocol messages (🎯T11.4).
+// Package daemon implements the sawmill daemon that serves a CodebaseModel
+// for a single project root over a Unix domain socket using mcpbridge.
 package daemon
 
 import (
-	"bufio"
-	"context"
-	"encoding/json"
 	"fmt"
 	"log"
-	"net"
 	"os"
 	"os/signal"
 	"path/filepath"
-	"strings"
-	"sync"
 	"syscall"
 
+	"github.com/marcelocantos/mcpbridge"
+
 	"github.com/marcelocantos/sawmill/mcp"
-	"github.com/marcelocantos/sawmill/handshake"
 	"github.com/marcelocantos/sawmill/model"
 )
 
-// Daemon manages a pool of CodebaseModel instances and a Unix socket listener.
+// Daemon manages a CodebaseModel and an mcpbridge.Server for a single project.
 type Daemon struct {
-	mu         sync.RWMutex
-	models     map[string]*model.CodebaseModel
-	listener   net.Listener
-	socketPath string
-	done       chan struct{}
+	model  *model.CodebaseModel
+	server *mcpbridge.Server
 }
 
-// New creates a new Daemon that will listen on socketPath.
-func New(socketPath string) *Daemon {
-	return &Daemon{
-		models:     make(map[string]*model.CodebaseModel),
-		socketPath: socketPath,
-		done:       make(chan struct{}),
-	}
-}
-
-// SetListener injects an already-opened listener. Useful for tests that open
-// the socket before calling Serve so they can avoid races on socket creation.
-func (d *Daemon) SetListener(ln net.Listener) {
-	d.listener = ln
-}
-
-// GetOrLoadModel returns the cached model for root, loading it on first access.
-func (d *Daemon) GetOrLoadModel(root string) (*model.CodebaseModel, error) {
-	absRoot, err := filepath.Abs(root)
-	if err != nil {
-		return nil, fmt.Errorf("resolving root %q: %w", root, err)
-	}
-
-	// Fast path: model already loaded.
-	d.mu.RLock()
-	m, ok := d.models[absRoot]
-	d.mu.RUnlock()
-	if ok {
-		return m, nil
-	}
-
-	// Slow path: load the model under write lock.
-	d.mu.Lock()
-	defer d.mu.Unlock()
-
-	// Re-check after acquiring write lock to avoid a double-load race.
-	if m, ok = d.models[absRoot]; ok {
-		return m, nil
-	}
-
-	m, err = model.Load(absRoot)
-	if err != nil {
-		return nil, fmt.Errorf("loading model for %q: %w", absRoot, err)
-	}
-	d.models[absRoot] = m
-	return m, nil
-}
-
-// Shutdown closes all models and removes the socket file.
-func (d *Daemon) Shutdown() {
-	if d.listener != nil {
-		d.listener.Close()
-	}
-
-	d.mu.Lock()
-	defer d.mu.Unlock()
-
-	for root, m := range d.models {
-		if err := m.Close(); err != nil {
-			log.Printf("warning: closing model for %q: %v", root, err)
-		}
-		delete(d.models, root)
-	}
-
-	if d.socketPath != "" {
-		os.Remove(d.socketPath)
-	}
-
-	select {
-	case <-d.done:
-		// already closed
-	default:
-		close(d.done)
-	}
-}
-
-
-// handleConn reads a JSON handshake from the connection, validates the
-// binary hash, loads the model, writes back a JSON response, and then
-// serves MCP JSON-RPC over the connection.
-func (d *Daemon) handleConn(conn net.Conn) {
-	defer conn.Close()
-
-	scanner := bufio.NewScanner(conn)
-	if !scanner.Scan() {
-		if err := scanner.Err(); err != nil {
-			log.Printf("reading handshake: %v", err)
-		}
-		return
-	}
-
-	var hs handshake.Handshake
-	if err := json.Unmarshal(scanner.Bytes(), &hs); err != nil {
-		// Fall back to treating the line as a plain root path (backwards compat).
-		hs.Root = strings.TrimSpace(scanner.Text())
-	}
-
-	if hs.Root == "" {
-		writeResponse(conn, handshake.Response{
-			Status: "error",
-			Error:  "empty project root",
-		})
-		return
-	}
-
-	// Validate binary hash — reject if both hashes are known and differ.
-	serverHash := handshake.BinaryHash()
-	if serverHash != "" && hs.BinaryHash != "" && hs.BinaryHash != serverHash {
-		writeResponse(conn, handshake.Response{
-			Status: "error",
-			Error:  "binary mismatch: the sawmill proxy and daemon are different binaries — restart the service with 'brew services restart sawmill'",
-		})
-		return
-	}
-
-	m, err := d.GetOrLoadModel(hs.Root)
-	if err != nil {
-		log.Printf("loading model for %q: %v", hs.Root, err)
-		writeResponse(conn, handshake.Response{
-			Status: "error",
-			Root:   hs.Root,
-			Error:  err.Error(),
-		})
-		return
-	}
-
-	writeResponse(conn, handshake.Response{
-		Status: "ok",
-		Root:   m.Root,
-		Files:  m.FileCount(),
-	})
-
-	// Serve MCP JSON-RPC over the connection until the client disconnects or
-	// the daemon shuts down.
-	ctx, cancel := context.WithCancel(context.Background())
-	go func() {
-		select {
-		case <-d.done:
-			cancel()
-		case <-ctx.Done():
-		}
-	}()
-	defer cancel()
-
-	srv := mcp.NewServerWithModel(m)
-	if err := srv.ServeConn(ctx, conn); err != nil {
-		log.Printf("MCP session for %q ended: %v", hs.Root, err)
-	}
-}
-
-func writeResponse(conn net.Conn, resp handshake.Response) {
-	data, err := json.Marshal(resp)
-	if err != nil {
-		log.Printf("marshalling status: %v", err)
-		return
-	}
-	data = append(data, '\n')
-	if _, err := conn.Write(data); err != nil {
-		log.Printf("writing status: %v", err)
-	}
-}
-
-// Serve starts accepting connections on the already-opened listener. It blocks
-// until the listener is closed.
-func (d *Daemon) Serve() {
-	for {
-		conn, err := d.listener.Accept()
-		if err != nil {
-			// A "use of closed network connection" error is expected when
-			// Shutdown closes the listener; treat it as a clean stop.
-			select {
-			case <-d.done:
-				return
-			default:
-			}
-			// Check whether the error is due to the listener being closed.
-			if strings.Contains(err.Error(), "use of closed network connection") {
-				return
-			}
-			log.Printf("accept error: %v", err)
-			return
-		}
-		go d.handleConn(conn)
-	}
-}
-
-// Start creates the socket directory, removes any stale socket, starts
-// listening, blocks until SIGINT or SIGTERM, then shuts down cleanly.
-func Start(socketPath string) error {
-	// Expand ~ in socket path.
-	expanded, err := expandHome(socketPath)
-	if err != nil {
-		return fmt.Errorf("expanding socket path: %w", err)
-	}
-	socketPath = expanded
-
+// Start creates a daemon for the given project root, listens on socketPath,
+// and blocks until SIGINT or SIGTERM.
+func Start(socketPath, root string) error {
 	// Ensure the containing directory exists.
 	if err := os.MkdirAll(filepath.Dir(socketPath), 0o700); err != nil {
 		return fmt.Errorf("creating socket directory: %w", err)
 	}
 
-	// Remove a stale socket from a previous run.
-	if err := os.Remove(socketPath); err != nil && !os.IsNotExist(err) {
-		return fmt.Errorf("removing stale socket %q: %w", socketPath, err)
-	}
-
-	ln, err := net.Listen("unix", socketPath)
+	// Load the project model.
+	m, err := model.Load(root)
 	if err != nil {
-		return fmt.Errorf("listening on %q: %w", socketPath, err)
+		return fmt.Errorf("loading model for %q: %w", root, err)
 	}
 
-	d := New(socketPath)
-	d.listener = ln
+	handler := mcp.NewHandlerWithModel(m)
 
-	log.Printf("sawmill daemon listening on %s", socketPath)
+	srv, err := mcpbridge.NewServer(mcpbridge.DaemonConfig{
+		SocketPath: socketPath,
+		Tools:      mcp.Definitions(),
+		Handler:    handler,
+	})
+	if err != nil {
+		m.Close()
+		return fmt.Errorf("creating server: %w", err)
+	}
+
+	d := &Daemon{model: m, server: srv}
+
+	log.Printf("sawmill daemon listening on %s (root: %s)", socketPath, root)
 
 	// Handle OS signals for clean shutdown.
 	sigCh := make(chan os.Signal, 1)
@@ -260,18 +65,22 @@ func Start(socketPath string) error {
 		d.Shutdown()
 	}()
 
-	d.Serve()
+	if err := srv.Serve(); err != nil {
+		// A "use of closed" error after shutdown is expected.
+		select {
+		default:
+			return err
+		}
+	}
 	return nil
 }
 
-// expandHome replaces a leading ~ with the user's home directory.
-func expandHome(path string) (string, error) {
-	if !strings.HasPrefix(path, "~") {
-		return path, nil
+// Shutdown closes the server and model.
+func (d *Daemon) Shutdown() {
+	if d.server != nil {
+		d.server.Close()
 	}
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return "", err
+	if d.model != nil {
+		d.model.Close()
 	}
-	return filepath.Join(home, path[1:]), nil
 }
