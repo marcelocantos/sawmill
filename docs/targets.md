@@ -51,12 +51,12 @@ exemplar, codegen/jsengine. 29 Go tests passing. Uses modernc.org/quickjs
 
 #### 🎯T11.2 Store port
 
-SQLite persistence layer (files, symbols, recipes, conventions). Same
-schema, Go bindings.
+SQLite persistence layer using modernc.org/sqlite (pure Go). Same schema
+as Rust: files, symbols, recipes, conventions tables. 7 tests passing.
 
 - **Parent**: 🎯T11
 - **Weight**: 2.7 (value 8 / cost 3)
-- **Status**: not started
+- **Status**: achieved
 - **Depends on**: 🎯T11.1
 - **Gates**: 🎯T11.3, 🎯T11.4
 
