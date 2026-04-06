@@ -1,5 +1,5 @@
 # Build
-/target/
+/bin/
 
 # IDE
 .vscode/

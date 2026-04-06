@@ -1,64 +1,74 @@
 # Sawmill
 
-MCP server for AST-level multi-language code transformations. Built in Rust
-with Tree-sitter.
+MCP server for AST-level multi-language code transformations. Built in Go
+with Tree-sitter, QuickJS, and SQLite (all pure Go, no CGo).
 
 ## Build & test
 
 ```bash
-cargo build          # Debug build
-cargo build --release
-cargo test           # Run all tests (35 unit tests)
+cd go
+go build ./...                    # Build all packages
+go build ./cmd/sawmill            # Build the CLI binary
+go test ./... -count=1            # Run all tests (80 tests)
+make build                        # Build binary to bin/sawmill (from repo root)
+make test                         # Run all tests (from repo root)
 ```
 
-Rust 2024 edition. Requires rustc 1.85+.
+Requires Go 1.26+.
 
 ## Project layout
 
 ```
-src/
-  main.rs         — CLI entry point (clap: parse, rename, serve)
-  mcp/            — MCP server module
-    mod.rs        — SawmillServer, tool implementations, serve()
-    params.rs     — Parameter types for all MCP tools
-    helpers.rs    — Free functions for batch transforms and parameter editing
-  forest.rs       — Forest/ParsedFile, apply_with_backup, undo
-  model.rs        — CodebaseModel (persistent state, incremental parsing)
-  store.rs        — SQLite store (files, symbols, recipes, conventions)
-  adapters/       — Language adapters (Python, Rust, TS, Go, C++)
-  transform.rs    — Match/act engine
-  rewrite.rs      — Range-based source rewriting
-  codegen.rs      — JavaScript code generation runtime (ctx API)
-  exemplar.rs     — Teach-by-example template extraction
-  index.rs        — Symbol extraction from Tree-sitter trees
-  js_engine.rs    — QuickJS integration for JS transforms
-  lsp.rs          — LSP client for semantic queries
-  watcher.rs      — File system watcher with debouncing
+go/
+  cmd/sawmill/main.go — CLI entry point (daemon, serve, version)
+  mcp/              — MCP server (20 tools)
+    server.go       — SawmillServer, tool registration, Serve/ServeConn
+    tools.go        — All tool handler implementations
+    helpers.go      — Batch transform helpers, parameter editing
+  model/model.go    — CodebaseModel (persistent state, incremental parsing)
+  daemon/daemon.go  — Unix socket daemon, multi-project model management
+  proxy/proxy.go    — Stdio-to-socket proxy for MCP clients
+  forest/forest.go  — Forest/ParsedFile, apply_with_backup, undo
+  store/store.go    — SQLite store (files, symbols, recipes, conventions)
+  adapters/         — Language adapters (Python, Rust, TS, Go, C++)
+  transform/        — Match/act engine
+  rewrite/          — Range-based source rewriting, AST rename, diff
+  codegen/          — JavaScript code generation runtime (ctx API)
+  jsengine/         — QuickJS-based per-node JS transforms
+  exemplar/         — Teach-by-example template extraction
+  index/            — Symbol extraction from Tree-sitter trees
+  watcher/          — File system watcher with debouncing (fsnotify)
+homebrew/
+  sawmill.rb        — Homebrew formula with brew services support
+  io.sawmill.daemon.plist — Standalone launchd plist
 docs/
-  design.md       — Architecture and design rationale
-  frontier.md     — Roadmap (completed and planned frontiers)
-  targets.md      — Convergence targets
+  design.md         — Architecture and design rationale
+  targets.md        — Convergence targets
+agents-guide.md     — Reference for AI coding agents (embedded in binary)
 ```
 
 ## Architecture
 
-The server holds a `CodebaseModel` that ties together:
+Sawmill runs as a persistent daemon (`sawmill daemon`) managing multiple
+projects. `sawmill serve` is a thin stdio-to-socket proxy for MCP clients.
+
+The daemon holds a pool of `CodebaseModel` instances (one per project root).
+Each model ties together:
 - A `Forest` of `ParsedFile`s (Tree-sitter CSTs + original source bytes)
 - A `Store` (SQLite: file metadata, symbol index, recipes, conventions)
-- A `FileWatcher` for live incremental updates
-- An `LspManager` for semantic queries
+- A `Watcher` for live incremental updates (fsnotify with debouncing)
 
 All transforms produce diff previews. Changes are only written on explicit
 `apply` (with backup files for `undo`).
 
 ## Key conventions
 
-- All MCP tools are defined in `src/mcp.rs` via the `#[tool_router]` macro
-- Language adapters implement `LanguageAdapter` trait in `src/adapters/`
-- Many public APIs exist as stubs for planned features (see `docs/frontier.md`)
-  — the crate uses `#![allow(dead_code)]` to suppress warnings
+- All MCP tools are registered in `mcp/server.go` via mcp-go's AddTool
+- Language adapters implement the `LanguageAdapter` interface in `adapters/`
 - JavaScript code generation receives a `ctx` object with `fields()`,
   `methods()`, `addField()`, `addMethod()`, `addImport()`, etc.
+- Pure Go dependencies throughout: modernc.org/quickjs, modernc.org/sqlite,
+  fsnotify, go-tree-sitter
 
 ## Delivery
 
