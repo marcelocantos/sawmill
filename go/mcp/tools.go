@@ -4,17 +4,24 @@
 package mcp
 
 import (
+	"context"
 	_ "embed"
 	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
+	"strconv"
 	"strings"
 
+	tree_sitter "github.com/tree-sitter/go-tree-sitter"
+
+	"github.com/marcelocantos/sawmill/adapters"
 	"github.com/marcelocantos/sawmill/codegen"
 	"github.com/marcelocantos/sawmill/exemplar"
 	"github.com/marcelocantos/sawmill/forest"
 	"github.com/marcelocantos/sawmill/jsengine"
+	"github.com/marcelocantos/sawmill/lspclient"
 	"github.com/marcelocantos/sawmill/model"
 	"github.com/marcelocantos/sawmill/rewrite"
 	"github.com/marcelocantos/sawmill/transform"
@@ -641,7 +648,12 @@ func (h *Handler) handleCodegen(args map[string]any) (string, bool, error) {
 		return err.Error(), true, nil
 	}
 
-	changes, err := codegen.RunCodegen(m.Forest, program)
+	var changes []forest.FileChange
+	if m.LSP != nil {
+		changes, err = codegen.RunCodegenWithLSP(m.Forest, program, m.LSP, m.Root)
+	} else {
+		changes, err = codegen.RunCodegen(m.Forest, program)
+	}
 	if err != nil {
 		return fmt.Sprintf("codegen: %v", err), true, nil
 	}
@@ -705,21 +717,36 @@ func (h *Handler) handleApply(args map[string]any) (string, bool, error) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 
-	if h.pending == nil || len(h.pending.Changes) == 0 {
+	if h.pending == nil || (len(h.pending.Changes) == 0 && len(h.pending.Renames) == 0) {
 		return "No pending changes to apply.", false, nil
 	}
 
+	totalPending := len(h.pending.Changes) + len(h.pending.Renames)
 	if !confirm {
-		return fmt.Sprintf("Pending %d change(s). Set confirm=true to apply.", len(h.pending.Changes)), false, nil
+		return fmt.Sprintf("Pending %d change(s). Set confirm=true to apply.", totalPending), false, nil
 	}
 
-	backupPaths, err := forest.ApplyWithBackup(h.model.Root, h.pending.Changes)
-	if err != nil {
-		return fmt.Sprintf("applying changes: %v", err), true, nil
+	var backupPaths []string
+	if len(h.pending.Changes) > 0 {
+		bp, err := forest.ApplyWithBackup(h.model.Root, h.pending.Changes)
+		if err != nil {
+			return fmt.Sprintf("applying changes: %v", err), true, nil
+		}
+		backupPaths = append(backupPaths, bp...)
+	}
+
+	// Perform file renames.
+	for _, r := range h.pending.Renames {
+		if err := os.MkdirAll(filepath.Dir(r.To), 0o755); err != nil {
+			return fmt.Sprintf("creating directory for %s: %v", r.To, err), true, nil
+		}
+		if err := os.Rename(r.From, r.To); err != nil {
+			return fmt.Sprintf("renaming %s -> %s: %v", r.From, r.To, err), true, nil
+		}
 	}
 
 	h.lastBackups = &LastBackups{Paths: backupPaths}
-	applied := len(h.pending.Changes)
+	applied := totalPending
 	h.pending = nil
 
 	return fmt.Sprintf("Applied %d change(s). Backups created. Call undo to revert.", applied), false, nil
@@ -1270,6 +1297,772 @@ func (h *Handler) handleRemoveParameter(args map[string]any) (string, bool, erro
 
 	var sb strings.Builder
 	fmt.Fprintf(&sb, "Removed parameter %q from %q in %d file(s). Call apply to write.\n\n", paramName, funcName, len(changes))
+	for _, d := range diffs {
+		sb.WriteString(d)
+		sb.WriteString("\n")
+	}
+	return sb.String(), false, nil
+}
+
+// ---- rename_file ----------------------------------------------------------
+
+func (h *Handler) handleRenameFile(args map[string]any) (string, bool, error) {
+	from, err := requireString(args, "from")
+	if err != nil {
+		return err.Error(), true, nil
+	}
+	to, err := requireString(args, "to")
+	if err != nil {
+		return err.Error(), true, nil
+	}
+	format := optBool(args, "format")
+
+	h.mu.Lock()
+	defer h.mu.Unlock()
+
+	m, err := h.requireModel()
+	if err != nil {
+		return err.Error(), true, nil
+	}
+
+	root := m.Root
+	absFrom := filepath.Join(root, from)
+	absTo := filepath.Join(root, to)
+
+	// Verify the source file exists in the forest.
+	var found bool
+	for _, file := range m.Forest.Files {
+		if file.Path == absFrom {
+			found = true
+			break
+		}
+	}
+	if !found {
+		return fmt.Sprintf("File %q not found in parsed codebase.", from), true, nil
+	}
+
+	var changes []forest.FileChange
+	var diffs []string
+
+	// Scan all files for imports that resolve to absFrom.
+	for _, file := range m.Forest.Files {
+		importQuery := file.Adapter.ImportQuery()
+		if importQuery == "" {
+			continue
+		}
+
+		query, qErr := tree_sitter.NewQuery(file.Adapter.Language(), importQuery)
+		if qErr != nil {
+			continue
+		}
+
+		// Find the @name capture index.
+		nameIdx := uint32(0)
+		nameFound := false
+		for i, name := range query.CaptureNames() {
+			if name == "name" {
+				nameIdx = uint32(i)
+				nameFound = true
+				break
+			}
+		}
+		if !nameFound {
+			query.Close()
+			continue
+		}
+
+		cursor := tree_sitter.NewQueryCursor()
+		matches := cursor.Matches(query, file.Tree.RootNode(), file.OriginalSource)
+
+		var edits []rewrite.Edit
+		for match := matches.Next(); match != nil; match = matches.Next() {
+			for _, capture := range match.Captures {
+				if capture.Index != nameIdx {
+					continue
+				}
+				node := capture.Node
+				importText := string(file.OriginalSource[node.StartByte():node.EndByte()])
+
+				resolved := file.Adapter.ResolveImportPath(importText, file.Path, root)
+				if resolved == "" {
+					continue
+				}
+
+				// ResolveImportPath may return absolute or relative paths
+				// depending on the adapter. Normalise to absolute for comparison.
+				absResolved := resolved
+				if !filepath.IsAbs(resolved) {
+					absResolved = filepath.Join(root, resolved)
+				}
+
+				if absResolved != absFrom {
+					continue
+				}
+
+				// This import references the file being renamed — compute the
+				// new import text.
+				newImport := file.Adapter.BuildImportPath(absTo, file.Path, root)
+				if newImport == "" {
+					continue
+				}
+
+				edits = append(edits, rewrite.Edit{
+					Start:       node.StartByte(),
+					End:         node.EndByte(),
+					Replacement: newImport,
+				})
+			}
+		}
+
+		cursor.Close()
+		query.Close()
+
+		if len(edits) == 0 {
+			continue
+		}
+
+		newSource := rewrite.ApplyEdits(file.OriginalSource, edits)
+
+		if format {
+			newSource, _ = rewrite.FormatSource(file.Adapter, newSource)
+		}
+
+		diff := rewrite.UnifiedDiff(file.Path, file.OriginalSource, newSource)
+		diffs = append(diffs, diff)
+		changes = append(changes, forest.FileChange{
+			Path:      file.Path,
+			Original:  file.OriginalSource,
+			NewSource: newSource,
+		})
+	}
+
+	renames := []FileRename{{From: absFrom, To: absTo}}
+
+	h.pending = &PendingChanges{
+		Changes: changes,
+		Diffs:   diffs,
+		Renames: renames,
+	}
+
+	var sb strings.Builder
+	fmt.Fprintf(&sb, "Rename %q → %q", from, to)
+	if len(changes) > 0 {
+		fmt.Fprintf(&sb, " with import updates in %d file(s)", len(changes))
+	}
+	sb.WriteString(". Call apply to write changes.\n\n")
+	for _, d := range diffs {
+		sb.WriteString(d)
+		sb.WriteString("\n")
+	}
+	return sb.String(), false, nil
+}
+
+// ---- clone_and_adapt ------------------------------------------------------
+
+func (h *Handler) handleCloneAndAdapt(args map[string]any) (string, bool, error) {
+	source, err := requireString(args, "source")
+	if err != nil {
+		return err.Error(), true, nil
+	}
+	subsJSON, err := requireString(args, "substitutions")
+	if err != nil {
+		return err.Error(), true, nil
+	}
+	targetFile, err := requireString(args, "target_file")
+	if err != nil {
+		return err.Error(), true, nil
+	}
+	position := optString(args, "position")
+	format := optBool(args, "format")
+
+	if position == "" {
+		position = "end"
+	}
+
+	// Parse substitutions.
+	var subs map[string]string
+	if err := json.Unmarshal([]byte(subsJSON), &subs); err != nil {
+		return fmt.Sprintf("parsing substitutions JSON: %v", err), true, nil
+	}
+
+	h.mu.Lock()
+	defer h.mu.Unlock()
+
+	m, err := h.requireModel()
+	if err != nil {
+		return err.Error(), true, nil
+	}
+
+	// Step 1: Extract source text.
+	sourceText, sourceFile, err := extractCloneSource(m, source)
+	if err != nil {
+		return err.Error(), true, nil
+	}
+	_ = sourceFile // used for future import propagation
+
+	// Step 2: Apply substitutions (longest keys first to avoid partial matches).
+	keys := make([]string, 0, len(subs))
+	for k := range subs {
+		keys = append(keys, k)
+	}
+	sort.Slice(keys, func(i, j int) bool {
+		return len(keys[i]) > len(keys[j])
+	})
+	clonedText := sourceText
+	for _, k := range keys {
+		clonedText = strings.ReplaceAll(clonedText, k, subs[k])
+	}
+
+	// Step 3: Find target file in the forest.
+	var targetPF *forest.ParsedFile
+	for _, file := range m.Forest.Files {
+		if file.Path == targetFile || strings.HasSuffix(file.Path, targetFile) {
+			targetPF = file
+			break
+		}
+	}
+	if targetPF == nil {
+		return fmt.Sprintf("Target file %q not found in the parsed forest.", targetFile), true, nil
+	}
+
+	// Step 4: Determine insertion point.
+	insertOffset, err := resolveInsertPosition(targetPF, position)
+	if err != nil {
+		return err.Error(), true, nil
+	}
+
+	// Step 5: Build the new source with the cloned text inserted.
+	original := targetPF.OriginalSource
+	var newSource []byte
+	// Ensure the cloned text is separated by blank lines.
+	prefix := "\n\n"
+	suffix := "\n"
+	if insertOffset == 0 {
+		prefix = ""
+		suffix = "\n\n"
+	}
+	newSource = make([]byte, 0, len(original)+len(clonedText)+4)
+	newSource = append(newSource, original[:insertOffset]...)
+	newSource = append(newSource, prefix...)
+	newSource = append(newSource, clonedText...)
+	newSource = append(newSource, suffix...)
+	newSource = append(newSource, original[insertOffset:]...)
+
+	if format {
+		newSource, _ = rewrite.FormatSource(targetPF.Adapter, newSource)
+	}
+
+	diff := rewrite.UnifiedDiff(targetPF.Path, original, newSource)
+	changes := []forest.FileChange{{
+		Path:      targetPF.Path,
+		Original:  original,
+		NewSource: newSource,
+	}}
+	diffs := []string{diff}
+
+	h.pending = &PendingChanges{Changes: changes, Diffs: diffs}
+
+	var sb strings.Builder
+	fmt.Fprintf(&sb, "Cloned and adapted into %s. Call apply to write.\n", targetPF.Path)
+	sb.WriteString("Note: You may need to add imports manually.\n\n")
+	for _, d := range diffs {
+		sb.WriteString(d)
+		sb.WriteString("\n")
+	}
+	return sb.String(), false, nil
+}
+
+// extractCloneSource extracts source text from either a file:line_range spec or
+// a symbol name search across the forest. Returns the text and the source file.
+func extractCloneSource(m *model.CodebaseModel, source string) (string, *forest.ParsedFile, error) {
+	// Check for file:start-end range syntax.
+	if idx := strings.LastIndex(source, ":"); idx > 0 {
+		filePart := source[:idx]
+		rangePart := source[idx+1:]
+		if dashIdx := strings.Index(rangePart, "-"); dashIdx > 0 {
+			startLine, err1 := strconv.Atoi(rangePart[:dashIdx])
+			endLine, err2 := strconv.Atoi(rangePart[dashIdx+1:])
+			if err1 == nil && err2 == nil && startLine > 0 && endLine >= startLine {
+				// Find the file in the forest.
+				for _, file := range m.Forest.Files {
+					if file.Path == filePart || strings.HasSuffix(file.Path, filePart) {
+						lines := strings.Split(string(file.OriginalSource), "\n")
+						if startLine > len(lines) {
+							return "", nil, fmt.Errorf("start line %d exceeds file length %d", startLine, len(lines))
+						}
+						if endLine > len(lines) {
+							endLine = len(lines)
+						}
+						// Lines are 1-based.
+						text := strings.Join(lines[startLine-1:endLine], "\n")
+						return text, file, nil
+					}
+				}
+				return "", nil, fmt.Errorf("file %q not found in the parsed forest", filePart)
+			}
+		}
+	}
+
+	// Treat source as a symbol name — search all files for a matching
+	// function or type definition.
+	for _, file := range m.Forest.Files {
+		text, found := findSymbolNode(file, source)
+		if found {
+			return text, file, nil
+		}
+	}
+
+	return "", nil, fmt.Errorf("symbol %q not found in any parsed file", source)
+}
+
+// findSymbolNode searches a single file for a function or type definition with
+// the given name and returns its full text.
+func findSymbolNode(file *forest.ParsedFile, symbolName string) (string, bool) {
+	// Try function definitions first, then type definitions.
+	for _, queryStr := range []string{
+		file.Adapter.FunctionDefQuery(),
+		file.Adapter.TypeDefQuery(),
+	} {
+		if queryStr == "" {
+			continue
+		}
+
+		lang := file.Adapter.Language()
+		query, qErr := tree_sitter.NewQuery(lang, queryStr)
+		if qErr != nil {
+			continue
+		}
+
+		// Find @name and @func/@type_def capture indices.
+		nameIdx := -1
+		nodeIdx := -1
+		for i, n := range query.CaptureNames() {
+			switch n {
+			case "name":
+				nameIdx = i
+			case "func":
+				nodeIdx = i
+			case "type_def":
+				nodeIdx = i
+			}
+		}
+		if nameIdx < 0 || nodeIdx < 0 {
+			query.Close()
+			continue
+		}
+
+		cursor := tree_sitter.NewQueryCursor()
+		matches := cursor.Matches(query, file.Tree.RootNode(), file.OriginalSource)
+
+		for match := matches.Next(); match != nil; match = matches.Next() {
+			var nameNode, wholeNode *tree_sitter.Node
+			for i := range match.Captures {
+				c := &match.Captures[i]
+				if c.Index == uint32(nameIdx) && nameNode == nil {
+					nameNode = &c.Node
+				}
+				if c.Index == uint32(nodeIdx) && wholeNode == nil {
+					wholeNode = &c.Node
+				}
+			}
+			if nameNode == nil || wholeNode == nil {
+				continue
+			}
+			name := string(file.OriginalSource[nameNode.StartByte():nameNode.EndByte()])
+			if name == symbolName {
+				text := string(file.OriginalSource[wholeNode.StartByte():wholeNode.EndByte()])
+				cursor.Close()
+				query.Close()
+				return text, true
+			}
+		}
+		cursor.Close()
+		query.Close()
+	}
+	return "", false
+}
+
+// resolveInsertPosition determines the byte offset in the target file where
+// cloned text should be inserted.
+func resolveInsertPosition(file *forest.ParsedFile, position string) (uint, error) {
+	source := file.OriginalSource
+
+	switch {
+	case position == "end":
+		// Insert before the final newline if present.
+		offset := uint(len(source))
+		if offset > 0 && source[offset-1] == '\n' {
+			offset--
+		}
+		return offset, nil
+
+	case position == "start":
+		// Insert after any leading comments and package/module declarations.
+		// Heuristic: find the end of the first non-comment top-level node.
+		root := file.Tree.RootNode()
+		for i := uint(0); i < root.ChildCount(); i++ {
+			child := root.Child(i)
+			if child == nil {
+				continue
+			}
+			kind := child.Kind()
+			// Skip comments and package/module declarations.
+			if strings.Contains(kind, "comment") ||
+				kind == "package_clause" || kind == "module" ||
+				kind == "package_statement" || kind == "shebang" {
+				continue
+			}
+			// Insert before the first real content node.
+			return child.StartByte(), nil
+		}
+		// If only comments/declarations, insert at end.
+		return uint(len(source)), nil
+
+	case strings.HasPrefix(position, "after:"):
+		symbolName := strings.TrimPrefix(position, "after:")
+		// Find the named symbol and insert after it.
+		for _, queryStr := range []string{
+			file.Adapter.FunctionDefQuery(),
+			file.Adapter.TypeDefQuery(),
+		} {
+			if queryStr == "" {
+				continue
+			}
+
+			lang := file.Adapter.Language()
+			query, qErr := tree_sitter.NewQuery(lang, queryStr)
+			if qErr != nil {
+				continue
+			}
+
+			nameIdx := -1
+			nodeIdx := -1
+			for i, n := range query.CaptureNames() {
+				switch n {
+				case "name":
+					nameIdx = i
+				case "func", "type_def":
+					nodeIdx = i
+				}
+			}
+			if nameIdx < 0 || nodeIdx < 0 {
+				query.Close()
+				continue
+			}
+
+			cursor := tree_sitter.NewQueryCursor()
+			matches := cursor.Matches(query, file.Tree.RootNode(), source)
+
+			foundOffset := uint(0)
+			found := false
+			for match := matches.Next(); match != nil; match = matches.Next() {
+				var nameNode, wholeNode *tree_sitter.Node
+				for i := range match.Captures {
+					c := &match.Captures[i]
+					if c.Index == uint32(nameIdx) && nameNode == nil {
+						nameNode = &c.Node
+					}
+					if c.Index == uint32(nodeIdx) && wholeNode == nil {
+						wholeNode = &c.Node
+					}
+				}
+				if nameNode == nil || wholeNode == nil {
+					continue
+				}
+				name := string(source[nameNode.StartByte():nameNode.EndByte()])
+				if name == symbolName {
+					foundOffset = wholeNode.EndByte()
+					found = true
+					break
+				}
+			}
+			cursor.Close()
+			query.Close()
+			if found {
+				return foundOffset, nil
+			}
+		}
+		return 0, fmt.Errorf("symbol %q not found in target file for after: position", symbolName)
+
+	default:
+		return 0, fmt.Errorf("invalid position %q: must be end, start, or after:<symbol_name>", position)
+	}
+}
+
+// ---- LSP tools --------------------------------------------------------------
+
+// requireInt extracts a required integer argument from the args map.
+// JSON numbers arrive as float64.
+func requireInt(args map[string]any, key string) (uint32, error) {
+	v, ok := args[key]
+	if !ok {
+		return 0, fmt.Errorf("%s is required", key)
+	}
+	switch n := v.(type) {
+	case float64:
+		return uint32(n), nil
+	case int:
+		return uint32(n), nil
+	case json.Number:
+		i, err := n.Int64()
+		if err != nil {
+			return 0, fmt.Errorf("%s: %w", key, err)
+		}
+		return uint32(i), nil
+	default:
+		return 0, fmt.Errorf("%s must be a number", key)
+	}
+}
+
+// getLSPClient returns the LSP client for the given file, or (nil, msg) when
+// no LSP is available. The second return is a user-facing message.
+func (h *Handler) getLSPClient(m *model.CodebaseModel, file string) (*lspclient.Client, string) {
+	ext := strings.TrimPrefix(filepath.Ext(file), ".")
+	adapter := adapters.ForExtension(ext)
+	if adapter == nil {
+		return nil, fmt.Sprintf("No language adapter for .%s files", ext)
+	}
+	if adapter.LSPCommand() == nil {
+		return nil, fmt.Sprintf("No LSP server configured for %s", adapter.LSPLanguageID())
+	}
+	if m.LSP == nil {
+		return nil, "LSP pool not initialized"
+	}
+	client := m.LSP.Get(adapter, m.Root)
+	if client == nil {
+		cmd := adapter.LSPCommand()
+		return nil, fmt.Sprintf("LSP server %q not available (not installed or failed to start)", cmd[0])
+	}
+	return client, ""
+}
+
+func (h *Handler) handleHover(args map[string]any) (string, bool, error) {
+	file, err := requireString(args, "file")
+	if err != nil {
+		return err.Error(), true, nil
+	}
+	line, err := requireInt(args, "line")
+	if err != nil {
+		return err.Error(), true, nil
+	}
+	col, err := requireInt(args, "column")
+	if err != nil {
+		return err.Error(), true, nil
+	}
+
+	h.mu.Lock()
+	defer h.mu.Unlock()
+
+	m, err := h.requireModel()
+	if err != nil {
+		return err.Error(), true, nil
+	}
+
+	client, msg := h.getLSPClient(m, file)
+	if client == nil {
+		return msg, false, nil
+	}
+
+	text, err := client.Hover(context.Background(), file, line, col)
+	if err != nil {
+		return fmt.Sprintf("hover: %v", err), true, nil
+	}
+	if text == "" {
+		return "No type information available", false, nil
+	}
+	return text, false, nil
+}
+
+func (h *Handler) handleDefinition(args map[string]any) (string, bool, error) {
+	file, err := requireString(args, "file")
+	if err != nil {
+		return err.Error(), true, nil
+	}
+	line, err := requireInt(args, "line")
+	if err != nil {
+		return err.Error(), true, nil
+	}
+	col, err := requireInt(args, "column")
+	if err != nil {
+		return err.Error(), true, nil
+	}
+
+	h.mu.Lock()
+	defer h.mu.Unlock()
+
+	m, err := h.requireModel()
+	if err != nil {
+		return err.Error(), true, nil
+	}
+
+	client, msg := h.getLSPClient(m, file)
+	if client == nil {
+		return msg, false, nil
+	}
+
+	locs, err := client.Definition(context.Background(), file, line, col)
+	if err != nil {
+		return fmt.Sprintf("definition: %v", err), true, nil
+	}
+	if len(locs) == 0 {
+		return "No definition found", false, nil
+	}
+	return formatLocations(locs), false, nil
+}
+
+func (h *Handler) handleLspReferences(args map[string]any) (string, bool, error) {
+	file, err := requireString(args, "file")
+	if err != nil {
+		return err.Error(), true, nil
+	}
+	line, err := requireInt(args, "line")
+	if err != nil {
+		return err.Error(), true, nil
+	}
+	col, err := requireInt(args, "column")
+	if err != nil {
+		return err.Error(), true, nil
+	}
+
+	h.mu.Lock()
+	defer h.mu.Unlock()
+
+	m, err := h.requireModel()
+	if err != nil {
+		return err.Error(), true, nil
+	}
+
+	client, msg := h.getLSPClient(m, file)
+	if client == nil {
+		return msg, false, nil
+	}
+
+	locs, err := client.References(context.Background(), file, line, col)
+	if err != nil {
+		return fmt.Sprintf("references: %v", err), true, nil
+	}
+	if len(locs) == 0 {
+		return "No references found", false, nil
+	}
+	return formatLocations(locs), false, nil
+}
+
+func (h *Handler) handleDiagnostics(args map[string]any) (string, bool, error) {
+	file, err := requireString(args, "file")
+	if err != nil {
+		return err.Error(), true, nil
+	}
+
+	h.mu.Lock()
+	defer h.mu.Unlock()
+
+	m, err := h.requireModel()
+	if err != nil {
+		return err.Error(), true, nil
+	}
+
+	client, msg := h.getLSPClient(m, file)
+	if client == nil {
+		return msg, false, nil
+	}
+
+	diags, err := client.Diagnostics(context.Background(), file)
+	if err != nil {
+		return fmt.Sprintf("diagnostics: %v", err), true, nil
+	}
+	if len(diags) == 0 {
+		return "No diagnostics", false, nil
+	}
+	return formatDiagnostics(diags), false, nil
+}
+
+// formatLocations formats a slice of Locations as "file:line:col" entries.
+func formatLocations(locs []lspclient.Location) string {
+	var sb strings.Builder
+	for _, l := range locs {
+		fmt.Fprintf(&sb, "%s:%d:%d\n", l.File, l.Line, l.Column)
+	}
+	return sb.String()
+}
+
+// formatDiagnostics formats a slice of Diagnostics as "file:line:col [severity] message".
+func formatDiagnostics(diags []lspclient.Diagnostic) string {
+	var sb strings.Builder
+	for _, d := range diags {
+		fmt.Fprintf(&sb, "%s:%d:%d [%s] %s\n", d.File, d.Line, d.Column, d.Severity, d.Message)
+	}
+	return sb.String()
+}
+
+// ---- add_field --------------------------------------------------------------
+
+func (h *Handler) handleAddField(args map[string]any) (string, bool, error) {
+	typeName, err := requireString(args, "type_name")
+	if err != nil {
+		return err.Error(), true, nil
+	}
+	fieldName, err := requireString(args, "field_name")
+	if err != nil {
+		return err.Error(), true, nil
+	}
+	fieldType, err := requireString(args, "field_type")
+	if err != nil {
+		return err.Error(), true, nil
+	}
+	defaultValue, err := requireString(args, "default_value")
+	if err != nil {
+		return err.Error(), true, nil
+	}
+	pathFilter := optString(args, "path")
+	format := optBool(args, "format")
+
+	h.mu.Lock()
+	defer h.mu.Unlock()
+
+	m, err := h.requireModel()
+	if err != nil {
+		return err.Error(), true, nil
+	}
+
+	var changes []forest.FileChange
+	var diffs []string
+
+	for _, file := range m.Forest.Files {
+		if pathFilter != "" && !strings.Contains(file.Path, pathFilter) {
+			continue
+		}
+
+		edits := collectAddFieldEdits(file, typeName, fieldName, fieldType, defaultValue)
+		if len(edits) == 0 {
+			continue
+		}
+
+		newSource := rewrite.ApplyEdits(file.OriginalSource, edits)
+		if string(newSource) == string(file.OriginalSource) {
+			continue
+		}
+
+		if format {
+			newSource, _ = rewrite.FormatSource(file.Adapter, newSource)
+		}
+
+		diff := rewrite.UnifiedDiff(file.Path, file.OriginalSource, newSource)
+		diffs = append(diffs, diff)
+		changes = append(changes, forest.FileChange{
+			Path:      file.Path,
+			Original:  file.OriginalSource,
+			NewSource: newSource,
+		})
+	}
+
+	if len(changes) == 0 {
+		return fmt.Sprintf("Type %q not found.", typeName), false, nil
+	}
+
+	h.pending = &PendingChanges{Changes: changes, Diffs: diffs}
+
+	var sb strings.Builder
+	fmt.Fprintf(&sb, "Added field %q to %q in %d file(s). Call apply to write.\n\n", fieldName, typeName, len(changes))
 	for _, d := range diffs {
 		sb.WriteString(d)
 		sb.WriteString("\n")

@@ -16,11 +16,18 @@ import (
 	"github.com/marcelocantos/sawmill/model"
 )
 
+// FileRename records a pending file rename (from -> to, both absolute).
+type FileRename struct {
+	From string
+	To   string
+}
+
 // PendingChanges holds the last set of pending file changes produced by a
 // transform/rename/codegen call, waiting for an explicit apply.
 type PendingChanges struct {
 	Changes []forest.FileChange
 	Diffs   []string
+	Renames []FileRename // file renames to perform on apply
 }
 
 // LastBackups holds the backup paths written by the most recent apply, so
@@ -64,6 +71,8 @@ func (h *Handler) Call(name string, args map[string]any) (string, bool, error) {
 		return h.handleParse(args)
 	case "rename":
 		return h.handleRename(args)
+	case "rename_file":
+		return h.handleRenameFile(args)
 	case "query":
 		return h.handleQuery(args)
 	case "find_symbol":
@@ -100,6 +109,18 @@ func (h *Handler) Call(name string, args map[string]any) (string, bool, error) {
 		return h.handleAddParameter(args)
 	case "remove_parameter":
 		return h.handleRemoveParameter(args)
+	case "clone_and_adapt":
+		return h.handleCloneAndAdapt(args)
+	case "hover":
+		return h.handleHover(args)
+	case "definition":
+		return h.handleDefinition(args)
+	case "lsp_references":
+		return h.handleLspReferences(args)
+	case "diagnostics":
+		return h.handleDiagnostics(args)
+	case "add_field":
+		return h.handleAddField(args)
 	default:
 		return "", false, fmt.Errorf("unknown tool: %s", name)
 	}
@@ -133,6 +154,22 @@ func Definitions() []mcpgo.Tool {
 			),
 			mcpgo.WithBoolean("format",
 				mcpgo.Description("Run the language formatter after renaming"),
+			),
+		),
+
+		// rename_file
+		mcpgo.NewTool("rename_file",
+			mcpgo.WithDescription("Rename a file and update all import/include/require paths that reference it across the codebase. Produces a diff preview; call apply to write changes."),
+			mcpgo.WithString("from",
+				mcpgo.Required(),
+				mcpgo.Description("Current file path (relative to project root)"),
+			),
+			mcpgo.WithString("to",
+				mcpgo.Required(),
+				mcpgo.Description("New file path (relative to project root)"),
+			),
+			mcpgo.WithBoolean("format",
+				mcpgo.Description("Run the language formatter on files with updated imports"),
 			),
 		),
 
@@ -395,6 +432,33 @@ func Definitions() []mcpgo.Tool {
 			),
 		),
 
+		// add_field
+		mcpgo.NewTool("add_field",
+			mcpgo.WithDescription("Add a field to a struct/class and propagate to construction sites: factory function signatures, struct literals, and factory callers."),
+			mcpgo.WithString("type_name",
+				mcpgo.Required(),
+				mcpgo.Description("Name of the struct/class/type to modify"),
+			),
+			mcpgo.WithString("field_name",
+				mcpgo.Required(),
+				mcpgo.Description("Name of the new field"),
+			),
+			mcpgo.WithString("field_type",
+				mcpgo.Required(),
+				mcpgo.Description("Type of the new field"),
+			),
+			mcpgo.WithString("default_value",
+				mcpgo.Required(),
+				mcpgo.Description("Expression to use at construction sites"),
+			),
+			mcpgo.WithString("path",
+				mcpgo.Description("Restrict to files matching this path substring"),
+			),
+			mcpgo.WithBoolean("format",
+				mcpgo.Description("Run the language formatter after changes"),
+			),
+		),
+
 		// remove_parameter
 		mcpgo.NewTool("remove_parameter",
 			mcpgo.WithDescription("Remove a parameter from a function signature across the codebase."),
@@ -411,6 +475,89 @@ func Definitions() []mcpgo.Tool {
 			),
 			mcpgo.WithBoolean("format",
 				mcpgo.Description("Run the language formatter after modifying"),
+			),
+		),
+
+		// clone_and_adapt
+		mcpgo.NewTool("clone_and_adapt",
+			mcpgo.WithDescription("Copy a symbol or code region, apply string substitutions, and insert at a target location. One-shot copy-and-modify without templatisation."),
+			mcpgo.WithString("source",
+				mcpgo.Required(),
+				mcpgo.Description("Symbol name or file:start_line-end_line range to clone"),
+			),
+			mcpgo.WithString("substitutions",
+				mcpgo.Required(),
+				mcpgo.Description("JSON object mapping old strings to new strings"),
+			),
+			mcpgo.WithString("target_file",
+				mcpgo.Required(),
+				mcpgo.Description("File path where the clone should be inserted"),
+			),
+			mcpgo.WithString("position",
+				mcpgo.Description("Where to insert: end (default), start, or after:<symbol_name>"),
+			),
+			mcpgo.WithBoolean("format",
+				mcpgo.Description("Run the language formatter after insertion"),
+			),
+		),
+
+		// hover
+		mcpgo.NewTool("hover",
+			mcpgo.WithDescription("Query the language server for type/hover information at a position."),
+			mcpgo.WithString("file",
+				mcpgo.Required(),
+				mcpgo.Description("Absolute file path"),
+			),
+			mcpgo.WithNumber("line",
+				mcpgo.Required(),
+				mcpgo.Description("Line number (1-based)"),
+			),
+			mcpgo.WithNumber("column",
+				mcpgo.Required(),
+				mcpgo.Description("Column number (1-based)"),
+			),
+		),
+
+		// definition
+		mcpgo.NewTool("definition",
+			mcpgo.WithDescription("Query the language server for the definition location of a symbol at a position."),
+			mcpgo.WithString("file",
+				mcpgo.Required(),
+				mcpgo.Description("Absolute file path"),
+			),
+			mcpgo.WithNumber("line",
+				mcpgo.Required(),
+				mcpgo.Description("Line number (1-based)"),
+			),
+			mcpgo.WithNumber("column",
+				mcpgo.Required(),
+				mcpgo.Description("Column number (1-based)"),
+			),
+		),
+
+		// lsp_references
+		mcpgo.NewTool("lsp_references",
+			mcpgo.WithDescription("Query the language server for all references to a symbol at a position."),
+			mcpgo.WithString("file",
+				mcpgo.Required(),
+				mcpgo.Description("Absolute file path"),
+			),
+			mcpgo.WithNumber("line",
+				mcpgo.Required(),
+				mcpgo.Description("Line number (1-based)"),
+			),
+			mcpgo.WithNumber("column",
+				mcpgo.Required(),
+				mcpgo.Description("Column number (1-based)"),
+			),
+		),
+
+		// diagnostics
+		mcpgo.NewTool("diagnostics",
+			mcpgo.WithDescription("Query the language server for diagnostics (errors, warnings) in a file."),
+			mcpgo.WithString("file",
+				mcpgo.Required(),
+				mcpgo.Description("Absolute file path"),
 			),
 		),
 	}

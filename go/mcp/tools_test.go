@@ -793,3 +793,667 @@ func TestRemoveParameterNotFound(t *testing.T) {
 		t.Errorf("expected 'not found' message, got: %s", text)
 	}
 }
+
+// --- rename_file tests ---
+
+func TestRenameFilePython(t *testing.T) {
+	h, dir := testHandlerWithDir(t, map[string]string{
+		"utils.py": "def helper():\n    pass\n",
+		"main.py":  "import utils\n\nutils.helper()\n",
+	})
+
+	text, isErr, err := h.handleRenameFile(map[string]any{
+		"from": "utils.py",
+		"to":   "helpers.py",
+	})
+	if err != nil {
+		t.Fatalf("handleRenameFile error: %v", err)
+	}
+	if isErr {
+		t.Fatalf("handleRenameFile returned tool error: %s", text)
+	}
+
+	if !strings.Contains(text, "Rename") {
+		t.Errorf("expected 'Rename' in output, got: %s", text)
+	}
+	if !strings.Contains(text, "helpers") {
+		t.Errorf("expected 'helpers' in diff, got: %s", text)
+	}
+
+	// Apply changes.
+	text, _, err = h.handleApply(map[string]any{"confirm": true})
+	if err != nil {
+		t.Fatalf("handleApply error: %v", err)
+	}
+	if !strings.Contains(text, "Applied") {
+		t.Errorf("expected 'Applied' in output, got: %s", text)
+	}
+
+	// Verify main.py was updated on disk.
+	content, err := os.ReadFile(filepath.Join(dir, "main.py"))
+	if err != nil {
+		t.Fatalf("reading main.py: %v", err)
+	}
+	if !strings.Contains(string(content), "helpers") {
+		t.Errorf("expected 'helpers' import in main.py, got: %s", string(content))
+	}
+	if strings.Contains(string(content), "import utils") {
+		t.Errorf("expected 'utils' import to be replaced, got: %s", string(content))
+	}
+
+	// Verify file was renamed.
+	if _, err := os.Stat(filepath.Join(dir, "helpers.py")); os.IsNotExist(err) {
+		t.Error("expected helpers.py to exist after apply")
+	}
+	if _, err := os.Stat(filepath.Join(dir, "utils.py")); !os.IsNotExist(err) {
+		t.Error("expected utils.py to be renamed away")
+	}
+}
+
+func TestRenameFileTypeScript(t *testing.T) {
+	h, _ := testHandlerWithDir(t, map[string]string{
+		"utils.ts": "export function helper() {}\n",
+		"main.ts":  "import { helper } from \"./utils\";\n\nhelper();\n",
+	})
+
+	text, isErr, err := h.handleRenameFile(map[string]any{
+		"from": "utils.ts",
+		"to":   "helpers.ts",
+	})
+	if err != nil {
+		t.Fatalf("handleRenameFile error: %v", err)
+	}
+	if isErr {
+		t.Fatalf("handleRenameFile returned tool error: %s", text)
+	}
+
+	if !strings.Contains(text, "import updates") {
+		t.Errorf("expected import updates in output, got: %s", text)
+	}
+	if !strings.Contains(text, "helpers") {
+		t.Errorf("expected 'helpers' in diff, got: %s", text)
+	}
+}
+
+func TestRenameFileCpp(t *testing.T) {
+	h, _ := testHandlerWithDir(t, map[string]string{
+		"util.h":  "void helper();\n",
+		"main.cpp": "#include \"util.h\"\n\nint main() { helper(); }\n",
+	})
+
+	text, isErr, err := h.handleRenameFile(map[string]any{
+		"from": "util.h",
+		"to":   "helper.h",
+	})
+	if err != nil {
+		t.Fatalf("handleRenameFile error: %v", err)
+	}
+	if isErr {
+		t.Fatalf("handleRenameFile returned tool error: %s", text)
+	}
+
+	if !strings.Contains(text, "helper.h") {
+		t.Errorf("expected 'helper.h' in diff, got: %s", text)
+	}
+}
+
+func TestRenameFileNoImporters(t *testing.T) {
+	h, dir := testHandlerWithDir(t, map[string]string{
+		"lonely.py": "x = 1\n",
+		"other.py":  "y = 2\n",
+	})
+
+	text, isErr, err := h.handleRenameFile(map[string]any{
+		"from": "lonely.py",
+		"to":   "solo.py",
+	})
+	if err != nil {
+		t.Fatalf("handleRenameFile error: %v", err)
+	}
+	if isErr {
+		t.Fatalf("handleRenameFile returned tool error: %s", text)
+	}
+
+	if !strings.Contains(text, "Rename") {
+		t.Errorf("expected 'Rename' in output, got: %s", text)
+	}
+	// No import updates expected.
+	if strings.Contains(text, "import updates") {
+		t.Errorf("expected no import updates, got: %s", text)
+	}
+
+	// Apply and verify the rename still happens.
+	text, _, err = h.handleApply(map[string]any{"confirm": true})
+	if err != nil {
+		t.Fatalf("handleApply error: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "solo.py")); os.IsNotExist(err) {
+		t.Error("expected solo.py to exist after apply")
+	}
+}
+
+func TestRenameFileNotFound(t *testing.T) {
+	h := testHandler(t, map[string]string{
+		"main.py": "x = 1\n",
+	})
+
+	text, isErr, err := h.handleRenameFile(map[string]any{
+		"from": "nonexistent.py",
+		"to":   "something.py",
+	})
+	if err != nil {
+		t.Fatalf("handleRenameFile error: %v", err)
+	}
+	if !isErr {
+		t.Error("expected tool error for nonexistent file")
+	}
+	if !strings.Contains(text, "not found") {
+		t.Errorf("expected 'not found' in error, got: %s", text)
+	}
+}
+
+// --- clone_and_adapt tests ---
+
+func TestCloneAndAdaptBySymbolName(t *testing.T) {
+	h, dir := testHandlerWithDir(t, map[string]string{
+		"source.py": "def hello(name):\n    print('Hello, ' + name)\n",
+		"target.py": "# target file\n",
+	})
+
+	text, isErr, err := h.handleCloneAndAdapt(map[string]any{
+		"source":        "hello",
+		"substitutions": `{"hello": "greet", "Hello": "Greetings"}`,
+		"target_file":   filepath.Join(dir, "target.py"),
+	})
+	if err != nil {
+		t.Fatalf("handleCloneAndAdapt error: %v", err)
+	}
+	if isErr {
+		t.Fatalf("handleCloneAndAdapt returned tool error: %s", text)
+	}
+
+	if !strings.Contains(text, "Cloned and adapted") {
+		t.Errorf("expected 'Cloned and adapted' in output, got: %s", text)
+	}
+	if !strings.Contains(text, "greet") {
+		t.Errorf("expected 'greet' in diff, got: %s", text)
+	}
+	if !strings.Contains(text, "Greetings") {
+		t.Errorf("expected 'Greetings' in diff, got: %s", text)
+	}
+}
+
+func TestCloneAndAdaptByLineRange(t *testing.T) {
+	h, dir := testHandlerWithDir(t, map[string]string{
+		"source.py": "# line 1\ndef foo():\n    return 42\n# line 4\n",
+		"target.py": "# target\n",
+	})
+
+	text, isErr, err := h.handleCloneAndAdapt(map[string]any{
+		"source":        filepath.Join(dir, "source.py") + ":2-3",
+		"substitutions": `{"foo": "bar", "42": "99"}`,
+		"target_file":   filepath.Join(dir, "target.py"),
+	})
+	if err != nil {
+		t.Fatalf("handleCloneAndAdapt error: %v", err)
+	}
+	if isErr {
+		t.Fatalf("handleCloneAndAdapt returned tool error: %s", text)
+	}
+
+	if !strings.Contains(text, "bar") {
+		t.Errorf("expected 'bar' in diff, got: %s", text)
+	}
+	if !strings.Contains(text, "99") {
+		t.Errorf("expected '99' in diff, got: %s", text)
+	}
+}
+
+func TestCloneAndAdaptAfterSymbol(t *testing.T) {
+	h, dir := testHandlerWithDir(t, map[string]string{
+		"source.py": "def original():\n    return 1\n",
+		"target.py": "def existing():\n    return 0\n\ndef another():\n    pass\n",
+	})
+
+	text, isErr, err := h.handleCloneAndAdapt(map[string]any{
+		"source":        "original",
+		"substitutions": `{"original": "cloned", "1": "2"}`,
+		"target_file":   filepath.Join(dir, "target.py"),
+		"position":      "after:existing",
+	})
+	if err != nil {
+		t.Fatalf("handleCloneAndAdapt error: %v", err)
+	}
+	if isErr {
+		t.Fatalf("handleCloneAndAdapt returned tool error: %s", text)
+	}
+
+	if !strings.Contains(text, "cloned") {
+		t.Errorf("expected 'cloned' in diff, got: %s", text)
+	}
+	// The cloned function should appear between existing and another.
+	if !strings.Contains(text, "Cloned and adapted") {
+		t.Errorf("expected 'Cloned and adapted' in output, got: %s", text)
+	}
+}
+
+func TestCloneAndAdaptMultipleSubstitutions(t *testing.T) {
+	h, dir := testHandlerWithDir(t, map[string]string{
+		"source.py": "def process_user(user_name, user_id):\n    print(user_name, user_id)\n",
+		"target.py": "# target\n",
+	})
+
+	// "user_name" is longer than "user" — longest-first ordering should
+	// replace "user_name" before "user" to avoid partial matches.
+	text, isErr, err := h.handleCloneAndAdapt(map[string]any{
+		"source":        "process_user",
+		"substitutions": `{"user_name": "account_holder", "user_id": "account_number", "user": "account", "process": "handle"}`,
+		"target_file":   filepath.Join(dir, "target.py"),
+	})
+	if err != nil {
+		t.Fatalf("handleCloneAndAdapt error: %v", err)
+	}
+	if isErr {
+		t.Fatalf("handleCloneAndAdapt returned tool error: %s", text)
+	}
+
+	// Verify longest-first: "user_name" should become "account_holder", NOT "account_name".
+	if !strings.Contains(text, "account_holder") {
+		t.Errorf("expected 'account_holder' (longest-first sub), got: %s", text)
+	}
+	if !strings.Contains(text, "account_number") {
+		t.Errorf("expected 'account_number', got: %s", text)
+	}
+	if !strings.Contains(text, "handle_account") {
+		t.Errorf("expected 'handle_account', got: %s", text)
+	}
+}
+
+func TestCloneAndAdaptSymbolNotFound(t *testing.T) {
+	h, dir := testHandlerWithDir(t, map[string]string{
+		"source.py": "def foo():\n    pass\n",
+		"target.py": "# target\n",
+	})
+
+	text, isErr, err := h.handleCloneAndAdapt(map[string]any{
+		"source":        "nonexistent_symbol",
+		"substitutions": `{"a": "b"}`,
+		"target_file":   filepath.Join(dir, "target.py"),
+	})
+	if err != nil {
+		t.Fatalf("handleCloneAndAdapt error: %v", err)
+	}
+	if !isErr {
+		t.Error("expected tool error for missing symbol")
+	}
+	if !strings.Contains(text, "not found") {
+		t.Errorf("expected 'not found' message, got: %s", text)
+	}
+}
+
+func TestCloneAndAdaptTargetNotFound(t *testing.T) {
+	h := testHandler(t, map[string]string{
+		"source.py": "def foo():\n    pass\n",
+	})
+
+	text, isErr, err := h.handleCloneAndAdapt(map[string]any{
+		"source":        "foo",
+		"substitutions": `{"foo": "bar"}`,
+		"target_file":   "/nonexistent/path/target.py",
+	})
+	if err != nil {
+		t.Fatalf("handleCloneAndAdapt error: %v", err)
+	}
+	if !isErr {
+		t.Error("expected tool error for missing target file")
+	}
+	if !strings.Contains(text, "not found") {
+		t.Errorf("expected 'not found' message, got: %s", text)
+	}
+}
+
+// --- LSP tool tests (graceful degradation) ---
+
+func TestHoverNoModel(t *testing.T) {
+	h := NewHandler()
+	text, isErr, err := h.handleHover(map[string]any{
+		"file":   "/tmp/test.py",
+		"line":   float64(1),
+		"column": float64(1),
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !isErr {
+		t.Error("expected tool error when no model is loaded")
+	}
+	if !strings.Contains(text, "no codebase loaded") {
+		t.Errorf("expected 'no codebase loaded', got: %s", text)
+	}
+}
+
+func TestHoverNoLSP(t *testing.T) {
+	// Use a file extension with no real LSP server (.test) to test degradation.
+	h := testHandler(t, map[string]string{
+		"hello.py": "def hello():\n    pass\n",
+	})
+	text, isErr, err := h.handleHover(map[string]any{
+		"file":   "/tmp/test.foobar",
+		"line":   float64(1),
+		"column": float64(1),
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if isErr {
+		t.Errorf("expected graceful degradation, not tool error: %s", text)
+	}
+	// Should return a helpful message about no adapter for this extension.
+	if !strings.Contains(text, "No language adapter") {
+		t.Errorf("expected 'No language adapter' message, got: %s", text)
+	}
+}
+
+func TestDefinitionNoModel(t *testing.T) {
+	h := NewHandler()
+	text, isErr, err := h.handleDefinition(map[string]any{
+		"file":   "/tmp/test.go",
+		"line":   float64(1),
+		"column": float64(1),
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !isErr {
+		t.Error("expected tool error when no model is loaded")
+	}
+	if !strings.Contains(text, "no codebase loaded") {
+		t.Errorf("expected 'no codebase loaded', got: %s", text)
+	}
+}
+
+func TestLspReferencesNoModel(t *testing.T) {
+	h := NewHandler()
+	text, isErr, err := h.handleLspReferences(map[string]any{
+		"file":   "/tmp/test.rs",
+		"line":   float64(1),
+		"column": float64(1),
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !isErr {
+		t.Error("expected tool error when no model is loaded")
+	}
+	if !strings.Contains(text, "no codebase loaded") {
+		t.Errorf("expected 'no codebase loaded', got: %s", text)
+	}
+}
+
+func TestDiagnosticsNoModel(t *testing.T) {
+	h := NewHandler()
+	text, isErr, err := h.handleDiagnostics(map[string]any{
+		"file": "/tmp/test.ts",
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !isErr {
+		t.Error("expected tool error when no model is loaded")
+	}
+	if !strings.Contains(text, "no codebase loaded") {
+		t.Errorf("expected 'no codebase loaded', got: %s", text)
+	}
+}
+
+func TestHoverMissingParams(t *testing.T) {
+	h := NewHandler()
+	text, isErr, err := h.handleHover(map[string]any{
+		"file": "/tmp/test.py",
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !isErr {
+		t.Error("expected tool error for missing line param")
+	}
+	if !strings.Contains(text, "line is required") {
+		t.Errorf("expected 'line is required', got: %s", text)
+	}
+}
+
+func TestHoverUnknownExtension(t *testing.T) {
+	h := testHandler(t, map[string]string{
+		"hello.py": "x = 1\n",
+	})
+	text, isErr, err := h.handleHover(map[string]any{
+		"file":   "/tmp/test.xyz",
+		"line":   float64(1),
+		"column": float64(1),
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if isErr {
+		t.Errorf("expected graceful degradation, not tool error: %s", text)
+	}
+	if !strings.Contains(text, "No language adapter") {
+		t.Errorf("expected 'No language adapter' message, got: %s", text)
+	}
+}
+
+// --- add_field tests ---
+
+func TestAddFieldGoStruct(t *testing.T) {
+	h := testHandler(t, map[string]string{
+		"main.go": `package main
+
+type Foo struct {
+	Name string
+}
+
+func NewFoo(name string) Foo {
+	return Foo{Name: name}
+}
+
+var f = NewFoo("hello")
+`,
+	})
+
+	text, isErr, err := h.handleAddField(map[string]any{
+		"type_name":     "Foo",
+		"field_name":    "Age",
+		"field_type":    "int",
+		"default_value": "0",
+	})
+	if err != nil {
+		t.Fatalf("handleAddField error: %v", err)
+	}
+	if isErr {
+		t.Fatalf("handleAddField returned tool error: %s", text)
+	}
+
+	// Should report success.
+	if !strings.Contains(text, "Added field") {
+		t.Errorf("expected 'Added field' in output, got: %s", text)
+	}
+
+	// Field should be added to struct.
+	if !strings.Contains(text, "Age int") || !strings.Contains(text, "+") {
+		t.Errorf("expected field addition in diff, got: %s", text)
+	}
+
+	// Factory function should get new parameter.
+	if !strings.Contains(text, "Age") {
+		t.Errorf("expected 'Age' parameter in diff, got: %s", text)
+	}
+
+	// Caller should get new argument.
+	if !strings.Contains(text, "0") {
+		t.Errorf("expected default value '0' in diff, got: %s", text)
+	}
+}
+
+func TestAddFieldGoStructLiteral(t *testing.T) {
+	h := testHandler(t, map[string]string{
+		"main.go": `package main
+
+type Point struct {
+	X int
+}
+
+var p = Point{X: 1}
+`,
+	})
+
+	text, isErr, err := h.handleAddField(map[string]any{
+		"type_name":     "Point",
+		"field_name":    "Y",
+		"field_type":    "int",
+		"default_value": "0",
+	})
+	if err != nil {
+		t.Fatalf("handleAddField error: %v", err)
+	}
+	if isErr {
+		t.Fatalf("handleAddField returned tool error: %s", text)
+	}
+
+	// Struct literal should get the new field initializer.
+	if !strings.Contains(text, "Y: 0") {
+		t.Errorf("expected 'Y: 0' field initializer in diff, got: %s", text)
+	}
+}
+
+func TestAddFieldTypeNotFound(t *testing.T) {
+	h := testHandler(t, map[string]string{
+		"main.go": `package main
+
+type Foo struct {
+	Name string
+}
+`,
+	})
+
+	text, _, err := h.handleAddField(map[string]any{
+		"type_name":     "Bar",
+		"field_name":    "Age",
+		"field_type":    "int",
+		"default_value": "0",
+	})
+	if err != nil {
+		t.Fatalf("handleAddField error: %v", err)
+	}
+
+	if !strings.Contains(text, "not found") {
+		t.Errorf("expected 'not found' message, got: %s", text)
+	}
+}
+
+func TestAddFieldNoConstructionSites(t *testing.T) {
+	h := testHandler(t, map[string]string{
+		"main.go": `package main
+
+type Config struct {
+	Debug bool
+}
+`,
+	})
+
+	text, isErr, err := h.handleAddField(map[string]any{
+		"type_name":     "Config",
+		"field_name":    "Verbose",
+		"field_type":    "bool",
+		"default_value": "false",
+	})
+	if err != nil {
+		t.Fatalf("handleAddField error: %v", err)
+	}
+	if isErr {
+		t.Fatalf("handleAddField returned tool error: %s", text)
+	}
+
+	// Should still add the field to the struct.
+	if !strings.Contains(text, "Added field") {
+		t.Errorf("expected 'Added field' in output, got: %s", text)
+	}
+	if !strings.Contains(text, "Verbose bool") {
+		t.Errorf("expected 'Verbose bool' in diff, got: %s", text)
+	}
+}
+
+func TestAddFieldMultipleFiles(t *testing.T) {
+	h := testHandler(t, map[string]string{
+		"types.go": `package main
+
+type Foo struct {
+	Name string
+}
+
+func NewFoo(name string) Foo {
+	return Foo{Name: name}
+}
+`,
+		"use.go": `package main
+
+var f = NewFoo("hello")
+`,
+	})
+
+	text, isErr, err := h.handleAddField(map[string]any{
+		"type_name":     "Foo",
+		"field_name":    "Age",
+		"field_type":    "int",
+		"default_value": "0",
+	})
+	if err != nil {
+		t.Fatalf("handleAddField error: %v", err)
+	}
+	if isErr {
+		t.Fatalf("handleAddField returned tool error: %s", text)
+	}
+
+	// Should affect multiple files.
+	if !strings.Contains(text, "2 file(s)") {
+		t.Errorf("expected '2 file(s)' in output, got: %s", text)
+	}
+}
+
+func TestAddFieldPythonClass(t *testing.T) {
+	h := testHandler(t, map[string]string{
+		"main.py": `class Foo:
+    def __init__(self, name):
+        self.name = name
+
+f = Foo("hello")
+`,
+	})
+
+	text, isErr, err := h.handleAddField(map[string]any{
+		"type_name":     "Foo",
+		"field_name":    "age",
+		"field_type":    "int",
+		"default_value": "0",
+	})
+	if err != nil {
+		t.Fatalf("handleAddField error: %v", err)
+	}
+	if isErr {
+		t.Fatalf("handleAddField returned tool error: %s", text)
+	}
+
+	// Python class should get the field.
+	if !strings.Contains(text, "Added field") {
+		t.Errorf("expected 'Added field' in output, got: %s", text)
+	}
+
+	// The __init__ method should get new parameter.
+	if !strings.Contains(text, "age") {
+		t.Errorf("expected 'age' in diff, got: %s", text)
+	}
+
+	// The caller Foo("hello") should get new argument.
+	if !strings.Contains(text, "0") {
+		t.Errorf("expected '0' in diff, got: %s", text)
+	}
+}

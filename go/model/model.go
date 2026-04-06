@@ -21,6 +21,7 @@ import (
 	"github.com/marcelocantos/sawmill/adapters"
 	"github.com/marcelocantos/sawmill/forest"
 	"github.com/marcelocantos/sawmill/index"
+	"github.com/marcelocantos/sawmill/lspclient"
 	"github.com/marcelocantos/sawmill/paths"
 	"github.com/marcelocantos/sawmill/store"
 	"github.com/marcelocantos/sawmill/watcher"
@@ -34,6 +35,8 @@ type CodebaseModel struct {
 	Forest *forest.Forest
 	// SQLite-backed persistent store.
 	Store *store.Store
+	// LSP is the pool of language server clients (may be nil).
+	LSP *lspclient.Pool
 	// w watches root for file changes (nil for ephemeral models).
 	w *watcher.Watcher
 	// events is the channel of debounced file events from w.
@@ -75,7 +78,7 @@ func Load(root string) (*CodebaseModel, error) {
 		return nil, fmt.Errorf("starting watcher: %w", err)
 	}
 
-	return &CodebaseModel{Root: absRoot, Forest: f, Store: s, w: w, events: events}, nil
+	return &CodebaseModel{Root: absRoot, Forest: f, Store: s, LSP: lspclient.NewPool(), w: w, events: events}, nil
 }
 
 // LoadEphemeral loads without persistence (for testing or one-shot CLI use).
@@ -103,11 +106,15 @@ func LoadEphemeral(root string) (*CodebaseModel, error) {
 		_ = s.UpdateSymbols(file.Path, records)
 	}
 
-	return &CodebaseModel{Root: absRoot, Forest: f, Store: s}, nil
+	return &CodebaseModel{Root: absRoot, Forest: f, Store: s, LSP: lspclient.NewPool()}, nil
 }
 
-// Close releases the store's database connection and stops the file watcher.
+// Close releases the store's database connection, stops the file watcher, and
+// shuts down any LSP clients.
 func (m *CodebaseModel) Close() error {
+	if m.LSP != nil {
+		m.LSP.Close()
+	}
 	if m.w != nil {
 		_ = m.w.Close()
 	}

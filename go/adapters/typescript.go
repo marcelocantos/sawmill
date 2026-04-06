@@ -5,6 +5,10 @@ package adapters
 
 import (
 	"fmt"
+	"os"
+	"path/filepath"
+	"strings"
+
 	tree_sitter "github.com/tree-sitter/go-tree-sitter"
 
 	tree_sitter_typescript "github.com/tree-sitter/tree-sitter-typescript/bindings/go"
@@ -77,4 +81,72 @@ func (a *TypeScriptAdapter) GenMethodWithDoc(name, params, returnType, body, doc
 
 func (a *TypeScriptAdapter) GenImport(path string) string {
 	return fmt.Sprintf("import { %s };\n", path)
+}
+
+// ResolveImportPath resolves relative TS imports like "./foo" or "../bar"
+// to filesystem paths relative to root.
+func (a *TypeScriptAdapter) ResolveImportPath(importText, importingFile, root string) string {
+	// Strip quotes.
+	importText = strings.Trim(strings.TrimSpace(importText), `"'`)
+
+	// Only resolve relative imports.
+	if !strings.HasPrefix(importText, "./") && !strings.HasPrefix(importText, "../") {
+		return ""
+	}
+
+	importDir := filepath.Dir(importingFile)
+	abs := filepath.Join(importDir, importText)
+
+	// Try with common extensions if none present.
+	ext := filepath.Ext(abs)
+	candidates := []string{abs}
+	if ext == "" {
+		candidates = append(candidates, abs+".ts", abs+".tsx")
+	}
+
+	for _, c := range candidates {
+		if _, err := os.Stat(c); err != nil {
+			continue
+		}
+		rel, err := filepath.Rel(root, c)
+		if err != nil {
+			continue
+		}
+		return rel
+	}
+	return ""
+}
+
+// BuildImportPath produces a relative TS import path from importingFile
+// to targetFile. Returns with quotes to match the tree-sitter string node.
+func (a *TypeScriptAdapter) BuildImportPath(targetFile, importingFile, _ string) string {
+	importDir := filepath.Dir(importingFile)
+	rel, err := filepath.Rel(importDir, targetFile)
+	if err != nil {
+		return ""
+	}
+
+	// Use forward slashes.
+	rel = filepath.ToSlash(rel)
+
+	// Strip .ts/.tsx extension.
+	rel = strings.TrimSuffix(rel, ".tsx")
+	rel = strings.TrimSuffix(rel, ".ts")
+
+	// Ensure relative prefix.
+	if !strings.HasPrefix(rel, ".") {
+		rel = "./" + rel
+	}
+
+	// Return with quotes — the tree-sitter @name capture for TS import
+	// source includes the surrounding quotes.
+	return `"` + rel + `"`
+}
+
+func (a *TypeScriptAdapter) FactoryFuncNames(typeName string) []string {
+	return []string{"constructor", "create" + typeName}
+}
+
+func (a *TypeScriptAdapter) GenFieldInitializer(fieldName, value string) string {
+	return fmt.Sprintf("%s: %s", fieldName, value)
 }

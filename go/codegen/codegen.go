@@ -8,6 +8,7 @@
 package codegen
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"sort"
@@ -19,6 +20,7 @@ import (
 	"github.com/marcelocantos/sawmill/adapters"
 	"github.com/marcelocantos/sawmill/forest"
 	"github.com/marcelocantos/sawmill/index"
+	"github.com/marcelocantos/sawmill/lspclient"
 	"github.com/marcelocantos/sawmill/rewrite"
 )
 
@@ -302,6 +304,193 @@ func RunCodegen(f *forest.Forest, program string) ([]forest.FileChange, error) {
 	}
 
 	return changes, nil
+}
+
+// lspCtxSetup is the JS code that wires LSP methods onto the ctx object.
+// It requires __lspHover, __lspDefinition, __lspReferences, __lspDiagnostics
+// to be registered as host callbacks.
+const lspCtxSetup = `
+(function(ctx) {
+    ctx.typeOf = function(file, line, col) {
+        return __lspHover(file, line, col);
+    };
+    ctx.definition = function(file, line, col) {
+        return JSON.parse(__lspDefinition(file, line, col));
+    };
+    ctx.lspReferences = function(file, line, col) {
+        return JSON.parse(__lspReferences(file, line, col));
+    };
+    ctx.diagnostics = function(file) {
+        return JSON.parse(__lspDiagnostics(file));
+    };
+    ctx.hasLsp = true;
+})(ctx);
+`
+
+// RunCodegenWithLSP is like RunCodegen but also registers LSP callbacks
+// and sets ctx.hasLsp = true when a pool is available.
+func RunCodegenWithLSP(f *forest.Forest, program string, lspPool *lspclient.Pool, root string) ([]forest.FileChange, error) {
+	vm, err := quickjs.NewVM()
+	if err != nil {
+		return nil, fmt.Errorf("creating QuickJS VM: %w", err)
+	}
+	defer vm.Close()
+
+	collector := newEditCollector()
+
+	// Register standard callbacks.
+	vm.RegisterFunc("__editFile", func(file string, start, end int, replacement string) {
+		collector.addEdit(file, rewrite.Edit{
+			Start:       uint(start),
+			End:         uint(end),
+			Replacement: replacement,
+		})
+	}, false)
+	vm.RegisterFunc("__addFile", func(path, content string) {
+		collector.addNewFile(path, content)
+	}, false)
+	vm.RegisterFunc("__genField", func(langID, name, typeName, doc string) string {
+		return genForLang(langID, func(a adapters.LanguageAdapter) string {
+			return a.GenFieldWithDoc(name, typeName, doc)
+		})
+	}, false)
+	vm.RegisterFunc("__genMethod", func(langID, name, params, returnType, body, doc string) string {
+		return genForLang(langID, func(a adapters.LanguageAdapter) string {
+			return a.GenMethodWithDoc(name, params, returnType, body, doc)
+		})
+	}, false)
+	vm.RegisterFunc("__genImport", func(langID, path string) string {
+		return genForLang(langID, func(a adapters.LanguageAdapter) string {
+			return a.GenImport(path)
+		})
+	}, false)
+
+	// Register LSP callbacks.
+	vm.RegisterFunc("__lspHover", func(file string, line, col int) string {
+		adapter := adapterForFile(file)
+		if adapter == nil || lspPool == nil {
+			return ""
+		}
+		client := lspPool.Get(adapter, root)
+		if client == nil {
+			return ""
+		}
+		text, err := client.Hover(context.Background(), file, uint32(line), uint32(col))
+		if err != nil {
+			return ""
+		}
+		return text
+	}, false)
+	vm.RegisterFunc("__lspDefinition", func(file string, line, col int) string {
+		adapter := adapterForFile(file)
+		if adapter == nil || lspPool == nil {
+			return "[]"
+		}
+		client := lspPool.Get(adapter, root)
+		if client == nil {
+			return "[]"
+		}
+		locs, err := client.Definition(context.Background(), file, uint32(line), uint32(col))
+		if err != nil {
+			return "[]"
+		}
+		data, _ := json.Marshal(locs)
+		return string(data)
+	}, false)
+	vm.RegisterFunc("__lspReferences", func(file string, line, col int) string {
+		adapter := adapterForFile(file)
+		if adapter == nil || lspPool == nil {
+			return "[]"
+		}
+		client := lspPool.Get(adapter, root)
+		if client == nil {
+			return "[]"
+		}
+		locs, err := client.References(context.Background(), file, uint32(line), uint32(col))
+		if err != nil {
+			return "[]"
+		}
+		data, _ := json.Marshal(locs)
+		return string(data)
+	}, false)
+	vm.RegisterFunc("__lspDiagnostics", func(file string) string {
+		adapter := adapterForFile(file)
+		if adapter == nil || lspPool == nil {
+			return "[]"
+		}
+		client := lspPool.Get(adapter, root)
+		if client == nil {
+			return "[]"
+		}
+		diags, err := client.Diagnostics(context.Background(), file)
+		if err != nil {
+			return "[]"
+		}
+		data, _ := json.Marshal(diags)
+		return string(data)
+	}, false)
+
+	// Inject helpers.
+	if _, err := vm.Eval(codegenHelpers, quickjs.EvalGlobal); err != nil {
+		return nil, fmt.Errorf("injecting codegen helpers: %w", err)
+	}
+
+	allSymbols := buildAllSymbolJSON(f)
+	allFiles := buildAllFilesJSON(f)
+	filePaths := buildFilePathsJSON(f)
+
+	ctxInit := fmt.Sprintf("var ctx = {files: %s};", filePaths)
+	if _, err := vm.Eval(ctxInit, quickjs.EvalGlobal); err != nil {
+		return nil, fmt.Errorf("creating ctx: %w", err)
+	}
+
+	setupCode := fmt.Sprintf(ctxSetupTemplate, allSymbols, allFiles)
+	if _, err := vm.Eval(setupCode, quickjs.EvalGlobal); err != nil {
+		return nil, fmt.Errorf("setting up ctx: %w", err)
+	}
+
+	// Wire LSP onto ctx.
+	if _, err := vm.Eval(lspCtxSetup, quickjs.EvalGlobal); err != nil {
+		return nil, fmt.Errorf("setting up LSP ctx: %w", err)
+	}
+
+	wrapped := fmt.Sprintf("(function(ctx) { %s })(ctx)", program)
+	if _, err := vm.Eval(wrapped, quickjs.EvalGlobal); err != nil {
+		return nil, fmt.Errorf("executing codegen program: %w", err)
+	}
+
+	var changes []forest.FileChange
+	for _, file := range f.Files {
+		edits, ok := collector.edits[file.Path]
+		if !ok {
+			continue
+		}
+		sort.Slice(edits, func(i, j int) bool {
+			return edits[i].Start < edits[j].Start
+		})
+		newSource := rewrite.ApplyEdits(file.OriginalSource, edits)
+		if string(newSource) != string(file.OriginalSource) {
+			changes = append(changes, forest.FileChange{
+				Path:      file.Path,
+				Original:  file.OriginalSource,
+				NewSource: newSource,
+			})
+		}
+	}
+	for path, content := range collector.newFiles {
+		changes = append(changes, forest.FileChange{
+			Path:      path,
+			Original:  nil,
+			NewSource: []byte(content),
+		})
+	}
+	return changes, nil
+}
+
+// adapterForFile returns the language adapter for a file based on its extension.
+func adapterForFile(file string) adapters.LanguageAdapter {
+	ext := fileExt(file)
+	return adapters.ForExtension(ext)
 }
 
 // RunConventionCheck executes a convention check program against the forest.
