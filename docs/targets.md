@@ -33,9 +33,9 @@ trivial.
 state (recipes, conventions) across sessions, and enables brew services
 integration.
 
-- 🎯T11.1 Core logic port — forest, transform, rewrite, codegen,
-  exemplar, index. Pure functions over Tree-sitter trees. Port existing
-  Rust tests to validate.
+- 🎯T11.1 Core logic port — ACHIEVED. All 7 packages ported: adapters,
+  forest, rewrite, transform, index, exemplar, codegen/jsengine.
+  29 Go tests passing. Uses modernc.org/quickjs (pure Go) for JS engine.
 - 🎯T11.2 Store port — SQLite persistence layer (files, symbols,
   recipes, conventions). Same schema, Go bindings.
 - 🎯T11.3 Daemon architecture — `sawmill daemon` listens on Unix socket
