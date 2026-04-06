@@ -10,13 +10,17 @@
 package main
 
 import (
+	"context"
 	"flag"
 	"fmt"
 	"os"
+	"os/signal"
 	"path/filepath"
 	"strings"
+	"syscall"
 
 	"github.com/marcelocantos/sawmill/daemon"
+	mcpserver "github.com/marcelocantos/sawmill/mcp"
 )
 
 const version = "0.5.0"
@@ -34,6 +38,7 @@ func main() {
 	flag.Usage = func() {
 		fmt.Fprintf(os.Stderr, "Usage: sawmill <command> [options]\n\n")
 		fmt.Fprintf(os.Stderr, "Commands:\n")
+		fmt.Fprintf(os.Stderr, "  serve     Start the MCP server (stdio transport)\n")
 		fmt.Fprintf(os.Stderr, "  daemon    Start the sawmill daemon\n")
 		fmt.Fprintf(os.Stderr, "  version   Print version and exit\n")
 	}
@@ -47,6 +52,8 @@ func main() {
 	args := os.Args[2:]
 
 	switch cmd {
+	case "serve":
+		runServe()
 	case "daemon":
 		runDaemon(args)
 	case "version":
@@ -58,6 +65,17 @@ func main() {
 	default:
 		fmt.Fprintf(os.Stderr, "unknown command %q\n", cmd)
 		flag.Usage()
+		os.Exit(1)
+	}
+}
+
+func runServe() {
+	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	defer cancel()
+
+	s := mcpserver.NewServer()
+	if err := s.Serve(ctx); err != nil && err != context.Canceled {
+		fmt.Fprintf(os.Stderr, "serve error: %v\n", err)
 		os.Exit(1)
 	}
 }
