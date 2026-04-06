@@ -109,6 +109,8 @@ func (h *Handler) Call(name string, args map[string]any) (string, bool, error) {
 		return h.handleAddParameter(args)
 	case "remove_parameter":
 		return h.handleRemoveParameter(args)
+	case "clone_and_adapt":
+		return h.handleCloneAndAdapt(args)
 	default:
 		return "", false, fmt.Errorf("unknown tool: %s", name)
 	}
@@ -436,6 +438,29 @@ func Definitions() []mcpgo.Tool {
 			),
 			mcpgo.WithBoolean("format",
 				mcpgo.Description("Run the language formatter after modifying"),
+			),
+		),
+
+		// clone_and_adapt
+		mcpgo.NewTool("clone_and_adapt",
+			mcpgo.WithDescription("Copy a symbol or code region, apply string substitutions, and insert at a target location. One-shot copy-and-modify without templatisation."),
+			mcpgo.WithString("source",
+				mcpgo.Required(),
+				mcpgo.Description("Symbol name or file:start_line-end_line range to clone"),
+			),
+			mcpgo.WithString("substitutions",
+				mcpgo.Required(),
+				mcpgo.Description("JSON object mapping old strings to new strings"),
+			),
+			mcpgo.WithString("target_file",
+				mcpgo.Required(),
+				mcpgo.Description("File path where the clone should be inserted"),
+			),
+			mcpgo.WithString("position",
+				mcpgo.Description("Where to insert: end (default), start, or after:<symbol_name>"),
+			),
+			mcpgo.WithBoolean("format",
+				mcpgo.Description("Run the language formatter after insertion"),
 			),
 		),
 	}

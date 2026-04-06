@@ -213,7 +213,8 @@ Handles import propagation. Intentionally simpler than `teach_by_example`
 See `docs/agent-usage-archaeology.md` §4.6 for full implementation design.
 
 - **Weight**: 4 (value 8 / cost 2)
-- **Status**: designed
+- **Status**: achieved — `clone_and_adapt` tool implemented with symbol/range
+  extraction, longest-first substitution, positional insertion. 6 tests passing.
 - **Depends on**: (independent)
 
 ### 🎯T19 Structural invariants

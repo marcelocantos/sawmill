@@ -11,6 +11,9 @@ import (
 	"path/filepath"
 	"strings"
 
+	"sort"
+	"strconv"
+
 	tree_sitter "github.com/tree-sitter/go-tree-sitter"
 
 	"github.com/marcelocantos/sawmill/codegen"
@@ -1445,4 +1448,336 @@ func (h *Handler) handleRenameFile(args map[string]any) (string, bool, error) {
 		sb.WriteString("\n")
 	}
 	return sb.String(), false, nil
+}
+
+// ---- clone_and_adapt ------------------------------------------------------
+
+func (h *Handler) handleCloneAndAdapt(args map[string]any) (string, bool, error) {
+	source, err := requireString(args, "source")
+	if err != nil {
+		return err.Error(), true, nil
+	}
+	subsJSON, err := requireString(args, "substitutions")
+	if err != nil {
+		return err.Error(), true, nil
+	}
+	targetFile, err := requireString(args, "target_file")
+	if err != nil {
+		return err.Error(), true, nil
+	}
+	position := optString(args, "position")
+	format := optBool(args, "format")
+
+	if position == "" {
+		position = "end"
+	}
+
+	// Parse substitutions.
+	var subs map[string]string
+	if err := json.Unmarshal([]byte(subsJSON), &subs); err != nil {
+		return fmt.Sprintf("parsing substitutions JSON: %v", err), true, nil
+	}
+
+	h.mu.Lock()
+	defer h.mu.Unlock()
+
+	m, err := h.requireModel()
+	if err != nil {
+		return err.Error(), true, nil
+	}
+
+	// Step 1: Extract source text.
+	sourceText, sourceFile, err := extractCloneSource(m, source)
+	if err != nil {
+		return err.Error(), true, nil
+	}
+	_ = sourceFile // used for future import propagation
+
+	// Step 2: Apply substitutions (longest keys first to avoid partial matches).
+	keys := make([]string, 0, len(subs))
+	for k := range subs {
+		keys = append(keys, k)
+	}
+	sort.Slice(keys, func(i, j int) bool {
+		return len(keys[i]) > len(keys[j])
+	})
+	clonedText := sourceText
+	for _, k := range keys {
+		clonedText = strings.ReplaceAll(clonedText, k, subs[k])
+	}
+
+	// Step 3: Find target file in the forest.
+	var targetPF *forest.ParsedFile
+	for _, file := range m.Forest.Files {
+		if file.Path == targetFile || strings.HasSuffix(file.Path, targetFile) {
+			targetPF = file
+			break
+		}
+	}
+	if targetPF == nil {
+		return fmt.Sprintf("Target file %q not found in the parsed forest.", targetFile), true, nil
+	}
+
+	// Step 4: Determine insertion point.
+	insertOffset, err := resolveInsertPosition(targetPF, position)
+	if err != nil {
+		return err.Error(), true, nil
+	}
+
+	// Step 5: Build the new source with the cloned text inserted.
+	original := targetPF.OriginalSource
+	var newSource []byte
+	// Ensure the cloned text is separated by blank lines.
+	prefix := "\n\n"
+	suffix := "\n"
+	if insertOffset == 0 {
+		prefix = ""
+		suffix = "\n\n"
+	}
+	newSource = make([]byte, 0, len(original)+len(clonedText)+4)
+	newSource = append(newSource, original[:insertOffset]...)
+	newSource = append(newSource, prefix...)
+	newSource = append(newSource, clonedText...)
+	newSource = append(newSource, suffix...)
+	newSource = append(newSource, original[insertOffset:]...)
+
+	if format {
+		newSource, _ = rewrite.FormatSource(targetPF.Adapter, newSource)
+	}
+
+	diff := rewrite.UnifiedDiff(targetPF.Path, original, newSource)
+	changes := []forest.FileChange{{
+		Path:      targetPF.Path,
+		Original:  original,
+		NewSource: newSource,
+	}}
+	diffs := []string{diff}
+
+	h.pending = &PendingChanges{Changes: changes, Diffs: diffs}
+
+	var sb strings.Builder
+	fmt.Fprintf(&sb, "Cloned and adapted into %s. Call apply to write.\n", targetPF.Path)
+	sb.WriteString("Note: You may need to add imports manually.\n\n")
+	for _, d := range diffs {
+		sb.WriteString(d)
+		sb.WriteString("\n")
+	}
+	return sb.String(), false, nil
+}
+
+// extractCloneSource extracts source text from either a file:line_range spec or
+// a symbol name search across the forest. Returns the text and the source file.
+func extractCloneSource(m *model.CodebaseModel, source string) (string, *forest.ParsedFile, error) {
+	// Check for file:start-end range syntax.
+	if idx := strings.LastIndex(source, ":"); idx > 0 {
+		filePart := source[:idx]
+		rangePart := source[idx+1:]
+		if dashIdx := strings.Index(rangePart, "-"); dashIdx > 0 {
+			startLine, err1 := strconv.Atoi(rangePart[:dashIdx])
+			endLine, err2 := strconv.Atoi(rangePart[dashIdx+1:])
+			if err1 == nil && err2 == nil && startLine > 0 && endLine >= startLine {
+				// Find the file in the forest.
+				for _, file := range m.Forest.Files {
+					if file.Path == filePart || strings.HasSuffix(file.Path, filePart) {
+						lines := strings.Split(string(file.OriginalSource), "\n")
+						if startLine > len(lines) {
+							return "", nil, fmt.Errorf("start line %d exceeds file length %d", startLine, len(lines))
+						}
+						if endLine > len(lines) {
+							endLine = len(lines)
+						}
+						// Lines are 1-based.
+						text := strings.Join(lines[startLine-1:endLine], "\n")
+						return text, file, nil
+					}
+				}
+				return "", nil, fmt.Errorf("file %q not found in the parsed forest", filePart)
+			}
+		}
+	}
+
+	// Treat source as a symbol name — search all files for a matching
+	// function or type definition.
+	for _, file := range m.Forest.Files {
+		text, found := findSymbolNode(file, source)
+		if found {
+			return text, file, nil
+		}
+	}
+
+	return "", nil, fmt.Errorf("symbol %q not found in any parsed file", source)
+}
+
+// findSymbolNode searches a single file for a function or type definition with
+// the given name and returns its full text.
+func findSymbolNode(file *forest.ParsedFile, symbolName string) (string, bool) {
+	// Try function definitions first, then type definitions.
+	for _, queryStr := range []string{
+		file.Adapter.FunctionDefQuery(),
+		file.Adapter.TypeDefQuery(),
+	} {
+		if queryStr == "" {
+			continue
+		}
+
+		lang := file.Adapter.Language()
+		query, qErr := tree_sitter.NewQuery(lang, queryStr)
+		if qErr != nil {
+			continue
+		}
+
+		// Find @name and @func/@type_def capture indices.
+		nameIdx := -1
+		nodeIdx := -1
+		for i, n := range query.CaptureNames() {
+			switch n {
+			case "name":
+				nameIdx = i
+			case "func":
+				nodeIdx = i
+			case "type_def":
+				nodeIdx = i
+			}
+		}
+		if nameIdx < 0 || nodeIdx < 0 {
+			query.Close()
+			continue
+		}
+
+		cursor := tree_sitter.NewQueryCursor()
+		matches := cursor.Matches(query, file.Tree.RootNode(), file.OriginalSource)
+
+		for match := matches.Next(); match != nil; match = matches.Next() {
+			var nameNode, wholeNode *tree_sitter.Node
+			for i := range match.Captures {
+				c := &match.Captures[i]
+				if c.Index == uint32(nameIdx) && nameNode == nil {
+					nameNode = &c.Node
+				}
+				if c.Index == uint32(nodeIdx) && wholeNode == nil {
+					wholeNode = &c.Node
+				}
+			}
+			if nameNode == nil || wholeNode == nil {
+				continue
+			}
+			name := string(file.OriginalSource[nameNode.StartByte():nameNode.EndByte()])
+			if name == symbolName {
+				text := string(file.OriginalSource[wholeNode.StartByte():wholeNode.EndByte()])
+				cursor.Close()
+				query.Close()
+				return text, true
+			}
+		}
+		cursor.Close()
+		query.Close()
+	}
+	return "", false
+}
+
+// resolveInsertPosition determines the byte offset in the target file where
+// cloned text should be inserted.
+func resolveInsertPosition(file *forest.ParsedFile, position string) (uint, error) {
+	source := file.OriginalSource
+
+	switch {
+	case position == "end":
+		// Insert before the final newline if present.
+		offset := uint(len(source))
+		if offset > 0 && source[offset-1] == '\n' {
+			offset--
+		}
+		return offset, nil
+
+	case position == "start":
+		// Insert after any leading comments and package/module declarations.
+		// Heuristic: find the end of the first non-comment top-level node.
+		root := file.Tree.RootNode()
+		for i := uint(0); i < root.ChildCount(); i++ {
+			child := root.Child(i)
+			if child == nil {
+				continue
+			}
+			kind := child.Kind()
+			// Skip comments and package/module declarations.
+			if strings.Contains(kind, "comment") ||
+				kind == "package_clause" || kind == "module" ||
+				kind == "package_statement" || kind == "shebang" {
+				continue
+			}
+			// Insert before the first real content node.
+			return child.StartByte(), nil
+		}
+		// If only comments/declarations, insert at end.
+		return uint(len(source)), nil
+
+	case strings.HasPrefix(position, "after:"):
+		symbolName := strings.TrimPrefix(position, "after:")
+		// Find the named symbol and insert after it.
+		for _, queryStr := range []string{
+			file.Adapter.FunctionDefQuery(),
+			file.Adapter.TypeDefQuery(),
+		} {
+			if queryStr == "" {
+				continue
+			}
+
+			lang := file.Adapter.Language()
+			query, qErr := tree_sitter.NewQuery(lang, queryStr)
+			if qErr != nil {
+				continue
+			}
+
+			nameIdx := -1
+			nodeIdx := -1
+			for i, n := range query.CaptureNames() {
+				switch n {
+				case "name":
+					nameIdx = i
+				case "func", "type_def":
+					nodeIdx = i
+				}
+			}
+			if nameIdx < 0 || nodeIdx < 0 {
+				query.Close()
+				continue
+			}
+
+			cursor := tree_sitter.NewQueryCursor()
+			matches := cursor.Matches(query, file.Tree.RootNode(), source)
+
+			foundOffset := uint(0)
+			found := false
+			for match := matches.Next(); match != nil; match = matches.Next() {
+				var nameNode, wholeNode *tree_sitter.Node
+				for i := range match.Captures {
+					c := &match.Captures[i]
+					if c.Index == uint32(nameIdx) && nameNode == nil {
+						nameNode = &c.Node
+					}
+					if c.Index == uint32(nodeIdx) && wholeNode == nil {
+						wholeNode = &c.Node
+					}
+				}
+				if nameNode == nil || wholeNode == nil {
+					continue
+				}
+				name := string(source[nameNode.StartByte():nameNode.EndByte()])
+				if name == symbolName {
+					foundOffset = wholeNode.EndByte()
+					found = true
+					break
+				}
+			}
+			cursor.Close()
+			query.Close()
+			if found {
+				return foundOffset, nil
+			}
+		}
+		return 0, fmt.Errorf("symbol %q not found in target file for after: position", symbolName)
+
+	default:
+		return 0, fmt.Errorf("invalid position %q: must be end, start, or after:<symbol_name>", position)
+	}
 }

@@ -951,3 +951,163 @@ func TestRenameFileNotFound(t *testing.T) {
 		t.Errorf("expected 'not found' in error, got: %s", text)
 	}
 }
+
+// --- clone_and_adapt tests ---
+
+func TestCloneAndAdaptBySymbolName(t *testing.T) {
+	h, dir := testHandlerWithDir(t, map[string]string{
+		"source.py": "def hello(name):\n    print('Hello, ' + name)\n",
+		"target.py": "# target file\n",
+	})
+
+	text, isErr, err := h.handleCloneAndAdapt(map[string]any{
+		"source":        "hello",
+		"substitutions": `{"hello": "greet", "Hello": "Greetings"}`,
+		"target_file":   filepath.Join(dir, "target.py"),
+	})
+	if err != nil {
+		t.Fatalf("handleCloneAndAdapt error: %v", err)
+	}
+	if isErr {
+		t.Fatalf("handleCloneAndAdapt returned tool error: %s", text)
+	}
+
+	if !strings.Contains(text, "Cloned and adapted") {
+		t.Errorf("expected 'Cloned and adapted' in output, got: %s", text)
+	}
+	if !strings.Contains(text, "greet") {
+		t.Errorf("expected 'greet' in diff, got: %s", text)
+	}
+	if !strings.Contains(text, "Greetings") {
+		t.Errorf("expected 'Greetings' in diff, got: %s", text)
+	}
+}
+
+func TestCloneAndAdaptByLineRange(t *testing.T) {
+	h, dir := testHandlerWithDir(t, map[string]string{
+		"source.py": "# line 1\ndef foo():\n    return 42\n# line 4\n",
+		"target.py": "# target\n",
+	})
+
+	text, isErr, err := h.handleCloneAndAdapt(map[string]any{
+		"source":        filepath.Join(dir, "source.py") + ":2-3",
+		"substitutions": `{"foo": "bar", "42": "99"}`,
+		"target_file":   filepath.Join(dir, "target.py"),
+	})
+	if err != nil {
+		t.Fatalf("handleCloneAndAdapt error: %v", err)
+	}
+	if isErr {
+		t.Fatalf("handleCloneAndAdapt returned tool error: %s", text)
+	}
+
+	if !strings.Contains(text, "bar") {
+		t.Errorf("expected 'bar' in diff, got: %s", text)
+	}
+	if !strings.Contains(text, "99") {
+		t.Errorf("expected '99' in diff, got: %s", text)
+	}
+}
+
+func TestCloneAndAdaptAfterSymbol(t *testing.T) {
+	h, dir := testHandlerWithDir(t, map[string]string{
+		"source.py": "def original():\n    return 1\n",
+		"target.py": "def existing():\n    return 0\n\ndef another():\n    pass\n",
+	})
+
+	text, isErr, err := h.handleCloneAndAdapt(map[string]any{
+		"source":        "original",
+		"substitutions": `{"original": "cloned", "1": "2"}`,
+		"target_file":   filepath.Join(dir, "target.py"),
+		"position":      "after:existing",
+	})
+	if err != nil {
+		t.Fatalf("handleCloneAndAdapt error: %v", err)
+	}
+	if isErr {
+		t.Fatalf("handleCloneAndAdapt returned tool error: %s", text)
+	}
+
+	if !strings.Contains(text, "cloned") {
+		t.Errorf("expected 'cloned' in diff, got: %s", text)
+	}
+	// The cloned function should appear between existing and another.
+	if !strings.Contains(text, "Cloned and adapted") {
+		t.Errorf("expected 'Cloned and adapted' in output, got: %s", text)
+	}
+}
+
+func TestCloneAndAdaptMultipleSubstitutions(t *testing.T) {
+	h, dir := testHandlerWithDir(t, map[string]string{
+		"source.py": "def process_user(user_name, user_id):\n    print(user_name, user_id)\n",
+		"target.py": "# target\n",
+	})
+
+	// "user_name" is longer than "user" — longest-first ordering should
+	// replace "user_name" before "user" to avoid partial matches.
+	text, isErr, err := h.handleCloneAndAdapt(map[string]any{
+		"source":        "process_user",
+		"substitutions": `{"user_name": "account_holder", "user_id": "account_number", "user": "account", "process": "handle"}`,
+		"target_file":   filepath.Join(dir, "target.py"),
+	})
+	if err != nil {
+		t.Fatalf("handleCloneAndAdapt error: %v", err)
+	}
+	if isErr {
+		t.Fatalf("handleCloneAndAdapt returned tool error: %s", text)
+	}
+
+	// Verify longest-first: "user_name" should become "account_holder", NOT "account_name".
+	if !strings.Contains(text, "account_holder") {
+		t.Errorf("expected 'account_holder' (longest-first sub), got: %s", text)
+	}
+	if !strings.Contains(text, "account_number") {
+		t.Errorf("expected 'account_number', got: %s", text)
+	}
+	if !strings.Contains(text, "handle_account") {
+		t.Errorf("expected 'handle_account', got: %s", text)
+	}
+}
+
+func TestCloneAndAdaptSymbolNotFound(t *testing.T) {
+	h, dir := testHandlerWithDir(t, map[string]string{
+		"source.py": "def foo():\n    pass\n",
+		"target.py": "# target\n",
+	})
+
+	text, isErr, err := h.handleCloneAndAdapt(map[string]any{
+		"source":        "nonexistent_symbol",
+		"substitutions": `{"a": "b"}`,
+		"target_file":   filepath.Join(dir, "target.py"),
+	})
+	if err != nil {
+		t.Fatalf("handleCloneAndAdapt error: %v", err)
+	}
+	if !isErr {
+		t.Error("expected tool error for missing symbol")
+	}
+	if !strings.Contains(text, "not found") {
+		t.Errorf("expected 'not found' message, got: %s", text)
+	}
+}
+
+func TestCloneAndAdaptTargetNotFound(t *testing.T) {
+	h := testHandler(t, map[string]string{
+		"source.py": "def foo():\n    pass\n",
+	})
+
+	text, isErr, err := h.handleCloneAndAdapt(map[string]any{
+		"source":        "foo",
+		"substitutions": `{"foo": "bar"}`,
+		"target_file":   "/nonexistent/path/target.py",
+	})
+	if err != nil {
+		t.Fatalf("handleCloneAndAdapt error: %v", err)
+	}
+	if !isErr {
+		t.Error("expected tool error for missing target file")
+	}
+	if !strings.Contains(text, "not found") {
+		t.Errorf("expected 'not found' message, got: %s", text)
+	}
+}
