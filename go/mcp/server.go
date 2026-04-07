@@ -121,6 +121,16 @@ func (h *Handler) Call(name string, args map[string]any) (string, bool, error) {
 		return h.handleDiagnostics(args)
 	case "add_field":
 		return h.handleAddField(args)
+	case "dependency_usage":
+		return h.handleDependencyUsage(args)
+	case "teach_invariant":
+		return h.handleTeachInvariant(args)
+	case "check_invariants":
+		return h.handleCheckInvariants(args)
+	case "list_invariants":
+		return h.handleListInvariants(args)
+	case "delete_invariant":
+		return h.handleDeleteInvariant(args)
 	default:
 		return "", false, fmt.Errorf("unknown tool: %s", name)
 	}
@@ -558,6 +568,56 @@ func Definitions() []mcpgo.Tool {
 			mcpgo.WithString("file",
 				mcpgo.Required(),
 				mcpgo.Description("Absolute file path"),
+			),
+		),
+
+		// teach_invariant
+		mcpgo.NewTool("teach_invariant",
+			mcpgo.WithDescription("Save a named structural invariant (JSON rule) that can be checked with check_invariants."),
+			mcpgo.WithString("name",
+				mcpgo.Required(),
+				mcpgo.Description("Invariant name"),
+			),
+			mcpgo.WithString("description",
+				mcpgo.Description("Human-readable description of what the invariant enforces"),
+			),
+			mcpgo.WithString("rule",
+				mcpgo.Required(),
+				mcpgo.Description(`JSON rule object. Example: {"for_each":{"kind":"type","name":"*Config"},"require":[{"has_field":{"name":"Name","type":"string"}}]}`),
+			),
+		),
+
+		// check_invariants
+		mcpgo.NewTool("check_invariants",
+			mcpgo.WithDescription("Run all saved structural invariants against the codebase and report violations."),
+			mcpgo.WithString("path",
+				mcpgo.Description("Restrict to a specific file or directory"),
+			),
+		),
+
+		// list_invariants
+		mcpgo.NewTool("list_invariants",
+			mcpgo.WithDescription("List all saved structural invariants."),
+		),
+
+		// delete_invariant
+		mcpgo.NewTool("delete_invariant",
+			mcpgo.WithDescription("Delete a saved structural invariant by name."),
+			mcpgo.WithString("name",
+				mcpgo.Required(),
+				mcpgo.Description("Invariant name to delete"),
+			),
+		),
+
+		// dependency_usage
+		mcpgo.NewTool("dependency_usage",
+			mcpgo.WithDescription("Analyse dependency usage: import sites, symbols used, call sites, and public API exposure for a given package."),
+			mcpgo.WithString("package",
+				mcpgo.Required(),
+				mcpgo.Description("Import path or module name to analyse"),
+			),
+			mcpgo.WithString("path",
+				mcpgo.Description("Restrict to files matching this path substring"),
 			),
 		),
 	}
