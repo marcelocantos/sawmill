@@ -30,6 +30,12 @@ func rootHash(root string) string {
 	return hex.EncodeToString(h[:8])
 }
 
+// GlobalSocketPath returns the Unix domain socket path for the global daemon.
+// e.g. ~/.sawmill/sawmill.sock
+func GlobalSocketPath() string {
+	return filepath.Join(Base(), "sawmill.sock")
+}
+
 // SocketPath returns the Unix domain socket path for a project's daemon.
 // e.g. ~/.sawmill/sockets/a1b2c3d4e5f6a7b8.sock
 func SocketPath(root string) string {

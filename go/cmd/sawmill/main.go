@@ -6,7 +6,7 @@
 // Usage:
 //
 //	sawmill                          MCP stdio proxy (for MCP clients)
-//	sawmill serve [--root PATH]      start a background daemon for a project
+//	sawmill serve                    start the global background daemon
 //	sawmill version                  print version and exit
 package main
 
@@ -36,7 +36,7 @@ func main() {
 		fmt.Fprintf(os.Stderr, "Usage: sawmill [command] [options]\n\n")
 		fmt.Fprintf(os.Stderr, "Commands:\n")
 		fmt.Fprintf(os.Stderr, "  (none)    MCP stdio proxy — auto-starts daemon if needed\n")
-		fmt.Fprintf(os.Stderr, "  serve     Start a background daemon for a project\n")
+		fmt.Fprintf(os.Stderr, "  serve     Start the global background daemon\n")
 		fmt.Fprintf(os.Stderr, "  version   Print version and exit\n")
 	}
 
@@ -98,8 +98,9 @@ func daemonRunning(socketPath string) bool {
 	return true
 }
 
-// ensureDaemon starts a daemon for the given root if it isn't already running.
-func ensureDaemon(sockPath, root string) {
+// ensureDaemon starts the global daemon if it isn't already running.
+func ensureDaemon() {
+	sockPath := paths.GlobalSocketPath()
 	if daemonRunning(sockPath) {
 		return
 	}
@@ -109,7 +110,7 @@ func ensureDaemon(sockPath, root string) {
 		fmt.Fprintf(os.Stderr, "cannot find own executable: %v\n", err)
 		os.Exit(1)
 	}
-	cmd := exec.Command(exe, "serve", "--root", root)
+	cmd := exec.Command(exe, "serve")
 	cmd.Stdout = nil
 	cmd.Stderr = nil
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
@@ -129,21 +130,21 @@ func ensureDaemon(sockPath, root string) {
 	os.Exit(1)
 }
 
-// runMCP is the default mode: MCP stdio proxy that connects to a per-project daemon.
+// runMCP is the default mode: MCP stdio proxy that connects to the global daemon.
 func runMCP(args []string) {
 	fs := flag.NewFlagSet("sawmill", flag.ExitOnError)
 	rootPath := fs.String("root", "", "Project root (default: current directory)")
 	fs.Parse(args) //nolint:errcheck
 
 	root := resolveRoot(*rootPath)
-	sockPath := paths.SocketPath(root)
 
-	ensureDaemon(sockPath, root)
+	ensureDaemon()
 
 	if err := mcpbridge.RunProxy(context.Background(), mcpbridge.ProxyConfig{
-		SocketPath: sockPath,
+		SocketPath: paths.GlobalSocketPath(),
 		ServerName: "sawmill",
 		Version:    version,
+		Root:       root,
 	}); err != nil {
 		fmt.Fprintf(os.Stderr, "error: %v\n", err)
 		fmt.Fprintf(os.Stderr, "hint: the daemon may have stopped — it will auto-start on next invocation\n")
@@ -151,16 +152,10 @@ func runMCP(args []string) {
 	}
 }
 
-// runServe starts the background daemon for a specific project root.
-func runServe(args []string) {
-	fs := flag.NewFlagSet("serve", flag.ExitOnError)
-	rootPath := fs.String("root", "", "Project root (default: current directory)")
-	fs.Parse(args) //nolint:errcheck
-
-	root := resolveRoot(*rootPath)
-	sockPath := paths.SocketPath(root)
-
-	if err := daemon.Start(sockPath, root); err != nil {
+// runServe starts the global background daemon.
+func runServe(_ []string) {
+	sockPath := paths.GlobalSocketPath()
+	if err := daemon.Start(sockPath); err != nil {
 		fmt.Fprintf(os.Stderr, "serve error: %v\n", err)
 		os.Exit(1)
 	}
@@ -172,11 +167,13 @@ func printAgentHelp() {
 USAGE
   sawmill                   MCP stdio proxy. Reads JSON-RPC on stdin,
                             writes responses on stdout. Auto-starts the
-                            background daemon if needed.
+                            global background daemon if needed.
 
-  sawmill serve             Start a background daemon for the current
-                            project root. Listens on a per-project Unix
-                            socket under ~/.sawmill/sockets/.
+  sawmill serve             Start the global background daemon. Listens
+                            on a single Unix socket at ~/.sawmill/sawmill.sock.
+                            Each connection announces its project root;
+                            the daemon lazily loads and shares a model per
+                            project.
 
   sawmill version           Print version and exit.
 
