@@ -25,30 +25,36 @@ See `docs/papers/equivalences.md` for the research paper.
 - **Status**: identified
 - **Discovered**: 2026-04-06
 
-### 🎯T20 Concurrent sessions on the same repo are safe
+### 🎯T20 Model manager is an active process
 
-Multiple MCP sessions connected to the same project root via the daemon
-do not corrupt each other's state or the shared model.
+The per-project CodebaseModel is managed by a goroutine (actor) that
+owns all mutable state. MCP handlers interact with it via channels,
+not direct field access.
 
-- **Weight**: 3 (value 8 / cost 3)
-- **Estimated-cost**: 3
+- **Weight**: 2 (value 13 / cost 8)
+- **Estimated-cost**: 8
 - **Acceptance**:
-  - Pending changes and backups are per-connection (already true — each
-    HandlerFactory call creates a new Handler)
-  - Shared CodebaseModel has a sync.RWMutex; reads (query, find_symbol,
-    transform preview) take read locks, writes (Sync, applyEvent) take
-    write locks
-  - Apply triggers a model Sync so the forest reflects written files
-    before the next read
-  - SQLite store is safe under concurrent access (WAL mode, single writer)
-  - Test exists: two sessions do independent renames and applies without
-    corrupting each other's results or the shared model
-- **Context**: Handler-level isolation is already correct (factory creates
-  a fresh Handler per connection). The gap is the shared CodebaseModel:
-  Forest reads and watcher-driven updates have no synchronisation, and
-  apply doesn't re-sync the model. Two sessions reading/writing the
-  forest concurrently can race. SQLite WAL mode handles store-level
-  concurrency but the in-memory forest needs an RWMutex.
+  - Model manager goroutine owns the forest, store, and symbol index
+  - Watcher goroutine feeds file events to the model manager (not to
+    a channel that nobody drains)
+  - On startup, the manager reconciles filesystem state against the
+    (potentially stale) SQLite database before accepting queries
+  - MCP handlers send requests to the manager via channels and receive
+    responses — no direct access to forest or store
+  - After apply writes files, the manager observes the watcher events
+    and re-parses automatically (no manual Sync call needed)
+  - Multiple concurrent MCP sessions on the same root are safe by
+    construction — the manager serialises all state access
+  - Test exists: two sessions do independent transforms and applies;
+    both see a consistent, up-to-date model throughout
+- **Context**: The current CodebaseModel is a passive struct with no
+  concurrency control. The watcher produces events on a channel that
+  is only drained by an explicit Sync() call (inside handleParse).
+  After apply, the model is stale until someone calls parse again.
+  Multiple handlers sharing the model have unsynchronised access to
+  the forest and store. The fix is not a mutex — it's making the
+  model an active subsystem (actor pattern) that owns its state and
+  serves queries through a channel-based protocol.
 - **Status**: identified
 - **Discovered**: 2026-04-07
 

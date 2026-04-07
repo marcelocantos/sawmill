@@ -16,20 +16,23 @@ targets:
     origin: manual
     discovered: 2026-04-07
   T2:
-    name: Concurrent sessions on the same repo are safe
+    name: Model manager is an active process
     status: identified
-    value: 8.0
-    cost: 3.0
+    value: 13.0
+    cost: 8.0
     acceptance:
-    - Pending changes and backups are per-connection (already true)
-    - Shared CodebaseModel has sync.RWMutex; reads take read locks, writes take write locks
-    - Apply triggers a model Sync so the forest reflects written files before the next read
-    - SQLite store is safe under concurrent access (WAL mode)
-    - 'Test exists: two sessions do independent renames and applies without corruption'
-    context: 'Handler-level isolation is already correct (factory creates a fresh Handler per connection). The gap is the shared CodebaseModel: Forest reads and watcher-driven updates have no synchronisation, and apply doesn''t re-sync the model. Two sessions reading/writing the forest concurrently can race.'
+    - Model manager goroutine owns the forest, store, and symbol index
+    - Watcher goroutine feeds file events to the model manager
+    - On startup, manager reconciles filesystem state against stale SQLite database before accepting queries
+    - MCP handlers send requests to the manager via channels — no direct access to forest or store
+    - After apply writes files, the manager observes watcher events and re-parses automatically
+    - Multiple concurrent MCP sessions on the same root are safe by construction
+    - 'Test exists: two sessions do independent transforms and applies with consistent model'
+    context: The current CodebaseModel is a passive struct with no concurrency control. The watcher produces events on a channel only drained by explicit Sync(). After apply, the model is stale. Multiple handlers sharing the model have unsynchronised access. The fix is making the model an active subsystem (actor pattern) that owns its state and serves queries through channels.
     tags:
     - daemon
     - concurrency
+    - architecture
     origin: manual
     discovered: 2026-04-07
   T3:
