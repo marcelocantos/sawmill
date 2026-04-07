@@ -21,11 +21,12 @@ targets:
     value: 8.0
     cost: 3.0
     acceptance:
-    - Each daemon connection gets independent pending-changes and backup state
-    - A rename on session A does not appear as pending on session B
-    - Applying on session A does not clobber session B's pending changes
-    - Test exists exercising two concurrent sessions with independent transforms
-    context: Currently, the daemon creates a per-connection Handler via HandlerFactory, but all handlers for the same root share a single Handler instance (including pending state). Two Claude Code sessions in the same repo will race on pending changes. The model (parsed ASTs, symbol index) should remain shared; only session state needs isolation.
+    - Pending changes and backups are per-connection (already true)
+    - Shared CodebaseModel has sync.RWMutex; reads take read locks, writes take write locks
+    - Apply triggers a model Sync so the forest reflects written files before the next read
+    - SQLite store is safe under concurrent access (WAL mode)
+    - 'Test exists: two sessions do independent renames and applies without corruption'
+    context: 'Handler-level isolation is already correct (factory creates a fresh Handler per connection). The gap is the shared CodebaseModel: Forest reads and watcher-driven updates have no synchronisation, and apply doesn''t re-sync the model. Two sessions reading/writing the forest concurrently can race.'
     tags:
     - daemon
     - concurrency

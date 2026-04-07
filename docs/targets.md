@@ -28,20 +28,27 @@ See `docs/papers/equivalences.md` for the research paper.
 ### 🎯T20 Concurrent sessions on the same repo are safe
 
 Multiple MCP sessions connected to the same project root via the daemon
-do not corrupt each other's pending changes, backups, or model state.
+do not corrupt each other's state or the shared model.
 
 - **Weight**: 3 (value 8 / cost 3)
 - **Estimated-cost**: 3
 - **Acceptance**:
-  - Each daemon connection gets independent pending-changes and backup state
-  - A rename on session A does not appear as pending on session B
-  - Applying on session A does not clobber session B's pending changes
-  - Test exists exercising two concurrent sessions with independent transforms
-- **Context**: Currently, the daemon creates a per-connection Handler via
-  HandlerFactory, but all handlers for the same root share a single Handler
-  instance (including pending state). Two Claude Code sessions in the same
-  repo will race on pending changes. The model (parsed ASTs, symbol index)
-  should remain shared; only session state needs isolation.
+  - Pending changes and backups are per-connection (already true — each
+    HandlerFactory call creates a new Handler)
+  - Shared CodebaseModel has a sync.RWMutex; reads (query, find_symbol,
+    transform preview) take read locks, writes (Sync, applyEvent) take
+    write locks
+  - Apply triggers a model Sync so the forest reflects written files
+    before the next read
+  - SQLite store is safe under concurrent access (WAL mode, single writer)
+  - Test exists: two sessions do independent renames and applies without
+    corrupting each other's results or the shared model
+- **Context**: Handler-level isolation is already correct (factory creates
+  a fresh Handler per connection). The gap is the shared CodebaseModel:
+  Forest reads and watcher-driven updates have no synchronisation, and
+  apply doesn't re-sync the model. Two sessions reading/writing the
+  forest concurrently can race. SQLite WAL mode handles store-level
+  concurrency but the in-memory forest needs an RWMutex.
 - **Status**: identified
 - **Discovered**: 2026-04-07
 
