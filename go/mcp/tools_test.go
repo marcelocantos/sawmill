@@ -1457,3 +1457,772 @@ f = Foo("hello")
 		t.Errorf("expected '0' in diff, got: %s", text)
 	}
 }
+
+// ---- dependency_usage tests -------------------------------------------------
+
+func TestDependencyUsageGoPackage(t *testing.T) {
+	h := testHandler(t, map[string]string{
+		"main.go": `package main
+
+import "fmt"
+
+func main() {
+	fmt.Println("hello")
+	fmt.Printf("%d\n", 42)
+}
+`,
+	})
+
+	text, isErr, err := h.handleDependencyUsage(map[string]any{
+		"package": "fmt",
+	})
+	if err != nil {
+		t.Fatalf("handleDependencyUsage error: %v", err)
+	}
+	if isErr {
+		t.Fatalf("handleDependencyUsage returned tool error: %s", text)
+	}
+
+	if !strings.Contains(text, `"fmt" used in 1 file`) {
+		t.Errorf("expected package in 1 file, got: %s", text)
+	}
+	if !strings.Contains(text, "Println") {
+		t.Errorf("expected 'Println' in output, got: %s", text)
+	}
+	if !strings.Contains(text, "Printf") {
+		t.Errorf("expected 'Printf' in output, got: %s", text)
+	}
+}
+
+func TestDependencyUsageGoAliasedImport(t *testing.T) {
+	h := testHandler(t, map[string]string{
+		"main.go": `package main
+
+import f "fmt"
+
+func main() {
+	f.Println("hello")
+}
+`,
+	})
+
+	text, isErr, err := h.handleDependencyUsage(map[string]any{
+		"package": "fmt",
+	})
+	if err != nil {
+		t.Fatalf("handleDependencyUsage error: %v", err)
+	}
+	if isErr {
+		t.Fatalf("handleDependencyUsage returned tool error: %s", text)
+	}
+
+	if !strings.Contains(text, `"fmt" used in 1 file`) {
+		t.Errorf("expected package in 1 file, got: %s", text)
+	}
+	if !strings.Contains(text, "Println") {
+		t.Errorf("expected 'Println' in output, got: %s", text)
+	}
+}
+
+func TestDependencyUsageGoPublicAPIExposure(t *testing.T) {
+	h := testHandler(t, map[string]string{
+		"lib.go": `package lib
+
+import "fmt"
+
+// Printer wraps fmt.Stringer.
+type Printer struct {
+	Value fmt.Stringer
+}
+
+func NewPrinter(s fmt.Stringer) Printer {
+	return Printer{Value: s}
+}
+`,
+	})
+
+	text, isErr, err := h.handleDependencyUsage(map[string]any{
+		"package": "fmt",
+	})
+	if err != nil {
+		t.Fatalf("handleDependencyUsage error: %v", err)
+	}
+	if isErr {
+		t.Fatalf("handleDependencyUsage returned tool error: %s", text)
+	}
+
+	if !strings.Contains(text, "Public API exposure") {
+		t.Errorf("expected 'Public API exposure' section, got: %s", text)
+	}
+	// Printer or NewPrinter should appear as exported symbols using fmt.Stringer.
+	if !strings.Contains(text, "fmt.Stringer") {
+		t.Errorf("expected 'fmt.Stringer' in exposure, got: %s", text)
+	}
+}
+
+func TestDependencyUsagePythonImport(t *testing.T) {
+	h := testHandler(t, map[string]string{
+		"main.py": `import os
+
+path = os.path.join("a", "b")
+os.makedirs(path)
+`,
+	})
+
+	text, isErr, err := h.handleDependencyUsage(map[string]any{
+		"package": "os",
+	})
+	if err != nil {
+		t.Fatalf("handleDependencyUsage error: %v", err)
+	}
+	if isErr {
+		t.Fatalf("handleDependencyUsage returned tool error: %s", text)
+	}
+
+	if !strings.Contains(text, `"os" used in 1 file`) {
+		t.Errorf("expected package in 1 file, got: %s", text)
+	}
+	if !strings.Contains(text, "makedirs") {
+		t.Errorf("expected 'makedirs' in output, got: %s", text)
+	}
+}
+
+func TestDependencyUsageNotFound(t *testing.T) {
+	h := testHandler(t, map[string]string{
+		"main.go": `package main
+
+import "fmt"
+
+func main() { fmt.Println("hi") }
+`,
+	})
+
+	text, isErr, err := h.handleDependencyUsage(map[string]any{
+		"package": "nonexistent/pkg",
+	})
+	if err != nil {
+		t.Fatalf("handleDependencyUsage error: %v", err)
+	}
+	if isErr {
+		t.Fatalf("handleDependencyUsage returned Go error: %s", text)
+	}
+
+	if !strings.Contains(text, "not found") {
+		t.Errorf("expected 'not found' message, got: %s", text)
+	}
+}
+
+func TestDependencyUsagePathFilter(t *testing.T) {
+	h := testHandler(t, map[string]string{
+		"cmd/main.go": `package main
+
+import "fmt"
+
+func main() { fmt.Println("hi") }
+`,
+		"lib/lib.go": `package lib
+
+import "fmt"
+
+func Greet() { fmt.Println("hello") }
+`,
+	})
+
+	text, isErr, err := h.handleDependencyUsage(map[string]any{
+		"package": "fmt",
+		"path":    "cmd",
+	})
+	if err != nil {
+		t.Fatalf("handleDependencyUsage error: %v", err)
+	}
+	if isErr {
+		t.Fatalf("handleDependencyUsage returned tool error: %s", text)
+	}
+
+	// Should only find the cmd file.
+	if !strings.Contains(text, `"fmt" used in 1 file`) {
+		t.Errorf("expected 1 file with path filter, got: %s", text)
+	}
+}
+
+func TestDependencyUsageMultipleFiles(t *testing.T) {
+	h := testHandler(t, map[string]string{
+		"a.go": `package main
+
+import "strings"
+
+func A() string { return strings.ToUpper("hello") }
+`,
+		"b.go": `package main
+
+import "strings"
+
+func B() string { return strings.ToLower("WORLD") }
+`,
+	})
+
+	text, isErr, err := h.handleDependencyUsage(map[string]any{
+		"package": "strings",
+	})
+	if err != nil {
+		t.Fatalf("handleDependencyUsage error: %v", err)
+	}
+	if isErr {
+		t.Fatalf("handleDependencyUsage returned tool error: %s", text)
+	}
+
+	if !strings.Contains(text, `"strings" used in 2 file`) {
+		t.Errorf("expected 2 files, got: %s", text)
+	}
+}
+
+// ---- Invariant tests ---------------------------------------------------------
+
+func TestTeachInvariantAndCheckField(t *testing.T) {
+	h := testHandler(t, map[string]string{
+		"main.go": `package main
+
+type GoodConfig struct {
+	Name string
+	Value int
+}
+
+type BadConfig struct {
+	Value int
+}
+`,
+	})
+
+	// Teach an invariant: types matching *Config must have a "Name" field.
+	rule := `{"for_each":{"kind":"type","name":"*Config"},"require":[{"has_field":{"name":"Name"}}]}`
+	text, isErr, err := h.handleTeachInvariant(map[string]any{
+		"name":        "config-has-name",
+		"description": "All Config types must have a Name field",
+		"rule":        rule,
+	})
+	if err != nil {
+		t.Fatalf("handleTeachInvariant error: %v", err)
+	}
+	if isErr {
+		t.Fatalf("handleTeachInvariant returned tool error: %s", text)
+	}
+	if !strings.Contains(text, "saved") {
+		t.Errorf("expected 'saved' in output, got: %s", text)
+	}
+
+	// Check invariants — should find BadConfig as a violation.
+	text, isErr, err = h.handleCheckInvariants(map[string]any{})
+	if err != nil {
+		t.Fatalf("handleCheckInvariants error: %v", err)
+	}
+	if isErr {
+		t.Fatalf("handleCheckInvariants returned tool error: %s", text)
+	}
+	if !strings.Contains(text, "BadConfig") {
+		t.Errorf("expected 'BadConfig' in violations, got: %s", text)
+	}
+	if strings.Contains(text, "GoodConfig") {
+		t.Errorf("GoodConfig should not be a violation, got: %s", text)
+	}
+}
+
+func TestTeachInvariantHasMethod(t *testing.T) {
+	h := testHandler(t, map[string]string{
+		"main.go": `package main
+
+type WithMethod struct {
+	X int
+}
+
+func (w *WithMethod) Process() {}
+
+type WithoutMethod struct {
+	X int
+}
+`,
+	})
+
+	// Teach an invariant: types matching With* must have a "Process" method.
+	rule := `{"for_each":{"kind":"type","name":"With*"},"require":[{"has_method":{"name":"Process"}}]}`
+	_, isErr, err := h.handleTeachInvariant(map[string]any{
+		"name": "has-process-method",
+		"rule": rule,
+	})
+	if err != nil {
+		t.Fatalf("handleTeachInvariant error: %v", err)
+	}
+	if isErr {
+		t.Fatalf("handleTeachInvariant returned tool error (bool=true)")
+	}
+
+	text, isErr, err := h.handleCheckInvariants(map[string]any{})
+	if err != nil {
+		t.Fatalf("handleCheckInvariants error: %v", err)
+	}
+	if isErr {
+		t.Fatalf("handleCheckInvariants returned tool error: %s", text)
+	}
+	if !strings.Contains(text, "WithoutMethod") {
+		t.Errorf("expected 'WithoutMethod' in violations, got: %s", text)
+	}
+	if strings.Contains(text, "WithMethod:") && strings.Contains(text, "missing method") {
+		t.Errorf("WithMethod should satisfy the invariant, got: %s", text)
+	}
+}
+
+func TestCheckInvariantsNoInvariants(t *testing.T) {
+	h := testHandler(t, map[string]string{
+		"main.go": "package main\n\ntype Foo struct{}\n",
+	})
+
+	text, isErr, err := h.handleCheckInvariants(map[string]any{})
+	if err != nil {
+		t.Fatalf("handleCheckInvariants error: %v", err)
+	}
+	if isErr {
+		t.Fatalf("handleCheckInvariants returned tool error: %s", text)
+	}
+	if !strings.Contains(text, "No invariants defined") {
+		t.Errorf("expected 'No invariants defined', got: %s", text)
+	}
+}
+
+func TestListInvariants(t *testing.T) {
+	h := testHandler(t, map[string]string{
+		"main.go": "package main\n\ntype Foo struct{}\n",
+	})
+
+	// Teach two invariants.
+	for _, tc := range []struct{ name, rule string }{
+		{"inv-one", `{"for_each":{"kind":"type","name":"*"},"require":[{"has_field":{"name":"ID"}}]}`},
+		{"inv-two", `{"for_each":{"kind":"type","name":"*"},"require":[{"has_method":{"name":"String"}}]}`},
+	} {
+		_, isErr, err := h.handleTeachInvariant(map[string]any{
+			"name": tc.name,
+			"rule": tc.rule,
+		})
+		if err != nil || isErr {
+			t.Fatalf("handleTeachInvariant(%s) error: err=%v isErr=%v", tc.name, err, isErr)
+		}
+	}
+
+	text, isErr, err := h.handleListInvariants(map[string]any{})
+	if err != nil {
+		t.Fatalf("handleListInvariants error: %v", err)
+	}
+	if isErr {
+		t.Fatalf("handleListInvariants returned tool error: %s", text)
+	}
+	if !strings.Contains(text, "inv-one") {
+		t.Errorf("expected 'inv-one' in list, got: %s", text)
+	}
+	if !strings.Contains(text, "inv-two") {
+		t.Errorf("expected 'inv-two' in list, got: %s", text)
+	}
+	if !strings.Contains(text, "2 invariant") {
+		t.Errorf("expected '2 invariant' count, got: %s", text)
+	}
+}
+
+func TestDeleteInvariant(t *testing.T) {
+	h := testHandler(t, map[string]string{
+		"main.go": "package main\n\ntype Foo struct{}\n",
+	})
+
+	// Teach then delete.
+	_, _, _ = h.handleTeachInvariant(map[string]any{
+		"name": "to-delete",
+		"rule": `{"for_each":{"kind":"type","name":"*"},"require":[{"has_field":{"name":"ID"}}]}`,
+	})
+
+	text, isErr, err := h.handleDeleteInvariant(map[string]any{"name": "to-delete"})
+	if err != nil {
+		t.Fatalf("handleDeleteInvariant error: %v", err)
+	}
+	if isErr {
+		t.Fatalf("handleDeleteInvariant returned tool error: %s", text)
+	}
+	if !strings.Contains(text, "deleted") {
+		t.Errorf("expected 'deleted' in output, got: %s", text)
+	}
+
+	// List should be empty.
+	text, _, _ = h.handleListInvariants(map[string]any{})
+	if !strings.Contains(text, "No invariants saved") {
+		t.Errorf("expected 'No invariants saved', got: %s", text)
+	}
+}
+
+func TestCheckInvariantsPathFilter(t *testing.T) {
+	h := testHandler(t, map[string]string{
+		"pkg1/types.go": `package pkg1
+
+type FooConfig struct {
+	Name string
+}
+`,
+		"pkg2/types.go": `package pkg2
+
+type BarConfig struct {
+	Value int
+}
+`,
+	})
+
+	// Teach invariant: *Config types must have Name field.
+	_, _, _ = h.handleTeachInvariant(map[string]any{
+		"name": "config-has-name",
+		"rule": `{"for_each":{"kind":"type","name":"*Config"},"require":[{"has_field":{"name":"Name"}}]}`,
+	})
+
+	// Check with path filter on pkg1 — should be OK (FooConfig has Name).
+	text, isErr, err := h.handleCheckInvariants(map[string]any{"path": "pkg1"})
+	if err != nil {
+		t.Fatalf("handleCheckInvariants error: %v", err)
+	}
+	if isErr {
+		t.Fatalf("handleCheckInvariants returned tool error: %s", text)
+	}
+	if strings.Contains(text, "violation") && strings.Contains(text, "BarConfig") {
+		t.Errorf("pkg1 filter should not show pkg2 violations, got: %s", text)
+	}
+
+	// Check without filter — should find BarConfig violation.
+	text, _, _ = h.handleCheckInvariants(map[string]any{})
+	if !strings.Contains(text, "BarConfig") {
+		t.Errorf("expected 'BarConfig' in violations without filter, got: %s", text)
+	}
+}
+
+// ---- migrate_type tests -----------------------------------------------------
+
+func TestMigrateTypeConstruction(t *testing.T) {
+	h := testHandler(t, map[string]string{
+		"main.go": `package main
+
+func main() {
+	x := EqArgs{Eq: cmpFunc, Hash: hashFunc}
+	_ = x
+}
+`,
+	})
+
+	text, isErr, err := h.handleMigrateType(map[string]any{
+		"type_name": "EqArgs",
+		"rules":     `{"construction": {"old": "EqArgs{Eq: cmpFunc, Hash: hashFunc}", "new": "NewDefaultEqOps(cmpFunc, hashFunc)"}}`,
+	})
+	if err != nil {
+		t.Fatalf("error: %v", err)
+	}
+	if isErr {
+		t.Fatalf("tool error: %s", text)
+	}
+
+	if !strings.Contains(text, "NewDefaultEqOps(cmpFunc, hashFunc)") {
+		t.Errorf("expected construction replacement in diff, got: %s", text)
+	}
+}
+
+func TestMigrateTypeConstructionWithCaptures(t *testing.T) {
+	h := testHandler(t, map[string]string{
+		"main.go": `package main
+
+func main() {
+	x := EqArgs{Eq: cmpFunc, Hash: hashFunc}
+	_ = x
+}
+`,
+	})
+
+	text, isErr, err := h.handleMigrateType(map[string]any{
+		"type_name": "EqArgs",
+		"rules":     `{"construction": {"old": "EqArgs{Eq: $eq, Hash: $hash}", "new": "NewDefaultEqOps($eq, $hash)"}}`,
+	})
+	if err != nil {
+		t.Fatalf("error: %v", err)
+	}
+	if isErr {
+		t.Fatalf("tool error: %s", text)
+	}
+
+	if !strings.Contains(text, "NewDefaultEqOps(cmpFunc, hashFunc)") {
+		t.Errorf("expected construction replacement in diff, got: %s", text)
+	}
+}
+
+func TestMigrateTypeFieldAccess(t *testing.T) {
+	h := testHandler(t, map[string]string{
+		"main.go": `package main
+
+func main() {
+	args := EqArgs{Eq: cmpFunc, Hash: hashFunc}
+	result := args.Eq(a, b)
+	_ = result
+}
+`,
+	})
+
+	text, isErr, err := h.handleMigrateType(map[string]any{
+		"type_name": "EqArgs",
+		"rules":     `{"field_access": {"$.Eq($a, $b)": "$.Equal($a, $b)"}}`,
+	})
+	if err != nil {
+		t.Fatalf("error: %v", err)
+	}
+	if isErr {
+		t.Fatalf("tool error: %s", text)
+	}
+
+	if !strings.Contains(text, "args.Equal(a, b)") {
+		t.Errorf("expected field access replacement in diff, got: %s", text)
+	}
+}
+
+func TestMigrateTypeFieldAccessProperty(t *testing.T) {
+	h := testHandler(t, map[string]string{
+		"main.go": `package main
+
+func main() {
+	args := EqArgs{Eq: cmpFunc, Hash: hashFunc}
+	if args.FullHash {
+		doSomething()
+	}
+}
+`,
+	})
+
+	text, isErr, err := h.handleMigrateType(map[string]any{
+		"type_name": "EqArgs",
+		"rules":     `{"field_access": {"$.FullHash": "$.IsFullHash()"}}`,
+	})
+	if err != nil {
+		t.Fatalf("error: %v", err)
+	}
+	if isErr {
+		t.Fatalf("tool error: %s", text)
+	}
+
+	if !strings.Contains(text, "args.IsFullHash()") {
+		t.Errorf("expected property->method replacement in diff, got: %s", text)
+	}
+}
+
+func TestMigrateTypeRename(t *testing.T) {
+	h := testHandler(t, map[string]string{
+		"main.go": `package main
+
+type EqArgs struct {
+	Eq   func(a, b int) bool
+	Hash func(v int) uint64
+}
+
+var x EqArgs
+`,
+	})
+
+	text, isErr, err := h.handleMigrateType(map[string]any{
+		"type_name": "EqArgs",
+		"rules":     `{"type_rename": "EqOps"}`,
+	})
+	if err != nil {
+		t.Fatalf("error: %v", err)
+	}
+	if isErr {
+		t.Fatalf("tool error: %s", text)
+	}
+
+	if !strings.Contains(text, "EqOps") {
+		t.Errorf("expected type rename in diff, got: %s", text)
+	}
+	if !strings.Contains(text, "+type EqOps struct") {
+		t.Errorf("expected '+type EqOps struct' in diff, got: %s", text)
+	}
+}
+
+func TestMigrateTypeCombined(t *testing.T) {
+	h := testHandler(t, map[string]string{
+		"main.go": `package main
+
+type EqArgs struct {
+	Eq   func(a, b int) bool
+	Hash func(v int) uint64
+}
+
+func main() {
+	args := EqArgs{Eq: cmpFunc, Hash: hashFunc}
+	result := args.Eq(a, b)
+	h := args.Hash(v)
+	_ = result
+	_ = h
+}
+`,
+	})
+
+	text, isErr, err := h.handleMigrateType(map[string]any{
+		"type_name": "EqArgs",
+		"rules": `{
+			"type_rename": "EqOps",
+			"construction": {"old": "EqArgs{Eq: $eq, Hash: $hash}", "new": "NewDefaultEqOps($eq, $hash)"},
+			"field_access": {
+				"$.Eq($a, $b)": "$.Equal($a, $b)",
+				"$.Hash($v)": "$.HashValue($v)"
+			}
+		}`,
+	})
+	if err != nil {
+		t.Fatalf("error: %v", err)
+	}
+	if isErr {
+		t.Fatalf("tool error: %s", text)
+	}
+
+	if !strings.Contains(text, "Migrated type") {
+		t.Errorf("expected 'Migrated type' in output, got: %s", text)
+	}
+	if !strings.Contains(text, "EqOps") {
+		t.Errorf("expected type rename in diff, got: %s", text)
+	}
+}
+
+func TestMigrateTypeNotFound(t *testing.T) {
+	h := testHandler(t, map[string]string{
+		"main.go": `package main
+
+type Foo struct {
+	Name string
+}
+`,
+	})
+
+	text, _, err := h.handleMigrateType(map[string]any{
+		"type_name": "NonExistent",
+		"rules":     `{"type_rename": "NewName"}`,
+	})
+	if err != nil {
+		t.Fatalf("error: %v", err)
+	}
+
+	if !strings.Contains(text, "not found") {
+		t.Errorf("expected 'not found' message, got: %s", text)
+	}
+}
+
+func TestMigrateTypePathFilter(t *testing.T) {
+	h := testHandler(t, map[string]string{
+		"types.go": `package main
+
+type EqArgs struct {
+	Eq func(a, b int) bool
+}
+`,
+		"use.go": `package main
+
+type EqArgs2 struct {
+	Eq func(a, b int) bool
+}
+
+var x EqArgs
+`,
+	})
+
+	text, isErr, err := h.handleMigrateType(map[string]any{
+		"type_name": "EqArgs",
+		"rules":     `{"type_rename": "EqOps"}`,
+		"path":      "types.go",
+	})
+	if err != nil {
+		t.Fatalf("error: %v", err)
+	}
+	if isErr {
+		t.Fatalf("tool error: %s", text)
+	}
+
+	if !strings.Contains(text, "1 file(s)") {
+		t.Errorf("expected '1 file(s)' in output (path filter should limit), got: %s", text)
+	}
+}
+
+func TestMigrateTypeMultipleFiles(t *testing.T) {
+	h := testHandler(t, map[string]string{
+		"types.go": `package main
+
+type EqArgs struct {
+	Eq func(a, b int) bool
+}
+`,
+		"use.go": `package main
+
+var x EqArgs
+`,
+	})
+
+	text, isErr, err := h.handleMigrateType(map[string]any{
+		"type_name": "EqArgs",
+		"rules":     `{"type_rename": "EqOps"}`,
+	})
+	if err != nil {
+		t.Fatalf("error: %v", err)
+	}
+	if isErr {
+		t.Fatalf("tool error: %s", text)
+	}
+
+	if !strings.Contains(text, "2 file(s)") {
+		t.Errorf("expected '2 file(s)' in output, got: %s", text)
+	}
+}
+
+func TestMigrateTypeInvalidRules(t *testing.T) {
+	h := testHandler(t, map[string]string{
+		"main.go": `package main
+type Foo struct{}
+`,
+	})
+
+	text, isErr, _ := h.handleMigrateType(map[string]any{
+		"type_name": "Foo",
+		"rules":     `{not valid json`,
+	})
+	if !isErr {
+		t.Errorf("expected tool error for invalid JSON, got: %s", text)
+	}
+
+	text, isErr, _ = h.handleMigrateType(map[string]any{
+		"type_name": "Foo",
+		"rules":     `{}`,
+	})
+	if !isErr {
+		t.Errorf("expected tool error for empty rules, got: %s", text)
+	}
+}
+
+func TestMigrateTypeFunctionParam(t *testing.T) {
+	h := testHandler(t, map[string]string{
+		"main.go": `package main
+
+type EqArgs struct {
+	Eq func(a, b int) bool
+}
+
+func process(args EqArgs) {
+	result := args.Eq(a, b)
+	_ = result
+}
+`,
+	})
+
+	text, isErr, err := h.handleMigrateType(map[string]any{
+		"type_name": "EqArgs",
+		"rules":     `{"field_access": {"$.Eq($a, $b)": "$.Equal($a, $b)"}}`,
+	})
+	if err != nil {
+		t.Fatalf("error: %v", err)
+	}
+	if isErr {
+		t.Fatalf("tool error: %s", text)
+	}
+
+	if !strings.Contains(text, "args.Equal(a, b)") {
+		t.Errorf("expected field access replacement for function param, got: %s", text)
+	}
+}

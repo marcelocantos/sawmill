@@ -39,3 +39,8 @@ maintenance activities. Append-only — newest entries at the bottom.
 
 - **Commit**: `157b3cc`
 - **Outcome**: Released v0.7.0 (darwin-arm64, linux-amd64, linux-arm64). Refactored to mcpbridge library for proxy↔daemon communication. Moved all persistent state to ~/.sawmill/ (zero project footprint). Fixed --help-agent routing bug. Updated STABILITY.md for current architecture. Homebrew formula updated.
+
+## 2026-04-07 — /release v0.8.0
+
+- **Commit**: `ba7e79f`
+- **Outcome**: Released v0.8.0 (darwin-arm64, linux-amd64, linux-arm64). Added 13 new MCP tools (33 total): dependency_usage (T17), teach_invariant/check_invariants/list_invariants/delete_invariant (T19), migrate_type with pattern language (T16), plus LSP tools already in codebase. Updated agents-guide, README, and STABILITY.md. Homebrew formula updated.

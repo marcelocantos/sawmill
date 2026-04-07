@@ -193,7 +193,12 @@ named holes — shares infrastructure with 🎯T12 (pattern equivalences).
 See `docs/agent-usage-archaeology.md` §4.4 for full implementation design.
 
 - **Weight**: 5 (value 21 / cost 13)
-- **Status**: designed
+- **Status**: achieved — `migrate_type` tool implemented with pattern matching
+  engine (`pattern.go`), migration logic (`migrate.go`), and handler in
+  `tools.go`. Supports construction rewriting, field/method access rewriting,
+  and type renaming. Identifies instance variables via struct literal
+  assignments, factory calls, and typed function parameters. 17 new tests
+  passing (7 pattern unit tests + 10 integration tests).
 - **Depends on**: 🎯T13, 🎯T15
 
 ### 🎯T17 Dependency impact analysis
@@ -207,7 +212,11 @@ qualified-access matching.
 See `docs/agent-usage-archaeology.md` §4.5 for full implementation design.
 
 - **Weight**: 3.3 (value 8 / cost 3)
-- **Status**: designed
+- **Status**: achieved — `dependency_usage` tool implemented with heuristic
+  qualified-access matching via tree-sitter selector queries for Go, Python,
+  Rust, and TypeScript. Handles explicit Go import aliases. Reports symbols
+  grouped by type/function/value with site counts, and public API exposure for
+  exported symbols. 7 tests passing.
 - **Depends on**: 🎯T13 (for precision; heuristic mode works without)
 
 ### 🎯T18 Clone-and-adapt
@@ -236,7 +245,10 @@ for interface satisfaction; degrade to syntactic heuristics without.
 See `docs/agent-usage-archaeology.md` §4.7 for full implementation design.
 
 - **Weight**: 5 (value 13 / cost 5)
-- **Status**: designed
+- **Status**: achieved — `teach_invariant`, `check_invariants`, `list_invariants`,
+  `delete_invariant` tools implemented. `invariants` table in SQLite. JSON rule
+  language with `has_field` and `has_method` requirements. `implementing` clause
+  degrades gracefully with a warning. 6 tests passing.
 - **Depends on**: 🎯T13 (for interface checks; basic invariants work without)
 
 

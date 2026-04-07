@@ -9,7 +9,7 @@ pre-1.0 period exists to get these right.
 
 ## Interaction surface catalogue
 
-Snapshot as of v0.7.0. 104 public surface items.
+Snapshot as of v0.8.0. 153 public surface items.
 
 ### CLI
 
@@ -22,15 +22,17 @@ Snapshot as of v0.7.0. 104 public surface items.
 | `sawmill --help-agent` | Agent guide | **Stable** |
 | `--root` (both modes) | string, default cwd | **Stable** |
 
-### MCP tools (20 tools, 63 parameters)
+### MCP tools (33 tools, 99 parameters)
 
 | Tool | Required params | Optional params | Stability |
 |---|---|---|---|
 | `parse` | — | `path` | **Stable** |
 | `rename` | `from`, `to` | `path`, `format` | **Stable** |
+| `rename_file` | `from`, `to` | `format` | **Stable** |
 | `query` | — | `kind`, `name`, `file`, `raw_query`, `capture`, `path` | **Stable** |
 | `find_symbol` | `symbol` | `kind` | **Stable** |
 | `find_references` | `symbol` | — | **Stable** |
+| `dependency_usage` | `package` | `path` | **Stable** |
 | `transform` | — | `path`, `kind`, `name`, `file`, `raw_query`, `capture`, `action`, `code`, `before`, `after`, `transform_fn`, `format` | **Stable** |
 | `transform_batch` | `transforms` | `path`, `format` | **Needs review** — `transforms` is a JSON string, not a native array |
 | `codegen` | `program` | `path`, `format`, `validate` | **Stable** |
@@ -42,10 +44,21 @@ Snapshot as of v0.7.0. 104 public surface items.
 | `teach_convention` | `name`, `check_program` | `description` | **Stable** |
 | `check_conventions` | — | `path` | **Stable** |
 | `list_conventions` | — | — | **Stable** |
+| `teach_invariant` | `name`, `rule` | `description` | **Stable** |
+| `check_invariants` | — | `path` | **Stable** |
+| `list_invariants` | — | — | **Stable** |
+| `delete_invariant` | `name` | — | **Stable** |
+| `hover` | `file`, `line`, `column` | — | **Stable** |
+| `definition` | `file`, `line`, `column` | — | **Stable** |
+| `lsp_references` | `file`, `line`, `column` | — | **Stable** |
+| `diagnostics` | `file` | `content` | **Stable** |
 | `get_agent_prompt` | — | — | **Stable** |
 | `teach_by_example` | `name`, `exemplar`, `parameters` | `description`, `also_affects` | **Needs review** — `parameters` and `also_affects` are JSON strings |
 | `add_parameter` | `function`, `param_name` | `path`, `param_type`, `default_value`, `position`, `format` | **Stable** |
 | `remove_parameter` | `function`, `param_name` | `path`, `format` | **Stable** |
+| `add_field` | `type_name`, `field_name`, `field_type`, `default_value` | `path`, `format` | **Stable** |
+| `clone_and_adapt` | `source`, `substitutions`, `target_file` | `position`, `format` | **Stable** |
+| `migrate_type` | `type_name`, `rules` | `path`, `format` | **Needs review** — pattern language is new, may evolve |
 
 ### Configuration conventions
 
@@ -81,6 +94,9 @@ Snapshot as of v0.7.0. 104 public surface items.
   break user-saved recipes and conventions.
 - **File watcher robustness**: The watcher is new and lightly tested (4
   tests). Needs soak time before 1.0.
+- **`migrate_type` pattern language**: The `$placeholder` pattern syntax is
+  new and may need refinement before freezing. Evaluate whether it handles
+  all common migration patterns.
 - **Delete recipe tool**: No `delete_recipe` MCP tool exists (only
   `delete_convention`). Add for symmetry.
 - **Error recovery**: No test coverage for daemon crashes, socket

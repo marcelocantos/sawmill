@@ -26,6 +26,14 @@ changes that preserve formatting, comments, and whitespace.
   coordinated multi-file edits
 - **Safe by default**: Diff preview before every write, backup/undo on
   every apply
+- **LSP integration**: Optional language server queries for type info,
+  go-to-definition, references, and diagnostics (gopls, pyright, etc.)
+- **Structural invariants**: Declarative rules that assert properties of
+  types and functions — checked across the codebase
+- **Dependency analysis**: Impact analysis showing where a package is
+  imported, which symbols are used, and public API exposure
+- **Type migration**: Rewrite construction patterns, field access, and
+  type names across a codebase with a pattern language
 
 ## Quick start
 
@@ -105,7 +113,7 @@ AI Agent ──stdio──▶ sawmill ──socket──▶ sawmill serve (daemo
                                             │    ├─ Forest (Tree-sitter CSTs)
                                             │    ├─ Store (SQLite)
                                             │    └─ Watcher (fsnotify)
-                                            └─ MCP Server (20 tools)
+                                            └─ MCP Server (33 tools)
 ```
 
 - `sawmill` (no args) is the MCP stdio server that clients launch
@@ -118,13 +126,18 @@ AI Agent ──stdio──▶ sawmill ──socket──▶ sawmill serve (daemo
 |---|---|
 | `parse` | Load and index the codebase (auto-loaded from working directory) |
 | `rename` | Rename a symbol across files (diff preview) |
+| `rename_file` | Rename a file and update all import paths |
 | `query` | Search for structural patterns (functions, classes, calls, imports) |
 | `find_symbol` | Find all definitions of a symbol by name |
 | `find_references` | Find all usages of a symbol by name |
+| `dependency_usage` | Analyse dependency imports, symbols used, and public API exposure |
 | `transform` | Match/act structural transform with declarative or JS actions |
 | `transform_batch` | Apply multiple transforms sequentially |
 | `add_parameter` | Add a parameter to a function definition |
 | `remove_parameter` | Remove a parameter from a function definition |
+| `add_field` | Add a field to a struct/class and propagate to constructors |
+| `clone_and_adapt` | Copy a symbol with string substitutions to a new location |
+| `migrate_type` | Rewrite all usage sites of a type (construction, access, rename) |
 | `codegen` | Execute a JavaScript code generator against the codebase |
 | `teach_by_example` | Extract a reusable template from exemplar code |
 | `teach_recipe` | Define a named sequence of transforms with parameters |
@@ -133,6 +146,14 @@ AI Agent ──stdio──▶ sawmill ──socket──▶ sawmill serve (daemo
 | `check_conventions` | Scan for convention violations |
 | `list_recipes` | List all taught recipes |
 | `list_conventions` | List all taught conventions |
+| `teach_invariant` | Define a structural invariant (JSON rule) for types/functions |
+| `check_invariants` | Scan for invariant violations |
+| `list_invariants` | List all taught invariants |
+| `delete_invariant` | Remove an invariant |
+| `hover` | Type information at a source position (LSP) |
+| `definition` | Go to definition at a source position (LSP) |
+| `lsp_references` | Find all references via LSP |
+| `diagnostics` | Get compile errors and warnings (LSP) |
 | `get_agent_prompt` | Return the agent guide with all tool documentation |
 | `apply` | Write pending changes to disk (with backup) |
 | `undo` | Revert the last apply from backups |

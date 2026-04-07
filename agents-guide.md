@@ -69,7 +69,7 @@ is complete.
 2. **Query/find.** Use `query`, `find_symbol`, or `find_references` to
    locate the code you need to change.
 3. **Transform.** Use `rename`, `transform`, `codegen`,
-   `add_parameter`, etc. Every transform returns a unified diff
+   `add_parameter`, `rename_file`, `add_field`, `migrate_type`, etc. Every transform returns a unified diff
    preview -- no files are modified yet.
 4. **Review the diff.** Inspect the returned diff before proceeding.
 5. **Apply.** Call `apply` with `confirm: true` to write changes to
@@ -94,6 +94,7 @@ replaces any unapplied pending changes.
 | `query` | Structural search by node kind | `kind` ("function", "class", "call", "import"), `name` (glob), `file` |
 | `find_symbol` | Find definitions by name | `symbol` |
 | `find_references` | Find usages by name | `symbol` |
+| `dependency_usage` | Analyse package imports, symbols used, public API exposure | `package` |
 
 ### Transforms
 
@@ -105,6 +106,10 @@ replaces any unapplied pending changes.
 | `codegen` | JavaScript program against the codebase | `program` |
 | `add_parameter` | Add a parameter to a function | `function`, `param_name`, `param_type`, `position` |
 | `remove_parameter` | Remove a parameter from a function | `function`, `param_name` |
+| `rename_file` | Rename a file and update all imports | `from`, `to` |
+| `add_field` | Add a field to a struct/class, propagate to constructors | `type_name`, `field_name`, `field_type`, `default_value` |
+| `clone_and_adapt` | Copy a symbol with string substitutions | `source`, `substitutions`, `target_file` |
+| `migrate_type` | Rewrite all usage sites of a type | `type_name`, `rules` |
 
 ### Teaching
 
@@ -117,6 +122,15 @@ replaces any unapplied pending changes.
 | `check_conventions` | Scan for convention violations | `path` |
 | `list_recipes` | List all taught recipes | -- |
 | `list_conventions` | List all taught conventions | -- |
+
+### Structural Invariants
+
+| Tool | Purpose | Key params |
+|---|---|---|
+| `teach_invariant` | Define a structural rule (JSON) for types/functions | `name`, `rule` |
+| `check_invariants` | Scan for invariant violations | `path` |
+| `list_invariants` | List all taught invariants | -- |
+| `delete_invariant` | Remove an invariant | `name` |
 
 ### LSP (when language servers are available)
 
@@ -252,6 +266,55 @@ for (var i = 0; i < types.length; i++) {
 }
 ```
 
+## The `migrate_type` Tool
+
+The `migrate_type` tool rewrites all usage sites of a type based on
+declarative rules. It uses a pattern language with `$placeholder`
+captures.
+
+**Rules** (JSON object):
+
+- `construction`: Rewrite struct literals and constructor calls.
+  - `old`: Pattern to match (e.g. `"EqArgs{Eq: $eq, Hash: $hash}"`)
+  - `new`: Replacement (e.g. `"NewDefaultEqOps($eq, $hash)"`)
+- `field_access`: Map of old access patterns to new ones. `$` represents
+  the instance variable.
+  - `"$.Eq($a, $b)"` → `"$.Equal($a, $b)"`
+  - `"$.FullHash"` → `"$.IsFullHash()"`
+- `type_rename`: Optional new type name (string).
+
+**Example:**
+```json
+{
+  "type_name": "EqArgs",
+  "rules": "{\"construction\":{\"old\":\"EqArgs{Eq: $eq, Hash: $hash}\",\"new\":\"NewDefaultEqOps($eq, $hash)\"},\"field_access\":{\"$.Eq($a, $b)\":\"$.Equal($a, $b)\"},\"type_rename\":\"EqOps\"}"
+}
+```
+
+## Structural Invariants
+
+Invariants are declarative rules that check structural properties of
+code entities (types, functions). They are stored alongside recipes and
+conventions and persist across sessions.
+
+**Rule format** (JSON):
+
+```json
+{
+  "for_each": {"kind": "type", "name": "*Config"},
+  "require": [
+    {"has_field": {"name": "Name"}},
+    {"has_method": {"name": "Validate"}}
+  ]
+}
+```
+
+- `for_each.kind`: `"type"` or `"function"`
+- `for_each.name`: glob pattern (`*` matches anything)
+- `for_each.implementing`: optional interface name (requires LSP)
+- `require`: list of assertions — `has_field` (with optional `type`)
+  or `has_method` (with optional `returns`)
+
 ## Tips and Gotchas
 
 - **Always `parse` first.** Every other tool requires the codebase
@@ -301,3 +364,18 @@ for (var i = 0; i < types.length; i++) {
   several transforms to land together (e.g., rename + add import),
   use `transform_batch` so they share a single pending changeset and
   a single `apply`.
+
+- **Invariants persist like recipes.** Taught invariants survive server
+  restarts. Use `list_invariants` to see what exists, `delete_invariant`
+  to remove.
+
+- **`migrate_type` is for type-level refactoring.** When changing a
+  type's shape (renaming fields, changing constructors, converting
+  field access to method calls), use `migrate_type` instead of manual
+  `transform` calls. It handles construction sites, field access
+  patterns, and type renaming in one operation.
+
+- **`dependency_usage` for impact analysis.** Before upgrading or
+  removing a dependency, call `dependency_usage` to see every import
+  site, which symbols are used, and whether the dependency leaks into
+  public APIs.

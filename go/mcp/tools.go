@@ -1994,6 +1994,496 @@ func formatDiagnostics(diags []lspclient.Diagnostic) string {
 	return sb.String()
 }
 
+// ---- dependency_usage -------------------------------------------------------
+
+// depSymbolUsage records all usage sites for one imported symbol.
+type depSymbolUsage struct {
+	Name  string
+	Kind  string // "type", "function", "value"
+	Sites []depSite
+}
+
+// depSite records a single usage location.
+type depSite struct {
+	File string
+	Line uint
+}
+
+// depPublicExposure records a symbol from the target package that appears in a
+// public signature.
+type depPublicExposure struct {
+	Symbol  string
+	Context string // e.g. "Key[T] uses hash.Hashable"
+	File    string
+	Line    uint
+}
+
+func (h *Handler) handleDependencyUsage(args map[string]any) (string, bool, error) {
+	pkg, err := requireString(args, "package")
+	if err != nil {
+		return err.Error(), true, nil
+	}
+	pathFilter := optString(args, "path")
+
+	h.mu.Lock()
+	defer h.mu.Unlock()
+
+	m, err := h.requireModel()
+	if err != nil {
+		return err.Error(), true, nil
+	}
+
+	// localName is the last path component (e.g. "hash" from "arr-ai/hash").
+	localName := pkg
+	if idx := strings.LastIndex(pkg, "/"); idx >= 0 {
+		localName = pkg[idx+1:]
+	}
+
+	// symbolUsage tracks usage per symbol across all files.
+	symbolUsage := make(map[string]*depSymbolUsage)
+	var exposures []depPublicExposure
+	importCount := 0
+
+	for _, file := range m.Forest.Files {
+		if pathFilter != "" && !strings.Contains(file.Path, pathFilter) {
+			continue
+		}
+
+		importQuery := file.Adapter.ImportQuery()
+		if importQuery == "" {
+			continue
+		}
+
+		// --- Step 1: find imports matching the target package ---
+		alias, found := depFindImport(file, importQuery, pkg, localName)
+		if !found {
+			continue
+		}
+
+		importCount++
+
+		if alias == "_" {
+			// Side-effect import — no symbols to track.
+			continue
+		}
+
+		// --- Step 2: find qualified access (alias.Symbol) ---
+		localAlias := alias
+		if localAlias == "" {
+			localAlias = localName
+		}
+
+		if localAlias != "." {
+			// Qualified access: localAlias.Symbol
+			depCollectQualifiedAccess(file, localAlias, symbolUsage)
+		} else {
+			// Dot import: all identifiers could be from the package;
+			// we cannot attribute them without LSP.
+			depNoteDirectImport(file, symbolUsage)
+		}
+
+		// --- Step 3: public API exposure ---
+		if localAlias != "." && localAlias != "_" {
+			depCollectPublicExposure(file, localAlias, &exposures)
+		}
+	}
+
+	if importCount == 0 {
+		return fmt.Sprintf("Package %q not found in any imported file.", pkg), false, nil
+	}
+
+	// --- Format report ---
+	var sb strings.Builder
+	fmt.Fprintf(&sb, "Package %q used in %d file(s):\n", pkg, importCount)
+
+	// Collect and sort symbols.
+	var symbols []*depSymbolUsage
+	for _, s := range symbolUsage {
+		symbols = append(symbols, s)
+	}
+	sort.Slice(symbols, func(i, j int) bool {
+		if symbols[i].Kind != symbols[j].Kind {
+			return symbols[i].Kind < symbols[j].Kind
+		}
+		return symbols[i].Name < symbols[j].Name
+	})
+
+	// Group by kind.
+	kindGroups := make(map[string][]*depSymbolUsage)
+	for _, s := range symbols {
+		kindGroups[s.Kind] = append(kindGroups[s.Kind], s)
+	}
+	for _, kind := range []string{"type", "function", "value"} {
+		group := kindGroups[kind]
+		if len(group) == 0 {
+			continue
+		}
+		label := map[string]string{
+			"type":     "Types",
+			"function": "Functions",
+			"value":    "Values",
+		}[kind]
+		fmt.Fprintf(&sb, "  %s: ", label)
+		parts := make([]string, 0, len(group))
+		for _, s := range group {
+			parts = append(parts, fmt.Sprintf("%s (%d site(s))", s.Name, len(s.Sites)))
+		}
+		sb.WriteString(strings.Join(parts, ", "))
+		sb.WriteString("\n")
+	}
+
+	if len(exposures) > 0 {
+		sb.WriteString("  Public API exposure:\n")
+		for _, e := range exposures {
+			fmt.Fprintf(&sb, "    %s (%s:%d)\n", e.Context, e.File, e.Line)
+		}
+	}
+
+	return sb.String(), false, nil
+}
+
+// depFindImport searches the import statements in file for an import of pkg.
+// Returns (alias, true) when found, where alias is the local name to use
+// (defaultLocal if no explicit alias is present, "." for dot-imports, "_" for
+// blank imports).
+func depFindImport(
+	file *forest.ParsedFile,
+	importQuery string,
+	pkg string,
+	defaultLocal string,
+) (alias string, found bool) {
+	lang := file.Adapter.Language()
+	query, qErr := tree_sitter.NewQuery(lang, importQuery)
+	if qErr != nil {
+		return "", false
+	}
+	defer query.Close()
+
+	// Find @name capture index.
+	nameIdx := -1
+	for i, name := range query.CaptureNames() {
+		if name == "name" {
+			nameIdx = i
+			break
+		}
+	}
+	if nameIdx < 0 {
+		return "", false
+	}
+
+	cursor := tree_sitter.NewQueryCursor()
+	defer cursor.Close()
+
+	matches := cursor.Matches(query, file.Tree.RootNode(), file.OriginalSource)
+	for match := matches.Next(); match != nil; match = matches.Next() {
+		for _, capture := range match.Captures {
+			if int(capture.Index) != nameIdx {
+				continue
+			}
+			node := capture.Node
+			importText := string(file.OriginalSource[node.StartByte():node.EndByte()])
+			stripped := strings.Trim(strings.TrimSpace(importText), `"'`)
+
+			if depMatchesPackage(stripped, pkg) {
+				localAlias := depExtractGoAlias(file, node)
+				if localAlias == "" {
+					localAlias = defaultLocal
+				}
+				return localAlias, true
+			}
+
+			// Python: "from X import Y" — the @name capture in Python's
+			// import_statement query may only cover simple imports. Python
+			// from-imports are covered by a separate parent node check.
+			if depMatchesPythonFromImport(file, node, pkg) {
+				return ".", true
+			}
+		}
+	}
+	return "", false
+}
+
+// depMatchesPackage returns true if the stripped import text refers to pkg.
+func depMatchesPackage(stripped, pkg string) bool {
+	if stripped == pkg {
+		return true
+	}
+	// Suffix match: "hash" matches "arr-ai/hash" or "github.com/arr-ai/hash".
+	if strings.HasSuffix(stripped, "/"+pkg) {
+		return true
+	}
+	return false
+}
+
+// depMatchesPythonFromImport detects "from X import Y" by examining the parent
+// import_from_statement node for module name matching pkg.
+func depMatchesPythonFromImport(file *forest.ParsedFile, nameNode tree_sitter.Node, pkg string) bool {
+	parent := nameNode.Parent()
+	if parent == nil {
+		return false
+	}
+	if parent.Kind() != "import_from_statement" {
+		return false
+	}
+	text := string(file.OriginalSource[parent.StartByte():parent.EndByte()])
+	// Match "from <pkg> import" accounting for dotted-path variants.
+	pkgVariants := []string{
+		pkg,
+		strings.ReplaceAll(pkg, "/", "."),
+		strings.ReplaceAll(strings.ReplaceAll(pkg, "/", "."), "-", "_"),
+	}
+	for _, v := range pkgVariants {
+		if strings.HasPrefix(text, "from "+v+" import") {
+			return true
+		}
+	}
+	return false
+}
+
+// depExtractGoAlias extracts the explicit local alias from a Go import_spec
+// node. Returns "" if no explicit alias is present.
+func depExtractGoAlias(file *forest.ParsedFile, pathNode tree_sitter.Node) string {
+	parent := pathNode.Parent()
+	if parent == nil || parent.Kind() != "import_spec" {
+		return ""
+	}
+	if parent.ChildCount() < 2 {
+		return ""
+	}
+	first := parent.Child(0)
+	if first == nil {
+		return ""
+	}
+	kind := first.Kind()
+	if kind == "package_identifier" || kind == "identifier" || kind == "blank_identifier" || kind == "dot" {
+		text := string(file.OriginalSource[first.StartByte():first.EndByte()])
+		switch text {
+		case ".", "_":
+			return text
+		default:
+			return text
+		}
+	}
+	return ""
+}
+
+// depCollectQualifiedAccess finds alias.Symbol patterns in file and records
+// them in symbolUsage.
+func depCollectQualifiedAccess(
+	file *forest.ParsedFile,
+	alias string,
+	symbolUsage map[string]*depSymbolUsage,
+) {
+	queryStr := depSelectorQuery(file.Adapter, alias)
+	if queryStr == "" {
+		return
+	}
+
+	lang := file.Adapter.Language()
+	query, qErr := tree_sitter.NewQuery(lang, queryStr)
+	if qErr != nil {
+		return
+	}
+	defer query.Close()
+
+	// Find @field capture index.
+	fieldIdx := -1
+	for i, name := range query.CaptureNames() {
+		if name == "field" {
+			fieldIdx = i
+			break
+		}
+	}
+	if fieldIdx < 0 {
+		return
+	}
+
+	cursor := tree_sitter.NewQueryCursor()
+	defer cursor.Close()
+
+	matches := cursor.Matches(query, file.Tree.RootNode(), file.OriginalSource)
+	for match := matches.Next(); match != nil; match = matches.Next() {
+		for _, capture := range match.Captures {
+			if int(capture.Index) != fieldIdx {
+				continue
+			}
+			node := capture.Node
+			symbolName := string(file.OriginalSource[node.StartByte():node.EndByte()])
+			pos := node.StartPosition()
+			line := uint(pos.Row) + 1
+
+			su, ok := symbolUsage[symbolName]
+			if !ok {
+				su = &depSymbolUsage{Name: symbolName, Kind: depInferSymbolKind(symbolName)}
+				symbolUsage[symbolName] = su
+			}
+			su.Sites = append(su.Sites, depSite{File: file.Path, Line: line})
+		}
+	}
+}
+
+// depSelectorQuery returns a tree-sitter query that captures the field name in
+// alias.Field expressions for the given adapter.
+func depSelectorQuery(adapter adapters.LanguageAdapter, alias string) string {
+	switch adapter.(type) {
+	case *adapters.GoAdapter:
+		return fmt.Sprintf(
+			`(selector_expression operand: (identifier) @obj field: (_) @field (#eq? @obj %q))`,
+			alias,
+		)
+	case *adapters.RustAdapter:
+		return fmt.Sprintf(
+			`[(scoped_identifier path: (identifier) @obj name: (identifier) @field (#eq? @obj %q)) `+
+				`(scoped_type_identifier path: (identifier) @obj name: (type_identifier) @field (#eq? @obj %q))]`,
+			alias, alias,
+		)
+	case *adapters.PythonAdapter:
+		return fmt.Sprintf(
+			`(attribute object: (identifier) @obj attribute: (identifier) @field (#eq? @obj %q))`,
+			alias,
+		)
+	case *adapters.TypeScriptAdapter:
+		return fmt.Sprintf(
+			`(member_expression object: (identifier) @obj property: (property_identifier) @field (#eq? @obj %q))`,
+			alias,
+		)
+	default:
+		return ""
+	}
+}
+
+// depNoteDirectImport records that a file uses a dot-import (Python "from X
+// import *" or similar), where symbols cannot be attributed without LSP.
+func depNoteDirectImport(file *forest.ParsedFile, symbolUsage map[string]*depSymbolUsage) {
+	const dotImportNote = "<dot-import: symbols not attributable without LSP>"
+	su, ok := symbolUsage[dotImportNote]
+	if !ok {
+		su = &depSymbolUsage{Name: dotImportNote, Kind: "value"}
+		symbolUsage[dotImportNote] = su
+	}
+	su.Sites = append(su.Sites, depSite{File: file.Path, Line: 0})
+}
+
+// depInferSymbolKind heuristically classifies a symbol name:
+//   - Starts with uppercase → "type" (Go exported type convention)
+//   - Otherwise → "function"
+func depInferSymbolKind(name string) string {
+	if len(name) > 0 {
+		ch := name[0]
+		if ch >= 'A' && ch <= 'Z' {
+			return "type"
+		}
+	}
+	return "function"
+}
+
+// depCollectPublicExposure scans exported top-level functions/types in file for
+// references to alias.Symbol patterns, recording them as public API exposures.
+func depCollectPublicExposure(
+	file *forest.ParsedFile,
+	alias string,
+	exposures *[]depPublicExposure,
+) {
+	for _, queryStr := range []string{
+		file.Adapter.FunctionDefQuery(),
+		file.Adapter.TypeDefQuery(),
+	} {
+		if queryStr == "" {
+			continue
+		}
+
+		lang := file.Adapter.Language()
+		query, qErr := tree_sitter.NewQuery(lang, queryStr)
+		if qErr != nil {
+			continue
+		}
+
+		nameIdx := -1
+		nodeIdx := -1
+		for i, n := range query.CaptureNames() {
+			switch n {
+			case "name":
+				nameIdx = i
+			case "func", "type_def":
+				nodeIdx = i
+			}
+		}
+		if nameIdx < 0 || nodeIdx < 0 {
+			query.Close()
+			continue
+		}
+
+		cursor := tree_sitter.NewQueryCursor()
+		matches := cursor.Matches(query, file.Tree.RootNode(), file.OriginalSource)
+
+		for match := matches.Next(); match != nil; match = matches.Next() {
+			var nameNode, wholeNode *tree_sitter.Node
+			for i := range match.Captures {
+				c := &match.Captures[i]
+				if int(c.Index) == nameIdx && nameNode == nil {
+					nameNode = &c.Node
+				}
+				if int(c.Index) == nodeIdx && wholeNode == nil {
+					wholeNode = &c.Node
+				}
+			}
+			if nameNode == nil || wholeNode == nil {
+				continue
+			}
+
+			symName := string(file.OriginalSource[nameNode.StartByte():nameNode.EndByte()])
+			if !depIsExported(symName, file.Adapter) {
+				continue
+			}
+
+			nodeText := string(file.OriginalSource[wholeNode.StartByte():wholeNode.EndByte()])
+			pos := nameNode.StartPosition()
+			line := uint(pos.Row) + 1
+
+			prefix := alias + "."
+			if idx := strings.Index(nodeText, prefix); idx >= 0 {
+				rest := nodeText[idx+len(prefix):]
+				end := 0
+				for end < len(rest) && depIsIdentChar(rest[end]) {
+					end++
+				}
+				if end > 0 {
+					refSymbol := rest[:end]
+					ctx := fmt.Sprintf("%s uses %s.%s", symName, alias, refSymbol)
+					*exposures = append(*exposures, depPublicExposure{
+						Symbol:  refSymbol,
+						Context: ctx,
+						File:    file.Path,
+						Line:    line,
+					})
+				}
+			}
+		}
+
+		cursor.Close()
+		query.Close()
+	}
+}
+
+// depIsExported returns true when a symbol is considered public/exported.
+func depIsExported(name string, adapter adapters.LanguageAdapter) bool {
+	if len(name) == 0 {
+		return false
+	}
+	switch adapter.(type) {
+	case *adapters.GoAdapter:
+		ch := name[0]
+		return ch >= 'A' && ch <= 'Z'
+	default:
+		return !strings.HasPrefix(name, "_")
+	}
+}
+
+// depIsIdentChar returns true for valid identifier characters.
+func depIsIdentChar(ch byte) bool {
+	return (ch >= 'a' && ch <= 'z') || (ch >= 'A' && ch <= 'Z') || (ch >= '0' && ch <= '9') || ch == '_'
+}
+
 // ---- add_field --------------------------------------------------------------
 
 func (h *Handler) handleAddField(args map[string]any) (string, bool, error) {
@@ -2068,4 +2558,239 @@ func (h *Handler) handleAddField(args map[string]any) (string, bool, error) {
 		sb.WriteString("\n")
 	}
 	return sb.String(), false, nil
+}
+
+// ---- migrate_type -----------------------------------------------------------
+
+func (h *Handler) handleMigrateType(args map[string]any) (string, bool, error) {
+	typeName, err := requireString(args, "type_name")
+	if err != nil {
+		return err.Error(), true, nil
+	}
+	rulesJSON, err := requireString(args, "rules")
+	if err != nil {
+		return err.Error(), true, nil
+	}
+	pathFilter := optString(args, "path")
+	format := optBool(args, "format")
+
+	rules, err := parseMigrateRules(rulesJSON)
+	if err != nil {
+		return err.Error(), true, nil
+	}
+
+	h.mu.Lock()
+	defer h.mu.Unlock()
+
+	m, err := h.requireModel()
+	if err != nil {
+		return err.Error(), true, nil
+	}
+
+	var changes []forest.FileChange
+	var diffs []string
+
+	for _, file := range m.Forest.Files {
+		if pathFilter != "" && !strings.Contains(file.Path, pathFilter) {
+			continue
+		}
+
+		edits := migrateTypeInFile(file, typeName, rules)
+		if len(edits) == 0 {
+			continue
+		}
+
+		newSource := rewrite.ApplyEdits(file.OriginalSource, edits)
+		if string(newSource) == string(file.OriginalSource) {
+			continue
+		}
+
+		if format {
+			newSource, _ = rewrite.FormatSource(file.Adapter, newSource)
+		}
+
+		diff := rewrite.UnifiedDiff(file.Path, file.OriginalSource, newSource)
+		diffs = append(diffs, diff)
+		changes = append(changes, forest.FileChange{
+			Path:      file.Path,
+			Original:  file.OriginalSource,
+			NewSource: newSource,
+		})
+	}
+
+	if len(changes) == 0 {
+		return fmt.Sprintf("Type %q not found or no rules matched.", typeName), false, nil
+	}
+
+	h.pending = &PendingChanges{Changes: changes, Diffs: diffs}
+
+	var sb strings.Builder
+	fmt.Fprintf(&sb, "Migrated type %q in %d file(s). Call apply to write.\n\n", typeName, len(changes))
+	for _, d := range diffs {
+		sb.WriteString(d)
+		sb.WriteString("\n")
+	}
+	return sb.String(), false, nil
+}
+
+// ---- teach_invariant ----------------------------------------------------------
+
+func (h *Handler) handleTeachInvariant(args map[string]any) (string, bool, error) {
+	name, err := requireString(args, "name")
+	if err != nil {
+		return err.Error(), true, nil
+	}
+	description := optString(args, "description")
+	ruleJSON, err := requireString(args, "rule")
+	if err != nil {
+		return err.Error(), true, nil
+	}
+
+	// Validate the rule before saving.
+	if _, err := ParseInvariantRule(ruleJSON); err != nil {
+		return fmt.Sprintf("invalid rule: %v", err), true, nil
+	}
+
+	h.mu.Lock()
+	defer h.mu.Unlock()
+
+	m, err := h.requireModel()
+	if err != nil {
+		return err.Error(), true, nil
+	}
+
+	if err := m.SaveInvariant(name, description, ruleJSON); err != nil {
+		return fmt.Sprintf("saving invariant: %v", err), true, nil
+	}
+
+	return fmt.Sprintf("Invariant %q saved.", name), false, nil
+}
+
+// ---- check_invariants ---------------------------------------------------------
+
+func (h *Handler) handleCheckInvariants(args map[string]any) (string, bool, error) {
+	pathFilter := optString(args, "path")
+
+	h.mu.Lock()
+	defer h.mu.Unlock()
+
+	m, err := h.requireModel()
+	if err != nil {
+		return err.Error(), true, nil
+	}
+
+	invariants, err := m.ListInvariants()
+	if err != nil {
+		return fmt.Sprintf("listing invariants: %v", err), true, nil
+	}
+
+	if len(invariants) == 0 {
+		return "No invariants defined.", false, nil
+	}
+
+	// Build a filtered forest view if a path filter is given.
+	f := m.Forest
+	if pathFilter != "" {
+		var filtered []*forest.ParsedFile
+		for _, file := range f.Files {
+			if strings.Contains(file.Path, pathFilter) {
+				filtered = append(filtered, file)
+			}
+		}
+		f = &forest.Forest{Files: filtered}
+	}
+
+	var sb strings.Builder
+	totalViolations := 0
+
+	for _, inv := range invariants {
+		rule, err := ParseInvariantRule(inv.RuleJSON)
+		if err != nil {
+			fmt.Fprintf(&sb, "Invariant %q: parse error: %v\n", inv.Name, err)
+			continue
+		}
+
+		violations, err := CheckInvariant(f, inv.Name, rule)
+		if err != nil {
+			fmt.Fprintf(&sb, "Invariant %q: error: %v\n", inv.Name, err)
+			continue
+		}
+		if len(violations) == 0 {
+			fmt.Fprintf(&sb, "Invariant %q: OK\n", inv.Name)
+		} else {
+			fmt.Fprintf(&sb, "Invariant %q: %d violation(s):\n", inv.Name, len(violations))
+			for _, v := range violations {
+				fmt.Fprintf(&sb, "  %s\n", v)
+				totalViolations++
+			}
+		}
+	}
+
+	if totalViolations > 0 {
+		fmt.Fprintf(&sb, "\n%d total violation(s).\n", totalViolations)
+	} else {
+		sb.WriteString("\nAll invariants satisfied.\n")
+	}
+
+	return sb.String(), false, nil
+}
+
+// ---- list_invariants ----------------------------------------------------------
+
+func (h *Handler) handleListInvariants(_ map[string]any) (string, bool, error) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+
+	m, err := h.requireModel()
+	if err != nil {
+		return err.Error(), true, nil
+	}
+
+	invariants, err := m.ListInvariants()
+	if err != nil {
+		return fmt.Sprintf("listing invariants: %v", err), true, nil
+	}
+
+	if len(invariants) == 0 {
+		return "No invariants saved.", false, nil
+	}
+
+	var sb strings.Builder
+	fmt.Fprintf(&sb, "%d invariant(s):\n", len(invariants))
+	for _, inv := range invariants {
+		fmt.Fprintf(&sb, "  %s", inv.Name)
+		if inv.Description != "" {
+			fmt.Fprintf(&sb, " — %s", inv.Description)
+		}
+		sb.WriteString("\n")
+	}
+	return sb.String(), false, nil
+}
+
+// ---- delete_invariant ---------------------------------------------------------
+
+func (h *Handler) handleDeleteInvariant(args map[string]any) (string, bool, error) {
+	name, err := requireString(args, "name")
+	if err != nil {
+		return err.Error(), true, nil
+	}
+
+	h.mu.Lock()
+	defer h.mu.Unlock()
+
+	m, err := h.requireModel()
+	if err != nil {
+		return err.Error(), true, nil
+	}
+
+	deleted, err := m.DeleteInvariant(name)
+	if err != nil {
+		return fmt.Sprintf("deleting invariant: %v", err), true, nil
+	}
+
+	if !deleted {
+		return fmt.Sprintf("Invariant %q not found.", name), true, nil
+	}
+
+	return fmt.Sprintf("Invariant %q deleted.", name), false, nil
 }
