@@ -390,6 +390,21 @@ func (m *CodebaseModel) DeleteConvention(name string) (bool, error) {
 	return m.Store.DeleteConvention(name)
 }
 
+// SaveInvariant delegates to the store.
+func (m *CodebaseModel) SaveInvariant(name, description, ruleJSON string) error {
+	return m.Store.SaveInvariant(name, description, ruleJSON)
+}
+
+// ListInvariants delegates to the store.
+func (m *CodebaseModel) ListInvariants() ([]store.Invariant, error) {
+	return m.Store.ListInvariants()
+}
+
+// DeleteInvariant delegates to the store.
+func (m *CodebaseModel) DeleteInvariant(name string) (bool, error) {
+	return m.Store.DeleteInvariant(name)
+}
+
 // SummaryByLanguage returns a map of language → file count.
 func (m *CodebaseModel) SummaryByLanguage() map[string]int {
 	summary := make(map[string]int)

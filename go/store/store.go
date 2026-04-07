@@ -123,6 +123,12 @@ func (s *Store) init() error {
 			description TEXT NOT NULL DEFAULT '',
 			check_program TEXT NOT NULL
 		);
+
+		CREATE TABLE IF NOT EXISTS invariants (
+			name TEXT PRIMARY KEY,
+			description TEXT NOT NULL DEFAULT '',
+			rule_json TEXT NOT NULL
+		);
 	`)
 	if err != nil {
 		return fmt.Errorf("initialising store schema: %w", err)
@@ -444,4 +450,74 @@ func (s *Store) DeleteConvention(name string) (bool, error) {
 	}
 	n, _ := result.RowsAffected()
 	return n > 0, nil
+}
+
+// --- Invariants ---
+
+// Invariant is a saved structural invariant check.
+type Invariant struct {
+	Name        string
+	Description string
+	RuleJSON    string
+}
+
+// SaveInvariant saves or updates an invariant.
+func (s *Store) SaveInvariant(name, description, ruleJSON string) error {
+	_, err := s.db.Exec(
+		`INSERT INTO invariants (name, description, rule_json)
+		 VALUES (?, ?, ?)
+		 ON CONFLICT(name) DO UPDATE SET
+			description = excluded.description,
+			rule_json = excluded.rule_json`,
+		name, description, ruleJSON,
+	)
+	if err != nil {
+		return fmt.Errorf("saving invariant %q: %w", name, err)
+	}
+	return nil
+}
+
+// ListInvariants returns all invariants.
+func (s *Store) ListInvariants() ([]Invariant, error) {
+	rows, err := s.db.Query("SELECT name, description, rule_json FROM invariants ORDER BY name")
+	if err != nil {
+		return nil, fmt.Errorf("listing invariants: %w", err)
+	}
+	defer rows.Close()
+
+	var invariants []Invariant
+	for rows.Next() {
+		var inv Invariant
+		if err := rows.Scan(&inv.Name, &inv.Description, &inv.RuleJSON); err != nil {
+			return nil, fmt.Errorf("reading invariant row: %w", err)
+		}
+		invariants = append(invariants, inv)
+	}
+	return invariants, rows.Err()
+}
+
+// DeleteInvariant deletes an invariant. Returns true if one was deleted.
+func (s *Store) DeleteInvariant(name string) (bool, error) {
+	result, err := s.db.Exec("DELETE FROM invariants WHERE name = ?", name)
+	if err != nil {
+		return false, fmt.Errorf("deleting invariant %q: %w", name, err)
+	}
+	n, _ := result.RowsAffected()
+	return n > 0, nil
+}
+
+// LoadInvariant loads an invariant by name. Returns nil if not found.
+func (s *Store) LoadInvariant(name string) (*Invariant, error) {
+	var inv Invariant
+	err := s.db.QueryRow(
+		"SELECT name, description, rule_json FROM invariants WHERE name = ?",
+		name,
+	).Scan(&inv.Name, &inv.Description, &inv.RuleJSON)
+	if err == sql.ErrNoRows {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("loading invariant %q: %w", name, err)
+	}
+	return &inv, nil
 }

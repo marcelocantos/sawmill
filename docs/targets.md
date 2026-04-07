@@ -240,7 +240,10 @@ for interface satisfaction; degrade to syntactic heuristics without.
 See `docs/agent-usage-archaeology.md` §4.7 for full implementation design.
 
 - **Weight**: 5 (value 13 / cost 5)
-- **Status**: designed
+- **Status**: achieved — `teach_invariant`, `check_invariants`, `list_invariants`,
+  `delete_invariant` tools implemented. `invariants` table in SQLite. JSON rule
+  language with `has_field` and `has_method` requirements. `implementing` clause
+  degrades gracefully with a warning. 6 tests passing.
 - **Depends on**: 🎯T13 (for interface checks; basic invariants work without)
 
 
