@@ -31,3 +31,20 @@ targets:
     - concurrency
     origin: manual
     discovered: 2026-04-07
+  T3:
+    name: Diagnostic-driven automatic fixes
+    status: identified
+    value: 13.0
+    cost: 8.0
+    acceptance:
+    - teach_fix tool associates a diagnostic regex pattern with a recipe and parameter extraction rules; stored in SQLite
+    - auto_fix tool runs diagnostics, matches against the fix catalogue, applies safe fixes, reports uncertain ones
+    - Fix loop re-runs diagnostics after each apply; terminates when clean, stuck, or iteration limit reached
+    - Per-compiler normalisation handles at least Go, Rust, Python, and TypeScript diagnostic formats
+    - Each fix entry has a confidence annotation (auto-apply vs. suggest)
+    context: 'The pieces exist — recipes (stored transforms), LSP diagnostics tool, pattern engine from T16. What''s missing is the glue: diagnostic pattern → recipe binding, and the apply-recheck convergence loop. Closes the loop between compiler says something is wrong and sawmill fixes it automatically.'
+    tags:
+    - diagnostics
+    - automation
+    origin: manual
+    discovered: 2026-04-07

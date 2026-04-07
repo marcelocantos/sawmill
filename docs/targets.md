@@ -45,6 +45,34 @@ do not corrupt each other's pending changes, backups, or model state.
 - **Status**: identified
 - **Discovered**: 2026-04-07
 
+### 🎯T21 Diagnostic-driven automatic fixes
+
+Sawmill can ingest compiler/linter diagnostics, match them against a
+catalogue of learned fixes, and apply corrections automatically. Safe
+fixes are applied in a loop until the build is clean or no more
+catalogue matches exist. Uncertain fixes are reported for human review.
+
+- **Weight**: 2 (value 13 / cost 8)
+- **Estimated-cost**: 8
+- **Acceptance**:
+  - `teach_fix` tool associates a diagnostic regex pattern with a recipe
+    and parameter extraction rules; stored in SQLite
+  - `auto_fix` tool runs diagnostics (via LSP or raw compiler output),
+    matches against the fix catalogue, applies safe fixes, and reports
+    uncertain ones
+  - Fix loop re-runs diagnostics after each apply; terminates when clean,
+    stuck (no new fixes matched), or iteration limit reached
+  - Per-compiler normalisation handles at least Go, Rust, Python, and
+    TypeScript diagnostic formats
+  - Each fix entry has a confidence annotation (auto-apply vs. suggest)
+- **Context**: The pieces exist — recipes (stored transforms), LSP
+  diagnostics tool, pattern engine from T16. What's missing is the glue:
+  diagnostic pattern → recipe binding, and the apply-recheck convergence
+  loop. This closes the loop between "compiler says something is wrong"
+  and "sawmill fixes it automatically."
+- **Status**: identified
+- **Discovered**: 2026-04-07
+
 ## Achieved
 
 ### 🎯T1–T10 Early milestones
