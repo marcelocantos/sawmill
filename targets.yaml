@@ -1,0 +1,33 @@
+targets:
+  T1:
+    name: Intra-language pattern equivalences
+    status: identified
+    value: 21.0
+    cost: 21.0
+    acceptance:
+    - teach_equivalence tool stores bidirectional pattern pairs
+    - apply_equivalence rewrites matches in either direction
+    - check_equivalences flags non-preferred forms as violations
+    - Transitive chains produce derived equivalences
+    context: Originates from arr.ai work on cross-language transpilation as set relations. The intra-language case avoids type-bridge and grammar-extension problems. T16's pattern engine provides the foundation.
+    tags:
+    - research
+    - pattern-matching
+    origin: manual
+    discovered: 2026-04-07
+  T2:
+    name: Concurrent sessions on the same repo are safe
+    status: identified
+    value: 8.0
+    cost: 3.0
+    acceptance:
+    - Each daemon connection gets independent pending-changes and backup state
+    - A rename on session A does not appear as pending on session B
+    - Applying on session A does not clobber session B's pending changes
+    - Test exists exercising two concurrent sessions with independent transforms
+    context: Currently, the daemon creates a per-connection Handler via HandlerFactory, but all handlers for the same root share a single Handler instance (including pending state). Two Claude Code sessions in the same repo will race on pending changes. The model (parsed ASTs, symbol index) should remain shared; only session state needs isolation.
+    tags:
+    - daemon
+    - concurrency
+    origin: manual
+    discovered: 2026-04-07
