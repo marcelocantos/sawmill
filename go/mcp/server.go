@@ -131,6 +131,8 @@ func (h *Handler) Call(name string, args map[string]any) (string, bool, error) {
 		return h.handleListInvariants(args)
 	case "delete_invariant":
 		return h.handleDeleteInvariant(args)
+	case "migrate_type":
+		return h.handleMigrateType(args)
 	default:
 		return "", false, fmt.Errorf("unknown tool: %s", name)
 	}
@@ -606,6 +608,25 @@ func Definitions() []mcpgo.Tool {
 			mcpgo.WithString("name",
 				mcpgo.Required(),
 				mcpgo.Description("Invariant name to delete"),
+			),
+		),
+
+		// migrate_type
+		mcpgo.NewTool("migrate_type",
+			mcpgo.WithDescription("Rewrite all usage sites of a type: construction patterns, field/method access, and optionally rename the type. Uses a pattern language with $placeholder captures."),
+			mcpgo.WithString("type_name",
+				mcpgo.Required(),
+				mcpgo.Description("Name of the type to migrate"),
+			),
+			mcpgo.WithString("rules",
+				mcpgo.Required(),
+				mcpgo.Description("JSON object with construction, field_access, and/or type_rename rules"),
+			),
+			mcpgo.WithString("path",
+				mcpgo.Description("Restrict to files matching this path substring"),
+			),
+			mcpgo.WithBoolean("format",
+				mcpgo.Description("Run the language formatter after migration"),
 			),
 		),
 

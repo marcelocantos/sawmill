@@ -193,7 +193,12 @@ named holes — shares infrastructure with 🎯T12 (pattern equivalences).
 See `docs/agent-usage-archaeology.md` §4.4 for full implementation design.
 
 - **Weight**: 5 (value 21 / cost 13)
-- **Status**: designed
+- **Status**: achieved — `migrate_type` tool implemented with pattern matching
+  engine (`pattern.go`), migration logic (`migrate.go`), and handler in
+  `tools.go`. Supports construction rewriting, field/method access rewriting,
+  and type renaming. Identifies instance variables via struct literal
+  assignments, factory calls, and typed function parameters. 17 new tests
+  passing (7 pattern unit tests + 10 integration tests).
 - **Depends on**: 🎯T13, 🎯T15
 
 ### 🎯T17 Dependency impact analysis

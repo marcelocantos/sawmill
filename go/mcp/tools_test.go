@@ -1893,3 +1893,336 @@ type BarConfig struct {
 		t.Errorf("expected 'BarConfig' in violations without filter, got: %s", text)
 	}
 }
+
+// ---- migrate_type tests -----------------------------------------------------
+
+func TestMigrateTypeConstruction(t *testing.T) {
+	h := testHandler(t, map[string]string{
+		"main.go": `package main
+
+func main() {
+	x := EqArgs{Eq: cmpFunc, Hash: hashFunc}
+	_ = x
+}
+`,
+	})
+
+	text, isErr, err := h.handleMigrateType(map[string]any{
+		"type_name": "EqArgs",
+		"rules":     `{"construction": {"old": "EqArgs{Eq: cmpFunc, Hash: hashFunc}", "new": "NewDefaultEqOps(cmpFunc, hashFunc)"}}`,
+	})
+	if err != nil {
+		t.Fatalf("error: %v", err)
+	}
+	if isErr {
+		t.Fatalf("tool error: %s", text)
+	}
+
+	if !strings.Contains(text, "NewDefaultEqOps(cmpFunc, hashFunc)") {
+		t.Errorf("expected construction replacement in diff, got: %s", text)
+	}
+}
+
+func TestMigrateTypeConstructionWithCaptures(t *testing.T) {
+	h := testHandler(t, map[string]string{
+		"main.go": `package main
+
+func main() {
+	x := EqArgs{Eq: cmpFunc, Hash: hashFunc}
+	_ = x
+}
+`,
+	})
+
+	text, isErr, err := h.handleMigrateType(map[string]any{
+		"type_name": "EqArgs",
+		"rules":     `{"construction": {"old": "EqArgs{Eq: $eq, Hash: $hash}", "new": "NewDefaultEqOps($eq, $hash)"}}`,
+	})
+	if err != nil {
+		t.Fatalf("error: %v", err)
+	}
+	if isErr {
+		t.Fatalf("tool error: %s", text)
+	}
+
+	if !strings.Contains(text, "NewDefaultEqOps(cmpFunc, hashFunc)") {
+		t.Errorf("expected construction replacement in diff, got: %s", text)
+	}
+}
+
+func TestMigrateTypeFieldAccess(t *testing.T) {
+	h := testHandler(t, map[string]string{
+		"main.go": `package main
+
+func main() {
+	args := EqArgs{Eq: cmpFunc, Hash: hashFunc}
+	result := args.Eq(a, b)
+	_ = result
+}
+`,
+	})
+
+	text, isErr, err := h.handleMigrateType(map[string]any{
+		"type_name": "EqArgs",
+		"rules":     `{"field_access": {"$.Eq($a, $b)": "$.Equal($a, $b)"}}`,
+	})
+	if err != nil {
+		t.Fatalf("error: %v", err)
+	}
+	if isErr {
+		t.Fatalf("tool error: %s", text)
+	}
+
+	if !strings.Contains(text, "args.Equal(a, b)") {
+		t.Errorf("expected field access replacement in diff, got: %s", text)
+	}
+}
+
+func TestMigrateTypeFieldAccessProperty(t *testing.T) {
+	h := testHandler(t, map[string]string{
+		"main.go": `package main
+
+func main() {
+	args := EqArgs{Eq: cmpFunc, Hash: hashFunc}
+	if args.FullHash {
+		doSomething()
+	}
+}
+`,
+	})
+
+	text, isErr, err := h.handleMigrateType(map[string]any{
+		"type_name": "EqArgs",
+		"rules":     `{"field_access": {"$.FullHash": "$.IsFullHash()"}}`,
+	})
+	if err != nil {
+		t.Fatalf("error: %v", err)
+	}
+	if isErr {
+		t.Fatalf("tool error: %s", text)
+	}
+
+	if !strings.Contains(text, "args.IsFullHash()") {
+		t.Errorf("expected property->method replacement in diff, got: %s", text)
+	}
+}
+
+func TestMigrateTypeRename(t *testing.T) {
+	h := testHandler(t, map[string]string{
+		"main.go": `package main
+
+type EqArgs struct {
+	Eq   func(a, b int) bool
+	Hash func(v int) uint64
+}
+
+var x EqArgs
+`,
+	})
+
+	text, isErr, err := h.handleMigrateType(map[string]any{
+		"type_name": "EqArgs",
+		"rules":     `{"type_rename": "EqOps"}`,
+	})
+	if err != nil {
+		t.Fatalf("error: %v", err)
+	}
+	if isErr {
+		t.Fatalf("tool error: %s", text)
+	}
+
+	if !strings.Contains(text, "EqOps") {
+		t.Errorf("expected type rename in diff, got: %s", text)
+	}
+	if !strings.Contains(text, "+type EqOps struct") {
+		t.Errorf("expected '+type EqOps struct' in diff, got: %s", text)
+	}
+}
+
+func TestMigrateTypeCombined(t *testing.T) {
+	h := testHandler(t, map[string]string{
+		"main.go": `package main
+
+type EqArgs struct {
+	Eq   func(a, b int) bool
+	Hash func(v int) uint64
+}
+
+func main() {
+	args := EqArgs{Eq: cmpFunc, Hash: hashFunc}
+	result := args.Eq(a, b)
+	h := args.Hash(v)
+	_ = result
+	_ = h
+}
+`,
+	})
+
+	text, isErr, err := h.handleMigrateType(map[string]any{
+		"type_name": "EqArgs",
+		"rules": `{
+			"type_rename": "EqOps",
+			"construction": {"old": "EqArgs{Eq: $eq, Hash: $hash}", "new": "NewDefaultEqOps($eq, $hash)"},
+			"field_access": {
+				"$.Eq($a, $b)": "$.Equal($a, $b)",
+				"$.Hash($v)": "$.HashValue($v)"
+			}
+		}`,
+	})
+	if err != nil {
+		t.Fatalf("error: %v", err)
+	}
+	if isErr {
+		t.Fatalf("tool error: %s", text)
+	}
+
+	if !strings.Contains(text, "Migrated type") {
+		t.Errorf("expected 'Migrated type' in output, got: %s", text)
+	}
+	if !strings.Contains(text, "EqOps") {
+		t.Errorf("expected type rename in diff, got: %s", text)
+	}
+}
+
+func TestMigrateTypeNotFound(t *testing.T) {
+	h := testHandler(t, map[string]string{
+		"main.go": `package main
+
+type Foo struct {
+	Name string
+}
+`,
+	})
+
+	text, _, err := h.handleMigrateType(map[string]any{
+		"type_name": "NonExistent",
+		"rules":     `{"type_rename": "NewName"}`,
+	})
+	if err != nil {
+		t.Fatalf("error: %v", err)
+	}
+
+	if !strings.Contains(text, "not found") {
+		t.Errorf("expected 'not found' message, got: %s", text)
+	}
+}
+
+func TestMigrateTypePathFilter(t *testing.T) {
+	h := testHandler(t, map[string]string{
+		"types.go": `package main
+
+type EqArgs struct {
+	Eq func(a, b int) bool
+}
+`,
+		"use.go": `package main
+
+type EqArgs2 struct {
+	Eq func(a, b int) bool
+}
+
+var x EqArgs
+`,
+	})
+
+	text, isErr, err := h.handleMigrateType(map[string]any{
+		"type_name": "EqArgs",
+		"rules":     `{"type_rename": "EqOps"}`,
+		"path":      "types.go",
+	})
+	if err != nil {
+		t.Fatalf("error: %v", err)
+	}
+	if isErr {
+		t.Fatalf("tool error: %s", text)
+	}
+
+	if !strings.Contains(text, "1 file(s)") {
+		t.Errorf("expected '1 file(s)' in output (path filter should limit), got: %s", text)
+	}
+}
+
+func TestMigrateTypeMultipleFiles(t *testing.T) {
+	h := testHandler(t, map[string]string{
+		"types.go": `package main
+
+type EqArgs struct {
+	Eq func(a, b int) bool
+}
+`,
+		"use.go": `package main
+
+var x EqArgs
+`,
+	})
+
+	text, isErr, err := h.handleMigrateType(map[string]any{
+		"type_name": "EqArgs",
+		"rules":     `{"type_rename": "EqOps"}`,
+	})
+	if err != nil {
+		t.Fatalf("error: %v", err)
+	}
+	if isErr {
+		t.Fatalf("tool error: %s", text)
+	}
+
+	if !strings.Contains(text, "2 file(s)") {
+		t.Errorf("expected '2 file(s)' in output, got: %s", text)
+	}
+}
+
+func TestMigrateTypeInvalidRules(t *testing.T) {
+	h := testHandler(t, map[string]string{
+		"main.go": `package main
+type Foo struct{}
+`,
+	})
+
+	text, isErr, _ := h.handleMigrateType(map[string]any{
+		"type_name": "Foo",
+		"rules":     `{not valid json`,
+	})
+	if !isErr {
+		t.Errorf("expected tool error for invalid JSON, got: %s", text)
+	}
+
+	text, isErr, _ = h.handleMigrateType(map[string]any{
+		"type_name": "Foo",
+		"rules":     `{}`,
+	})
+	if !isErr {
+		t.Errorf("expected tool error for empty rules, got: %s", text)
+	}
+}
+
+func TestMigrateTypeFunctionParam(t *testing.T) {
+	h := testHandler(t, map[string]string{
+		"main.go": `package main
+
+type EqArgs struct {
+	Eq func(a, b int) bool
+}
+
+func process(args EqArgs) {
+	result := args.Eq(a, b)
+	_ = result
+}
+`,
+	})
+
+	text, isErr, err := h.handleMigrateType(map[string]any{
+		"type_name": "EqArgs",
+		"rules":     `{"field_access": {"$.Eq($a, $b)": "$.Equal($a, $b)"}}`,
+	})
+	if err != nil {
+		t.Fatalf("error: %v", err)
+	}
+	if isErr {
+		t.Fatalf("tool error: %s", text)
+	}
+
+	if !strings.Contains(text, "args.Equal(a, b)") {
+		t.Errorf("expected field access replacement for function param, got: %s", text)
+	}
+}
