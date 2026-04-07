@@ -207,7 +207,11 @@ qualified-access matching.
 See `docs/agent-usage-archaeology.md` §4.5 for full implementation design.
 
 - **Weight**: 3.3 (value 8 / cost 3)
-- **Status**: designed
+- **Status**: achieved — `dependency_usage` tool implemented with heuristic
+  qualified-access matching via tree-sitter selector queries for Go, Python,
+  Rust, and TypeScript. Handles explicit Go import aliases. Reports symbols
+  grouped by type/function/value with site counts, and public API exposure for
+  exported symbols. 7 tests passing.
 - **Depends on**: 🎯T13 (for precision; heuristic mode works without)
 
 ### 🎯T18 Clone-and-adapt
