@@ -44,3 +44,8 @@ maintenance activities. Append-only — newest entries at the bottom.
 
 - **Commit**: `ba7e79f`
 - **Outcome**: Released v0.8.0 (darwin-arm64, linux-amd64, linux-arm64). Added 13 new MCP tools (33 total): dependency_usage (T17), teach_invariant/check_invariants/list_invariants/delete_invariant (T19), migrate_type with pattern language (T16), plus LSP tools already in codebase. Updated agents-guide, README, and STABILITY.md. Homebrew formula updated.
+
+## 2026-04-08 — /release v0.9.0
+
+- **Commit**: `172aab0`
+- **Outcome**: Released v0.9.0 (darwin-arm64, linux-amd64, linux-arm64). Global daemon architecture (single socket, per-connection handlers). Active model manager (actor pattern, channel-based forest snapshots, no mutexes). Ref-counted ModelPool with 5-minute idle eviction. mcpbridge HandlerFactory cleanup callbacks. All tests pass with -race. Homebrew formula updated.
