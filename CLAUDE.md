@@ -21,7 +21,7 @@ Requires Go 1.26+.
 ```
 go/
   cmd/sawmill/main.go — CLI entry point (daemon, serve, version)
-  mcp/              — MCP server (20 tools)
+  mcp/              — MCP server (33 tools)
     server.go       — SawmillServer, tool registration, Serve/ServeConn
     tools.go        — All tool handler implementations
     helpers.go      — Batch transform helpers, parameter editing
@@ -49,10 +49,15 @@ agents-guide.md     — Reference for AI coding agents (embedded in binary)
 
 ## Architecture
 
-Sawmill runs as a persistent daemon (`sawmill daemon`) managing multiple
-projects. `sawmill serve` is a thin stdio-to-socket proxy for MCP clients.
+Sawmill runs as a single global daemon (`sawmill serve`) on
+`~/.sawmill/sawmill.sock`. Each MCP proxy (`sawmill`, no args) connects
+to this daemon and announces its project root in the handshake. The daemon
+lazily loads and shares a `CodebaseModel` per unique project root —
+multiple connections to the same root amortise parsing cost.
 
-The daemon holds a pool of `CodebaseModel` instances (one per project root).
+Each connection gets its own session state (pending changes, backups)
+while sharing the underlying model.
+
 Each model ties together:
 - A `Forest` of `ParsedFile`s (Tree-sitter CSTs + original source bytes)
 - A `Store` (SQLite: file metadata, symbol index, recipes, conventions)

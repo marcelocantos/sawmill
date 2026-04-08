@@ -1,0 +1,55 @@
+targets:
+  T1:
+    name: Intra-language pattern equivalences
+    status: identified
+    value: 21.0
+    cost: 21.0
+    acceptance:
+    - teach_equivalence tool stores bidirectional pattern pairs
+    - apply_equivalence rewrites matches in either direction
+    - check_equivalences flags non-preferred forms as violations
+    - Transitive chains produce derived equivalences
+    context: Originates from arr.ai work on cross-language transpilation as set relations. The intra-language case avoids type-bridge and grammar-extension problems. T16's pattern engine provides the foundation.
+    tags:
+    - research
+    - pattern-matching
+    origin: manual
+    discovered: 2026-04-07
+  T2:
+    name: Model manager is an active process
+    status: achieved
+    value: 13.0
+    cost: 8.0
+    acceptance:
+    - Model manager goroutine owns the forest, store, and symbol index
+    - Watcher goroutine feeds file events to the model manager
+    - On startup, manager reconciles filesystem state against stale SQLite database before accepting queries
+    - MCP handlers send requests to the manager via channels — no direct access to forest or store
+    - After apply writes files, the manager observes watcher events and re-parses automatically
+    - Multiple concurrent MCP sessions on the same root are safe by construction
+    - 'Test exists: two sessions do independent transforms and applies with consistent model'
+    context: The current CodebaseModel is a passive struct with no concurrency control. The watcher produces events on a channel only drained by explicit Sync(). After apply, the model is stale. Multiple handlers sharing the model have unsynchronised access. The fix is making the model an active subsystem (actor pattern) that owns its state and serves queries through channels.
+    tags:
+    - daemon
+    - concurrency
+    - architecture
+    origin: manual
+    discovered: 2026-04-07
+    achieved: 2026-04-08
+  T3:
+    name: Diagnostic-driven automatic fixes
+    status: identified
+    value: 13.0
+    cost: 8.0
+    acceptance:
+    - teach_fix tool associates a diagnostic regex pattern with a recipe and parameter extraction rules; stored in SQLite
+    - auto_fix tool runs diagnostics, matches against the fix catalogue, applies safe fixes, reports uncertain ones
+    - Fix loop re-runs diagnostics after each apply; terminates when clean, stuck, or iteration limit reached
+    - Per-compiler normalisation handles at least Go, Rust, Python, and TypeScript diagnostic formats
+    - Each fix entry has a confidence annotation (auto-apply vs. suggest)
+    context: 'The pieces exist — recipes (stored transforms), LSP diagnostics tool, pattern engine from T16. What''s missing is the glue: diagnostic pattern → recipe binding, and the apply-recheck convergence loop. Closes the loop between compiler says something is wrong and sawmill fixes it automatically.'
+    tags:
+    - diagnostics
+    - automation
+    origin: manual
+    discovered: 2026-04-07

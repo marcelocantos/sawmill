@@ -1,278 +1,147 @@
-# Convergence Targets
+# Targets
 
-## 🎯T1–T5 Phases 2–6 — ACHIEVED
-## 🎯T6 Frontier A: Rich ctx API — ACHIEVED
-## 🎯T7 Frontier B: Teach by example — ACHIEVED
-## 🎯T8 Frontier C: Convention invariants — ACHIEVED
-## 🎯T9 Frontier D & E — ACHIEVED
-
-- 🎯T9.1 LSP on ctx — ctx.typeOf, ctx.definition, ctx.lspReferences,
-  ctx.diagnostics, ctx.hasLsp
-- 🎯T9.2 Structural pre-flight checks — dangling references,
-  removed symbols still referenced
-
-## 🎯T10 Frontier K: Agent prompt generation — ACHIEVED
-
-- 🎯T10.1 Static instructions — agents-guide served as MCP instructions
-- 🎯T10.2 Dynamic prompt tool — `get_agent_prompt` returns guide +
-  project-specific recipes and conventions
+<!-- last-evaluated: a841e45 -->
 
 ## Active
 
-### 🎯T11 Rewrite in Go + daemon architecture
-
-Sawmill runs as a single persistent daemon (`sawmill daemon`) managing
-multiple projects, with `sawmill serve` as a thin stdio-to-socket proxy
-for MCP clients. Rewrite from Rust to Go simultaneously with the
-architecture change to avoid doing the hard design work twice.
-
-**Why Go**: Sawmill is I/O-bound concurrent glue — goroutines, channels,
-and Go's simpler concurrency model are a natural fit. Tree-sitter,
-QuickJS, and SQLite all have working Go bindings. Cross-compilation is
-trivial.
-
-**Why daemon**: Eliminates concurrent-writer SQLite collisions, shares
-state (recipes, conventions) across sessions, and enables brew services
-integration.
-
-- **Weight**: 21 (value 21 / cost 13)
-- **Status**: achieved
-
-#### 🎯T11.1 Core logic port
-
-All 7 packages ported: adapters, forest, rewrite, transform, index,
-exemplar, codegen/jsengine. 29 Go tests passing. Uses modernc.org/quickjs
-(pure Go) for JS engine.
-
-- **Parent**: 🎯T11
-- **Weight**: 8 (value 8 / cost 5)
-- **Status**: achieved
-- **Gates**: 🎯T11.2, 🎯T11.4, 🎯T11.7
-
-#### 🎯T11.2 Store port
-
-SQLite persistence layer using modernc.org/sqlite (pure Go). Same schema
-as Rust: files, symbols, recipes, conventions tables. 7 tests passing.
-
-- **Parent**: 🎯T11
-- **Weight**: 2.7 (value 8 / cost 3)
-- **Status**: achieved
-- **Depends on**: 🎯T11.1
-- **Gates**: 🎯T11.3, 🎯T11.4
-
-#### 🎯T11.3 Daemon architecture
-
-`sawmill daemon` listens on Unix socket (`~/.sawmill/sawmill.sock`),
-holds map of project roots to CodebaseModels, handles concurrent MCP
-connections via goroutines.
-
-- **Parent**: 🎯T11
-- **Weight**: 1.6 (value 8 / cost 5)
-- **Status**: achieved (daemon package + CLI entry point)
-- **Depends on**: 🎯T11.2
-- **Gates**: 🎯T11.5, 🎯T11.6
-
-#### 🎯T11.4 MCP server
-
-All tool definitions reimplemented against the daemon's shared state.
-Multi-project aware (parse scopes a connection to a project root).
-
-- **Parent**: 🎯T11
-- **Weight**: 1.6 (value 8 / cost 5)
-- **Status**: achieved — go/mcp/ package with all 20 tools; `sawmill serve`
-  now proxies to daemon (🎯T11.5) when running, falls back to in-process.
-- **Depends on**: 🎯T11.2
-- **Gates**: 🎯T11.5, 🎯T11.7
-
-#### 🎯T11.5 Stdio proxy
-
-`sawmill serve` connects to daemon socket, relays MCP JSON-RPC over
-stdio for MCP client compatibility. Errors helpfully if daemon isn't
-running.
-
-- **Parent**: 🎯T11
-- **Weight**: 2.7 (value 5 / cost 2)
-- **Status**: achieved — go/proxy/proxy.go with Run(); `sawmill serve`
-  uses proxy mode when daemon is running, falls back to in-process with
-  a warning otherwise. Tested in go/proxy/proxy_test.go.
-- **Depends on**: 🎯T11.3, 🎯T11.4
-
-#### 🎯T11.6 Brew services
-
-launchd plist for `brew services start sawmill`. Daemon logs to
-`~/Library/Logs/sawmill/`.
-
-- **Parent**: 🎯T11
-- **Weight**: 2.5 (value 5 / cost 2)
-- **Status**: achieved — `homebrew/sawmill.rb` formula with `service` block;
-  `homebrew/io.sawmill.daemon.plist` for non-Homebrew users; ldflags version
-  injection in CLI; `--help-agent` flag added.
-- **Depends on**: 🎯T11.3
-
-#### 🎯T11.7 Feature parity
-
-All 35 Rust tests ported to Go (46 Go tests passing). Rewrite package tests
-added (`go/rewrite/rewrite_test.go`). Go CI workflow created
-(`.github/workflows/go.yml`).
-
-- **Parent**: 🎯T11
-- **Weight**: 1 (value 5 / cost 5)
-- **Status**: achieved
-- **Depends on**: 🎯T11.1, 🎯T11.4
-
-### 🎯T13 LSP client integration
-
-Sawmill can query language servers (gopls, rust-analyzer, pyright,
-clangd, tsserver) for type information, go-to-definition, find
-references, and diagnostics. The adapter interface already declares
-`LSPCommand()` and `LSPLanguageID()` for all five languages. This
-target implements the client that launches, manages, and queries them.
-
-New package `go/lspclient/` with `Client` (single server process) and
-`Pool` (per-language-per-root management). Uses `go.lsp.dev/jsonrpc2` +
-`go.lsp.dev/protocol` (pure Go, typed LSP 3.17 client). Integrates into
-`CodebaseModel` as a `*lspclient.Pool`. Wires `ctx.typeOf`,
-`ctx.definition`, `ctx.lspReferences`, `ctx.diagnostics` in the codegen
-QuickJS runtime. Implements the four MCP tools already documented in the
-agents-guide (`hover`, `definition`, `lsp_references`, `diagnostics`).
-Degrades gracefully when the language server binary is not installed.
-
-See `docs/agent-usage-archaeology.md` §4.1 for full implementation design.
-
-- **Weight**: 13 (value 21 / cost 8)
-- **Status**: achieved — `go/lspclient/` package with raw JSON-RPC 2.0 client,
-  `Pool` for per-language-per-root management, `Client` with hover/definition/
-  references/diagnostics. Four MCP tools (`hover`, `definition`, `lsp_references`,
-  `diagnostics`) in `go/mcp/`. `RunCodegenWithLSP` wires `ctx.typeOf`,
-  `ctx.definition`, `ctx.lspReferences`, `ctx.diagnostics`, `ctx.hasLsp` in
-  the codegen QuickJS runtime. Degrades gracefully when no LSP binary is
-  installed. 17 new tests passing.
-- **Gates**: 🎯T15, 🎯T16, 🎯T17, 🎯T19
-
-### 🎯T14 File rename with import cascade
-
-`rename_file` MCP tool — renames a file on disk and updates all
-import/include/require paths that reference it. Each language adapter
-gains `ResolveImportPath(importText, importingFile, root)` and
-`BuildImportPath(targetFile, importingFile, root)` methods.
-
-Does not require LSP — uses `adapter.ImportQuery()` + the new resolver.
-
-See `docs/agent-usage-archaeology.md` §4.2 for full implementation design.
-
-- **Weight**: 5 (value 8 / cost 3)
-- **Status**: achieved — `rename_file` tool implemented with import cascade
-  for Python, TypeScript, Go, C/C++, and Rust. 5 tests passing.
-- **Depends on**: (independent)
-
-### 🎯T15 Add field + propagate to construction sites
-
-`add_field` MCP tool — adds a field to a struct/class, then propagates
-to constructors, factory functions, struct literals, and their callers.
-Two modes: syntactic (tree-sitter only, heuristic factory detection via
-`New<Type>` naming) and type-aware (LSP references on the type
-definition, hover on return types).
-
-See `docs/agent-usage-archaeology.md` §4.3 for full implementation design.
-
-- **Weight**: 8 (value 21 / cost 8)
-- **Status**: achieved — `add_field` tool implemented for Go, Python,
-  Rust, TypeScript, and C++. Adapter interface extended with
-  `StructLiteralQuery()`, `FactoryFuncNames()`, and
-  `GenFieldInitializer()`. 6 tests passing.
-- **Depends on**: 🎯T13 (for type-aware mode; syntactic mode works without)
-- **Gates**: 🎯T16
-
-### 🎯T16 Type shape migration
-
-`migrate_type` MCP tool — given a type name and a set of rewrite rules
-(construction patterns, field access mappings), rewrites all usage sites.
-Requires a mini pattern language for matching tree-sitter subtrees with
-named holes — shares infrastructure with 🎯T12 (pattern equivalences).
-
-See `docs/agent-usage-archaeology.md` §4.4 for full implementation design.
-
-- **Weight**: 5 (value 21 / cost 13)
-- **Status**: achieved — `migrate_type` tool implemented with pattern matching
-  engine (`pattern.go`), migration logic (`migrate.go`), and handler in
-  `tools.go`. Supports construction rewriting, field/method access rewriting,
-  and type renaming. Identifies instance variables via struct literal
-  assignments, factory calls, and typed function parameters. 17 new tests
-  passing (7 pattern unit tests + 10 integration tests).
-- **Depends on**: 🎯T13, 🎯T15
-
-### 🎯T17 Dependency impact analysis
-
-`dependency_usage` MCP tool — given a package/module import path,
-reports all import sites, symbols used, call sites, and public API
-exposure. With LSP: resolves each identifier via `textDocument/definition`
-to confirm it originates from the target package. Without LSP: heuristic
-qualified-access matching.
-
-See `docs/agent-usage-archaeology.md` §4.5 for full implementation design.
-
-- **Weight**: 3.3 (value 8 / cost 3)
-- **Status**: achieved — `dependency_usage` tool implemented with heuristic
-  qualified-access matching via tree-sitter selector queries for Go, Python,
-  Rust, and TypeScript. Handles explicit Go import aliases. Reports symbols
-  grouped by type/function/value with site counts, and public API exposure for
-  exported symbols. 7 tests passing.
-- **Depends on**: 🎯T13 (for precision; heuristic mode works without)
-
-### 🎯T18 Clone-and-adapt
-
-`clone_and_adapt` MCP tool — copies a symbol or code region, applies
-string substitutions, and inserts the result at a target location.
-Handles import propagation. Intentionally simpler than `teach_by_example`
-— one-shot copy-and-modify, no templatisation or recipe storage.
-
-See `docs/agent-usage-archaeology.md` §4.6 for full implementation design.
-
-- **Weight**: 4 (value 8 / cost 2)
-- **Status**: achieved — `clone_and_adapt` tool implemented with symbol/range
-  extraction, longest-first substitution, positional insertion. 6 tests passing.
-- **Depends on**: (independent)
-
-### 🎯T19 Structural invariants
-
-`teach_invariant` MCP tool — structured assertion language for
-relational invariants between code elements (e.g. "every type
-implementing interface X must have field Y"). Stored in SQLite alongside
-recipes and conventions. Companion tools: `check_invariants`,
-`list_invariants`, `delete_invariant`. `implementing` clauses require LSP
-for interface satisfaction; degrade to syntactic heuristics without.
-
-See `docs/agent-usage-archaeology.md` §4.7 for full implementation design.
-
-- **Weight**: 5 (value 13 / cost 5)
-- **Status**: achieved — `teach_invariant`, `check_invariants`, `list_invariants`,
-  `delete_invariant` tools implemented. `invariants` table in SQLite. JSON rule
-  language with `has_field` and `has_method` requirements. `implementing` clause
-  degrades gracefully with a warning. 6 tests passing.
-- **Depends on**: 🎯T13 (for interface checks; basic invariants work without)
-
-
-## Future
-
 ### 🎯T12 Intra-language pattern equivalences
 
-Declare bidirectional equivalences between code patterns within a single
-language. A declaration like:
+Bidirectional equivalences between code patterns within a single
+language. A single declaration derives forward/backward refactoring,
+convention enforcement, and migration planning via transitive chains.
 
-```
-//python{logging.getLogger(${name}).${level}(${msg})}
-<=>
-//python{log.${level}(${msg}, logger=${name})}
-```
-
-states that two patterns are semantically equivalent. From this, the tool
-derives bidirectional refactoring, convention enforcement with automatic
-fixes, and migration planning via transitive equivalence chains.
-
-Originates from Marcelo Cantos's arr.ai work on cross-language
-transpilation as set relations. The intra-language case is a tractable
-extraction that avoids the type-bridge and grammar-extension problems of
-the general case. See `docs/papers/equivalences.md` for the research paper.
+See `docs/papers/equivalences.md` for the research paper.
 
 - **Weight**: 1 (value 21 / cost 21)
-- **Status**: research — paper written, not yet designed or planned
+- **Estimated-cost**: 21
+- **Acceptance**:
+  - `teach_equivalence` tool stores bidirectional pattern pairs
+  - `apply_equivalence` rewrites matches in either direction
+  - `check_equivalences` flags non-preferred forms as violations
+  - Transitive chains produce derived equivalences
+- **Context**: Originates from arr.ai work on cross-language transpilation
+  as set relations. The intra-language case avoids type-bridge and
+  grammar-extension problems. T16's pattern engine provides the foundation.
+- **Status**: identified
+- **Discovered**: 2026-04-06
+
+### 🎯T20 Model manager is an active process
+
+The per-project CodebaseModel is managed by a goroutine (actor) that
+owns all mutable state. MCP handlers interact with it via channels,
+not direct field access.
+
+- **Weight**: 2 (value 13 / cost 8)
+- **Estimated-cost**: 8
+- **Acceptance**:
+  - Model manager goroutine owns the forest, store, and symbol index
+  - Watcher goroutine feeds file events to the model manager (not to
+    a channel that nobody drains)
+  - On startup, the manager reconciles filesystem state against the
+    (potentially stale) SQLite database before accepting queries
+  - MCP handlers send requests to the manager via channels and receive
+    responses — no direct access to forest or store
+  - After apply writes files, the manager observes the watcher events
+    and re-parses automatically (no manual Sync call needed)
+  - Multiple concurrent MCP sessions on the same root are safe by
+    construction — the manager serialises all state access
+  - Test exists: two sessions do independent transforms and applies;
+    both see a consistent, up-to-date model throughout
+- **Context**: The current CodebaseModel is a passive struct with no
+  concurrency control. The watcher produces events on a channel that
+  is only drained by an explicit Sync() call (inside handleParse).
+  After apply, the model is stale until someone calls parse again.
+  Multiple handlers sharing the model have unsynchronised access to
+  the forest and store. The fix is not a mutex — it's making the
+  model an active subsystem (actor pattern) that owns its state and
+  serves queries through a channel-based protocol.
+- **Status**: achieved
+- **Discovered**: 2026-04-07
+
+### 🎯T21 Diagnostic-driven automatic fixes
+
+Sawmill can ingest compiler/linter diagnostics, match them against a
+catalogue of learned fixes, and apply corrections automatically. Safe
+fixes are applied in a loop until the build is clean or no more
+catalogue matches exist. Uncertain fixes are reported for human review.
+
+- **Weight**: 2 (value 13 / cost 8)
+- **Estimated-cost**: 8
+- **Acceptance**:
+  - `teach_fix` tool associates a diagnostic regex pattern with a recipe
+    and parameter extraction rules; stored in SQLite
+  - `auto_fix` tool runs diagnostics (via LSP or raw compiler output),
+    matches against the fix catalogue, applies safe fixes, and reports
+    uncertain ones
+  - Fix loop re-runs diagnostics after each apply; terminates when clean,
+    stuck (no new fixes matched), or iteration limit reached
+  - Per-compiler normalisation handles at least Go, Rust, Python, and
+    TypeScript diagnostic formats
+  - Each fix entry has a confidence annotation (auto-apply vs. suggest)
+- **Context**: The pieces exist — recipes (stored transforms), LSP
+  diagnostics tool, pattern engine from T16. What's missing is the glue:
+  diagnostic pattern → recipe binding, and the apply-recheck convergence
+  loop. This closes the loop between "compiler says something is wrong"
+  and "sawmill fixes it automatically."
+- **Status**: identified
+- **Discovered**: 2026-04-07
+
+## Achieved
+
+### 🎯T1–T10 Early milestones
+- **Status**: achieved
+- **Context**: Phases 2–6, rich ctx API, teach by example, convention
+  invariants, LSP on ctx, structural pre-flight checks, agent prompt
+  generation. All completed during the Rust era.
+
+### 🎯T11 Rewrite in Go + daemon architecture
+- **Weight**: 21 (value 21 / cost 13)
+- **Estimated-cost**: 13
+- **Status**: achieved
+- **Context**: Full rewrite from Rust to Go with daemon architecture.
+  7 sub-targets (T11.1–T11.7) all achieved.
+
+### 🎯T13 LSP client integration
+- **Weight**: 13 (value 21 / cost 8)
+- **Estimated-cost**: 8
+- **Status**: achieved
+- **Context**: `go/lspclient/` package. hover/definition/references/diagnostics
+  MCP tools. Codegen ctx LSP methods. Graceful degradation without LSP binary.
+
+### 🎯T14 File rename with import cascade
+- **Weight**: 5 (value 8 / cost 3)
+- **Estimated-cost**: 3
+- **Status**: achieved
+- **Context**: `rename_file` tool with import path updates across 5 languages.
+
+### 🎯T15 Add field + propagate to construction sites
+- **Weight**: 8 (value 21 / cost 8)
+- **Estimated-cost**: 8
+- **Status**: achieved
+- **Context**: `add_field` tool with struct literal and factory propagation.
+
+### 🎯T16 Type shape migration
+- **Weight**: 5 (value 21 / cost 13)
+- **Estimated-cost**: 13
+- **Status**: achieved
+- **Context**: `migrate_type` tool with pattern matching engine for
+  construction rewriting, field/method access rewriting, and type renaming.
+
+### 🎯T17 Dependency impact analysis
+- **Weight**: 3 (value 8 / cost 3)
+- **Estimated-cost**: 3
+- **Status**: achieved
+- **Context**: `dependency_usage` tool with heuristic qualified-access matching.
+
+### 🎯T18 Clone-and-adapt
+- **Weight**: 4 (value 8 / cost 2)
+- **Estimated-cost**: 2
+- **Status**: achieved
+- **Context**: `clone_and_adapt` tool with symbol/range extraction.
+
+### 🎯T19 Structural invariants
+- **Weight**: 5 (value 13 / cost 5)
+- **Estimated-cost**: 5
+- **Status**: achieved
+- **Context**: `teach_invariant`, `check_invariants`, `list_invariants`,
+  `delete_invariant` tools with JSON rule language.

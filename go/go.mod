@@ -4,7 +4,7 @@ go 1.26.1
 
 require (
 	github.com/fsnotify/fsnotify v1.9.0
-	github.com/marcelocantos/mcpbridge v0.0.0-20260406154701-a16a2c102bf2
+	github.com/marcelocantos/mcpbridge v0.0.0-20260408093540-23a00b31c01c
 	github.com/mark3labs/mcp-go v0.47.0
 	github.com/pmezard/go-difflib v1.0.0
 	github.com/tree-sitter/go-tree-sitter v0.25.0
