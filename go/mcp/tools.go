@@ -76,9 +76,8 @@ func (h *Handler) handleParse(args map[string]any) (string, bool, error) {
 	defer h.mu.Unlock()
 
 	if path == "" && h.model != nil {
-		// No path and model already loaded (e.g. by daemon handshake) — just
-		// sync and return the summary.
-		_ = h.model.Sync()
+		// No path and model already loaded (e.g. by daemon handshake) —
+		// the manager goroutine keeps it up to date, just return the summary.
 	} else {
 		// Load a new model (or re-load if path changed).
 		if path == "" {
@@ -133,7 +132,7 @@ func (h *Handler) handleRename(args map[string]any) (string, bool, error) {
 	var changes []forest.FileChange
 	var diffs []string
 
-	for _, file := range m.Forest.Files {
+	for _, file := range m.ForestSnapshot().Files {
 		if pathFilter != "" && !strings.Contains(file.Path, pathFilter) {
 			continue
 		}
@@ -204,7 +203,7 @@ func (h *Handler) handleQuery(args map[string]any) (string, bool, error) {
 	}
 
 	var results []forest.QueryResult
-	for _, file := range m.Forest.Files {
+	for _, file := range m.ForestSnapshot().Files {
 		if pathFilter != "" && !strings.Contains(file.Path, pathFilter) {
 			continue
 		}
@@ -397,7 +396,7 @@ func applyTransformSpec(m *model.CodebaseModel, spec transformSpec, format bool)
 	var changes []forest.FileChange
 	var diffs []string
 
-	for _, file := range m.Forest.Files {
+	for _, file := range m.ForestSnapshot().Files {
 		if spec.Path != "" && !strings.Contains(file.Path, spec.Path) {
 			continue
 		}
@@ -547,7 +546,7 @@ func applyTransformSpecWithOverrides(
 	var changes []forest.FileChange
 	var diffs []string
 
-	for _, file := range m.Forest.Files {
+	for _, file := range m.ForestSnapshot().Files {
 		if spec.Path != "" && !strings.Contains(file.Path, spec.Path) {
 			continue
 		}
@@ -650,9 +649,9 @@ func (h *Handler) handleCodegen(args map[string]any) (string, bool, error) {
 
 	var changes []forest.FileChange
 	if m.LSP != nil {
-		changes, err = codegen.RunCodegenWithLSP(m.Forest, program, m.LSP, m.Root)
+		changes, err = codegen.RunCodegenWithLSP(m.ForestSnapshot(), program, m.LSP, m.Root)
 	} else {
-		changes, err = codegen.RunCodegen(m.Forest, program)
+		changes, err = codegen.RunCodegen(m.ForestSnapshot(), program)
 	}
 	if err != nil {
 		return fmt.Sprintf("codegen: %v", err), true, nil
@@ -665,7 +664,7 @@ func (h *Handler) handleCodegen(args map[string]any) (string, bool, error) {
 	var warnings []string
 	if validate {
 		parseErrs := codegen.ValidateChanges(changes)
-		structErrs := codegen.StructuralChecks(m.Forest, changes)
+		structErrs := codegen.StructuralChecks(m.ForestSnapshot(), changes)
 		warnings = append(parseErrs, structErrs...)
 	}
 
@@ -676,7 +675,7 @@ func (h *Handler) handleCodegen(args map[string]any) (string, bool, error) {
 				continue
 			}
 			// Reuse the existing file's adapter if possible.
-			for _, file := range m.Forest.Files {
+			for _, file := range m.ForestSnapshot().Files {
 				if file.Path == c.Path {
 					formatted, _ := rewrite.FormatSource(file.Adapter, c.NewSource)
 					changes[i].NewSource = formatted
@@ -745,9 +744,23 @@ func (h *Handler) handleApply(args map[string]any) (string, bool, error) {
 		}
 	}
 
+	// Notify the model manager to re-parse changed files immediately,
+	// bypassing the watcher's debounce delay.
+	var changedPaths []string
+	for _, c := range h.pending.Changes {
+		changedPaths = append(changedPaths, c.Path)
+	}
+	for _, r := range h.pending.Renames {
+		changedPaths = append(changedPaths, r.To)
+	}
+
 	h.lastBackups = &LastBackups{Paths: backupPaths}
 	applied := totalPending
 	h.pending = nil
+
+	if len(changedPaths) > 0 {
+		h.model.NotifyChanged(changedPaths)
+	}
 
 	return fmt.Sprintf("Applied %d change(s). Backups created. Call undo to revert.", applied), false, nil
 }
@@ -985,7 +998,7 @@ func (h *Handler) handleCheckConventions(args map[string]any) (string, bool, err
 	}
 
 	// Build a filtered forest view if a path filter is given.
-	f := m.Forest
+	f := m.ForestSnapshot()
 	if pathFilter != "" {
 		var filtered []*forest.ParsedFile
 		for _, file := range f.Files {
@@ -1195,7 +1208,7 @@ func (h *Handler) handleAddParameter(args map[string]any) (string, bool, error) 
 	var changes []forest.FileChange
 	var diffs []string
 
-	for _, file := range m.Forest.Files {
+	for _, file := range m.ForestSnapshot().Files {
 		if pathFilter != "" && !strings.Contains(file.Path, pathFilter) {
 			continue
 		}
@@ -1262,7 +1275,7 @@ func (h *Handler) handleRemoveParameter(args map[string]any) (string, bool, erro
 	var changes []forest.FileChange
 	var diffs []string
 
-	for _, file := range m.Forest.Files {
+	for _, file := range m.ForestSnapshot().Files {
 		if pathFilter != "" && !strings.Contains(file.Path, pathFilter) {
 			continue
 		}
@@ -1331,7 +1344,7 @@ func (h *Handler) handleRenameFile(args map[string]any) (string, bool, error) {
 
 	// Verify the source file exists in the forest.
 	var found bool
-	for _, file := range m.Forest.Files {
+	for _, file := range m.ForestSnapshot().Files {
 		if file.Path == absFrom {
 			found = true
 			break
@@ -1345,7 +1358,7 @@ func (h *Handler) handleRenameFile(args map[string]any) (string, bool, error) {
 	var diffs []string
 
 	// Scan all files for imports that resolve to absFrom.
-	for _, file := range m.Forest.Files {
+	for _, file := range m.ForestSnapshot().Files {
 		importQuery := file.Adapter.ImportQuery()
 		if importQuery == "" {
 			continue
@@ -1515,7 +1528,7 @@ func (h *Handler) handleCloneAndAdapt(args map[string]any) (string, bool, error)
 
 	// Step 3: Find target file in the forest.
 	var targetPF *forest.ParsedFile
-	for _, file := range m.Forest.Files {
+	for _, file := range m.ForestSnapshot().Files {
 		if file.Path == targetFile || strings.HasSuffix(file.Path, targetFile) {
 			targetPF = file
 			break
@@ -1584,7 +1597,7 @@ func extractCloneSource(m *model.CodebaseModel, source string) (string, *forest.
 			endLine, err2 := strconv.Atoi(rangePart[dashIdx+1:])
 			if err1 == nil && err2 == nil && startLine > 0 && endLine >= startLine {
 				// Find the file in the forest.
-				for _, file := range m.Forest.Files {
+				for _, file := range m.ForestSnapshot().Files {
 					if file.Path == filePart || strings.HasSuffix(file.Path, filePart) {
 						lines := strings.Split(string(file.OriginalSource), "\n")
 						if startLine > len(lines) {
@@ -1605,7 +1618,7 @@ func extractCloneSource(m *model.CodebaseModel, source string) (string, *forest.
 
 	// Treat source as a symbol name — search all files for a matching
 	// function or type definition.
-	for _, file := range m.Forest.Files {
+	for _, file := range m.ForestSnapshot().Files {
 		text, found := findSymbolNode(file, source)
 		if found {
 			return text, file, nil
@@ -2044,7 +2057,7 @@ func (h *Handler) handleDependencyUsage(args map[string]any) (string, bool, erro
 	var exposures []depPublicExposure
 	importCount := 0
 
-	for _, file := range m.Forest.Files {
+	for _, file := range m.ForestSnapshot().Files {
 		if pathFilter != "" && !strings.Contains(file.Path, pathFilter) {
 			continue
 		}
@@ -2517,7 +2530,7 @@ func (h *Handler) handleAddField(args map[string]any) (string, bool, error) {
 	var changes []forest.FileChange
 	var diffs []string
 
-	for _, file := range m.Forest.Files {
+	for _, file := range m.ForestSnapshot().Files {
 		if pathFilter != "" && !strings.Contains(file.Path, pathFilter) {
 			continue
 		}
@@ -2590,7 +2603,7 @@ func (h *Handler) handleMigrateType(args map[string]any) (string, bool, error) {
 	var changes []forest.FileChange
 	var diffs []string
 
-	for _, file := range m.Forest.Files {
+	for _, file := range m.ForestSnapshot().Files {
 		if pathFilter != "" && !strings.Contains(file.Path, pathFilter) {
 			continue
 		}
@@ -2689,7 +2702,7 @@ func (h *Handler) handleCheckInvariants(args map[string]any) (string, bool, erro
 	}
 
 	// Build a filtered forest view if a path filter is given.
-	f := m.Forest
+	f := m.ForestSnapshot()
 	if pathFilter != "" {
 		var filtered []*forest.ParsedFile
 		for _, file := range f.Files {

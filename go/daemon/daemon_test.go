@@ -38,9 +38,9 @@ func tempSocket(t *testing.T) string {
 	return socketPath
 }
 
-// startFactoryDaemon starts a daemon using HandlerFactory. Returns the socket
-// path. The daemon loads models lazily when connections announce their root.
-func startFactoryDaemon(t *testing.T) string {
+// startFactoryDaemon starts a daemon using HandlerFactory with a ref-counted
+// pool. Returns the socket path and pool.
+func startFactoryDaemon(t *testing.T) (string, *daemon.ModelPool) {
 	t.Helper()
 
 	socketPath := tempSocket(t)
@@ -50,15 +50,15 @@ func startFactoryDaemon(t *testing.T) string {
 	srv, err := mcpbridge.NewServer(mcpbridge.DaemonConfig{
 		SocketPath: socketPath,
 		Tools:      mcp.Definitions(),
-		HandlerFactory: func(root string) mcpbridge.ToolHandler {
+		HandlerFactory: func(root string) (mcpbridge.ToolHandler, func()) {
 			if root == "" {
-				return mcp.NewHandler()
+				return mcp.NewHandler(), nil
 			}
 			m, loadErr := pool.Get(root)
 			if loadErr != nil {
-				return mcp.NewHandler()
+				return mcp.NewHandler(), nil
 			}
-			return mcp.NewHandlerWithModel(m)
+			return mcp.NewHandlerWithModel(m), func() { pool.Release(root) }
 		},
 	})
 	if err != nil {
@@ -73,12 +73,12 @@ func startFactoryDaemon(t *testing.T) string {
 		client, err := mcpbridge.Dial(socketPath)
 		if err == nil {
 			client.Close()
-			return socketPath
+			return socketPath, pool
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
 	t.Fatal("daemon did not start in time")
-	return ""
+	return "", nil
 }
 
 // TestDaemonStartAndConnect verifies that the global daemon accepts a
@@ -88,9 +88,8 @@ func TestDaemonStartAndConnect(t *testing.T) {
 	projectDir := t.TempDir()
 	writeTempGoFile(t, projectDir)
 
-	socketPath := startFactoryDaemon(t)
+	socketPath, _ := startFactoryDaemon(t)
 
-	// Connect with project root in handshake.
 	client, err := mcpbridge.Dial(socketPath, projectDir)
 	if err != nil {
 		t.Fatalf("dial: %v", err)
@@ -99,7 +98,6 @@ func TestDaemonStartAndConnect(t *testing.T) {
 
 	proxy := mcpbridge.NewToolProxy(client)
 
-	// ListTools should return definitions.
 	tools, err := proxy.ListTools()
 	if err != nil {
 		t.Fatalf("ListTools: %v", err)
@@ -108,7 +106,6 @@ func TestDaemonStartAndConnect(t *testing.T) {
 		t.Error("expected at least one tool definition")
 	}
 
-	// CallTool parse should work — model was loaded from handshake root.
 	result, err := proxy.CallTool("parse", map[string]any{})
 	if err != nil {
 		t.Fatalf("CallTool parse: %v", err)
@@ -124,9 +121,8 @@ func TestDaemonMultipleRootsShareModel(t *testing.T) {
 	projectDir := t.TempDir()
 	writeTempGoFile(t, projectDir)
 
-	socketPath := startFactoryDaemon(t)
+	socketPath, _ := startFactoryDaemon(t)
 
-	// First connection.
 	c1, err := mcpbridge.Dial(socketPath, projectDir)
 	if err != nil {
 		t.Fatalf("dial 1: %v", err)
@@ -142,7 +138,6 @@ func TestDaemonMultipleRootsShareModel(t *testing.T) {
 		t.Fatalf("parse 1 error: %s", result.Text)
 	}
 
-	// Second connection to the same root.
 	c2, err := mcpbridge.Dial(socketPath, projectDir)
 	if err != nil {
 		t.Fatalf("dial 2: %v", err)
@@ -158,7 +153,6 @@ func TestDaemonMultipleRootsShareModel(t *testing.T) {
 		t.Fatalf("parse 2 error: %s", result2.Text)
 	}
 
-	// Both should see the same files.
 	if result.Text != result2.Text {
 		t.Errorf("expected same parse result, got:\n  1: %s\n  2: %s", result.Text, result2.Text)
 	}
@@ -167,7 +161,6 @@ func TestDaemonMultipleRootsShareModel(t *testing.T) {
 // TestDaemonMultipleRoots verifies that connections to different project roots
 // get independent models.
 func TestDaemonMultipleRoots(t *testing.T) {
-	// Project A has a Go file with func alpha.
 	projectA := t.TempDir()
 	if err := os.WriteFile(
 		filepath.Join(projectA, "a.go"),
@@ -177,7 +170,6 @@ func TestDaemonMultipleRoots(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// Project B has a Go file with func beta.
 	projectB := t.TempDir()
 	if err := os.WriteFile(
 		filepath.Join(projectB, "b.go"),
@@ -187,9 +179,8 @@ func TestDaemonMultipleRoots(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	socketPath := startFactoryDaemon(t)
+	socketPath, _ := startFactoryDaemon(t)
 
-	// Connect to project A.
 	cA, err := mcpbridge.Dial(socketPath, projectA)
 	if err != nil {
 		t.Fatalf("dial A: %v", err)
@@ -202,7 +193,6 @@ func TestDaemonMultipleRoots(t *testing.T) {
 		t.Fatalf("parse A: err=%v text=%s", err, resultA.Text)
 	}
 
-	// Connect to project B.
 	cB, err := mcpbridge.Dial(socketPath, projectB)
 	if err != nil {
 		t.Fatalf("dial B: %v", err)
@@ -215,7 +205,6 @@ func TestDaemonMultipleRoots(t *testing.T) {
 		t.Fatalf("parse B: err=%v text=%s", err, resultB.Text)
 	}
 
-	// find_symbol "alpha" should succeed on A but not B.
 	findA, err := pA.CallTool("find_symbol", map[string]any{"symbol": "alpha"})
 	if err != nil {
 		t.Fatalf("find_symbol A: %v", err)
@@ -232,7 +221,6 @@ func TestDaemonMultipleRoots(t *testing.T) {
 		t.Errorf("expected alpha not found in project B, got: %s", findB.Text)
 	}
 
-	// find_symbol "beta" should succeed on B but not A.
 	findBeta, err := pB.CallTool("find_symbol", map[string]any{"symbol": "beta"})
 	if err != nil {
 		t.Fatalf("find_symbol B beta: %v", err)
@@ -257,8 +245,8 @@ func TestDaemonShutdown(t *testing.T) {
 	srv, err := mcpbridge.NewServer(mcpbridge.DaemonConfig{
 		SocketPath: socketPath,
 		Tools:      mcp.Definitions(),
-		HandlerFactory: func(root string) mcpbridge.ToolHandler {
-			return mcp.NewHandler()
+		HandlerFactory: func(root string) (mcpbridge.ToolHandler, func()) {
+			return mcp.NewHandler(), nil
 		},
 	})
 	if err != nil {
@@ -290,7 +278,7 @@ func TestDaemonNoRoot(t *testing.T) {
 	projectDir := t.TempDir()
 	writeTempGoFile(t, projectDir)
 
-	socketPath := startFactoryDaemon(t)
+	socketPath, _ := startFactoryDaemon(t)
 
 	client, err := mcpbridge.Dial(socketPath)
 	if err != nil {
@@ -300,7 +288,6 @@ func TestDaemonNoRoot(t *testing.T) {
 
 	proxy := mcpbridge.NewToolProxy(client)
 
-	// Parse without path should fail (no model pre-loaded).
 	result, err := proxy.CallTool("parse", map[string]any{})
 	if err != nil {
 		t.Fatalf("CallTool: %v", err)
@@ -309,7 +296,6 @@ func TestDaemonNoRoot(t *testing.T) {
 		t.Error("expected error when parsing without root or path")
 	}
 
-	// Parse with explicit path should work.
 	result, err = proxy.CallTool("parse", map[string]any{"path": projectDir})
 	if err != nil {
 		t.Fatalf("CallTool: %v", err)

@@ -1,10 +1,10 @@
 // Copyright 2026 Marcelo Cantos
 // SPDX-License-Identifier: Apache-2.0
 
-// Package model provides the persistent codebase model that ties together the
-// forest (in-memory parsed files), SQLite store (persistent metadata and symbol
-// index), and file watching (planned). The MCP server holds a CodebaseModel and
-// all tool calls operate against it.
+// Package model provides the persistent codebase model. A manager goroutine
+// owns all mutable state (the forest of parsed files) and serves snapshots to
+// MCP handlers via a channel-based protocol. File-system changes are picked up
+// by the watcher and applied by the manager — no explicit Sync is needed.
 package model
 
 import (
@@ -27,20 +27,37 @@ import (
 	"github.com/marcelocantos/sawmill/watcher"
 )
 
-// CodebaseModel is a persistent, live-updating codebase model.
+// snapshotReq is sent by handlers to request a point-in-time forest snapshot.
+type snapshotReq struct {
+	reply chan *forest.Forest
+}
+
+// CodebaseModel is a persistent, live-updating codebase model. A manager
+// goroutine owns the forest; handlers interact via ForestSnapshot and
+// NotifyChanged.
 type CodebaseModel struct {
 	// Root directory being tracked.
 	Root string
-	// In-memory parsed files.
-	Forest *forest.Forest
-	// SQLite-backed persistent store.
+	// SQLite-backed persistent store. Safe for concurrent reads under WAL.
 	Store *store.Store
 	// LSP is the pool of language server clients (may be nil).
 	LSP *lspclient.Pool
+
+	// forest is owned exclusively by the manager goroutine. Never access
+	// directly from handlers — use ForestSnapshot().
+	forest *forest.Forest
 	// w watches root for file changes (nil for ephemeral models).
 	w *watcher.Watcher
 	// events is the channel of debounced file events from w.
 	events <-chan watcher.FileEvent
+	// snapshots receives snapshot requests from handlers.
+	snapshots chan snapshotReq
+	// notify receives post-apply re-parse requests (file paths).
+	notify chan []string
+	// done signals the manager goroutine to exit.
+	done chan struct{}
+	// stopped is closed when the manager goroutine exits.
+	stopped chan struct{}
 }
 
 // Load loads a codebase model for the given directory.
@@ -49,13 +66,13 @@ type CodebaseModel struct {
 //  2. Walks the directory, checks each file against the store
 //  3. Re-parses only files that have changed (mtime or content hash mismatch)
 //  4. Builds the symbol index for changed files
+//  5. Starts the manager goroutine to process watcher events
 func Load(root string) (*CodebaseModel, error) {
 	absRoot, err := filepath.Abs(root)
 	if err != nil {
 		return nil, fmt.Errorf("resolving root %s: %w", root, err)
 	}
 
-	// Store lives centrally under ~/.sawmill/stores/<hash>/.
 	storeDir := paths.StoreDir(absRoot)
 	if err := os.MkdirAll(storeDir, 0o755); err != nil {
 		return nil, fmt.Errorf("creating %s: %w", storeDir, err)
@@ -78,10 +95,24 @@ func Load(root string) (*CodebaseModel, error) {
 		return nil, fmt.Errorf("starting watcher: %w", err)
 	}
 
-	return &CodebaseModel{Root: absRoot, Forest: f, Store: s, LSP: lspclient.NewPool(), w: w, events: events}, nil
+	m := &CodebaseModel{
+		Root:      absRoot,
+		Store:     s,
+		LSP:       lspclient.NewPool(),
+		forest:    f,
+		w:         w,
+		events:    events,
+		snapshots: make(chan snapshotReq),
+		notify:    make(chan []string, 16),
+		done:      make(chan struct{}),
+		stopped:   make(chan struct{}),
+	}
+	go m.runManager()
+	return m, nil
 }
 
 // LoadEphemeral loads without persistence (for testing or one-shot CLI use).
+// No watcher or manager goroutine — ForestSnapshot returns the forest directly.
 func LoadEphemeral(root string) (*CodebaseModel, error) {
 	absRoot, err := filepath.Abs(root)
 	if err != nil {
@@ -99,19 +130,22 @@ func LoadEphemeral(root string) (*CodebaseModel, error) {
 		return nil, err
 	}
 
-	// Index all files.
 	for _, file := range f.Files {
 		symbols := index.ExtractSymbols(file)
 		records := symbolsToRecords(symbols, file.Path)
 		_ = s.UpdateSymbols(file.Path, records)
 	}
 
-	return &CodebaseModel{Root: absRoot, Forest: f, Store: s, LSP: lspclient.NewPool()}, nil
+	return &CodebaseModel{Root: absRoot, Store: s, LSP: lspclient.NewPool(), forest: f}, nil
 }
 
-// Close releases the store's database connection, stops the file watcher, and
-// shuts down any LSP clients.
+// Close stops the manager goroutine, the file watcher, LSP clients, and the
+// store.
 func (m *CodebaseModel) Close() error {
+	if m.done != nil {
+		close(m.done)
+		<-m.stopped // wait for manager to exit
+	}
 	if m.LSP != nil {
 		m.LSP.Close()
 	}
@@ -121,9 +155,38 @@ func (m *CodebaseModel) Close() error {
 	return m.Store.Close()
 }
 
+// ForestSnapshot returns a point-in-time snapshot of the parsed forest. The
+// returned Forest has its own Files slice but shares the underlying ParsedFile
+// values (which are immutable — replaced, not mutated, on re-parse).
+//
+// For ephemeral models (no manager goroutine), returns the forest directly.
+func (m *CodebaseModel) ForestSnapshot() *forest.Forest {
+	if m.snapshots == nil {
+		// Ephemeral model — no manager, single-threaded access.
+		return m.forest
+	}
+	req := snapshotReq{reply: make(chan *forest.Forest, 1)}
+	m.snapshots <- req
+	return <-req.reply
+}
+
+// NotifyChanged tells the manager to immediately re-parse the given paths.
+// Call this after applying changes to disk so the model reflects the new
+// content without waiting for the watcher's debounce delay.
+func (m *CodebaseModel) NotifyChanged(changedPaths []string) {
+	if m.notify == nil {
+		return
+	}
+	select {
+	case m.notify <- changedPaths:
+	default:
+		// Channel full — watcher will catch up.
+	}
+}
+
 // FileCount returns the number of tracked files.
 func (m *CodebaseModel) FileCount() int {
-	return len(m.Forest.Files)
+	return len(m.ForestSnapshot().Files)
 }
 
 // FindSymbols finds symbols by name, using the persistent index.
@@ -131,88 +194,87 @@ func (m *CodebaseModel) FindSymbols(name, kind string) ([]store.SymbolRecord, er
 	return m.Store.FindSymbols(name, kind)
 }
 
-// incrementalParse walks the directory and parses files, using the store to
-// skip unchanged files.
-func incrementalParse(root string, s *store.Store) (*forest.Forest, error) {
-	var files []*forest.ParsedFile
-
-	err := filepath.WalkDir(root, func(path string, d os.DirEntry, walkErr error) error {
-		if walkErr != nil {
-			return walkErr
+// SummaryByLanguage returns a map of language → file count.
+func (m *CodebaseModel) SummaryByLanguage() map[string]int {
+	snap := m.ForestSnapshot()
+	summary := make(map[string]int)
+	for _, file := range snap.Files {
+		lang := file.Adapter.LSPLanguageID()
+		if lang == "" {
+			lang = "unknown"
 		}
-		if d.IsDir() {
-			name := d.Name()
-			if shouldSkipDir(name) {
-				return filepath.SkipDir
-			}
-			return nil
-		}
-
-		ext := strings.TrimPrefix(filepath.Ext(path), ".")
-		if ext == "" {
-			return nil
-		}
-
-		adapter := adapters.ForExtension(ext)
-		if adapter == nil {
-			return nil
-		}
-
-		source, err := os.ReadFile(path)
-		if err != nil {
-			return fmt.Errorf("reading %s: %w", path, err)
-		}
-
-		info, err := d.Info()
-		if err != nil {
-			return fmt.Errorf("stat %s: %w", path, err)
-		}
-		mtime := info.ModTime()
-		contentHash := hashBytes(source)
-
-		// Check if cached and unchanged.
-		storedHash, _ := s.CheckFile(path, mtime)
-		isCached := storedHash == contentHash && storedHash != ""
-
-		parser := tree_sitter.NewParser()
-		defer parser.Close()
-
-		if err := parser.SetLanguage(adapter.Language()); err != nil {
-			return fmt.Errorf("setting language for %s: %w", path, err)
-		}
-
-		tree := parser.Parse(source, nil)
-		if tree == nil {
-			return fmt.Errorf("parsing %s: tree-sitter returned nil", path)
-		}
-
-		parsed := &forest.ParsedFile{
-			Path:           path,
-			OriginalSource: source,
-			Tree:           tree,
-			Adapter:        adapter,
-		}
-
-		// Always parse into memory; only update store if changed.
-		if !isCached {
-			_ = s.UpsertFile(path, ext, mtime, contentHash)
-			symbols := index.ExtractSymbols(parsed)
-			records := symbolsToRecords(symbols, path)
-			_ = s.UpdateSymbols(path, records)
-		}
-
-		files = append(files, parsed)
-		return nil
-	})
-	if err != nil {
-		return nil, fmt.Errorf("walking %s: %w", root, err)
+		summary[lang]++
 	}
-
-	return &forest.Forest{Files: files}, nil
+	return summary
 }
 
-// ParseAndIndexFile re-parses a single file and updates the store.
-func (m *CodebaseModel) ParseAndIndexFile(path string) (*forest.ParsedFile, error) {
+// --- Manager goroutine ---
+
+// runManager is the event loop that owns all mutable forest state. It
+// processes watcher events, post-apply notifications, and snapshot requests.
+func (m *CodebaseModel) runManager() {
+	defer close(m.stopped)
+	for {
+		select {
+		case ev, ok := <-m.events:
+			if !ok {
+				return
+			}
+			m.applyEvent(ev)
+		case changedPaths := <-m.notify:
+			for _, p := range changedPaths {
+				m.reparse(p)
+			}
+		case req := <-m.snapshots:
+			files := make([]*forest.ParsedFile, len(m.forest.Files))
+			copy(files, m.forest.Files)
+			req.reply <- &forest.Forest{Files: files}
+		case <-m.done:
+			return
+		}
+	}
+}
+
+// reparse re-parses a single file and updates the forest and store.
+func (m *CodebaseModel) reparse(path string) {
+	parsed, err := m.parseAndIndexFile(path)
+	if err != nil || parsed == nil {
+		return
+	}
+	replaced := false
+	for i, f := range m.forest.Files {
+		if f.Path == path {
+			m.forest.Files[i] = parsed
+			replaced = true
+			break
+		}
+	}
+	if !replaced {
+		m.forest.Files = append(m.forest.Files, parsed)
+	}
+}
+
+// applyEvent updates the forest and store for a single file event.
+func (m *CodebaseModel) applyEvent(ev watcher.FileEvent) {
+	switch ev.Kind {
+	case watcher.Removed:
+		// Allocate a new slice — outstanding snapshots hold references to
+		// the old backing array.
+		newFiles := make([]*forest.ParsedFile, 0, len(m.forest.Files))
+		for _, f := range m.forest.Files {
+			if f.Path != ev.Path {
+				newFiles = append(newFiles, f)
+			}
+		}
+		m.forest.Files = newFiles
+		_ = m.Store.RemoveFile(ev.Path)
+	case watcher.Created, watcher.Modified:
+		m.reparse(ev.Path)
+	}
+}
+
+// parseAndIndexFile re-parses a single file and updates the store.
+func (m *CodebaseModel) parseAndIndexFile(path string) (*forest.ParsedFile, error) {
 	ext := strings.TrimPrefix(filepath.Ext(path), ".")
 	if ext == "" {
 		return nil, nil
@@ -262,67 +324,84 @@ func (m *CodebaseModel) ParseAndIndexFile(path string) (*forest.ParsedFile, erro
 	return parsed, nil
 }
 
-// Sync drains pending file events from the watcher and re-parses changed files.
-// It is safe to call Sync from multiple goroutines but events are processed
-// sequentially. Returns nil if there is no watcher (ephemeral model).
-func (m *CodebaseModel) Sync() error {
-	if m.events == nil {
-		return nil
-	}
-	for {
-		select {
-		case ev, ok := <-m.events:
-			if !ok {
-				return nil
+// --- Static helpers ---
+
+func incrementalParse(root string, s *store.Store) (*forest.Forest, error) {
+	var files []*forest.ParsedFile
+
+	err := filepath.WalkDir(root, func(path string, d os.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		if d.IsDir() {
+			name := d.Name()
+			if shouldSkipDir(name) {
+				return filepath.SkipDir
 			}
-			if err := m.applyEvent(ev); err != nil {
-				// Log but continue processing remaining events.
-				_ = err
-			}
-		default:
 			return nil
 		}
-	}
-}
 
-// applyEvent updates the in-memory forest and store for a single file event.
-func (m *CodebaseModel) applyEvent(ev watcher.FileEvent) error {
-	switch ev.Kind {
-	case watcher.Removed:
-		// Remove the file from the forest.
-		newFiles := m.Forest.Files[:0]
-		for _, f := range m.Forest.Files {
-			if f.Path != ev.Path {
-				newFiles = append(newFiles, f)
-			}
+		ext := strings.TrimPrefix(filepath.Ext(path), ".")
+		if ext == "" {
+			return nil
 		}
-		m.Forest.Files = newFiles
-		_ = m.Store.RemoveFile(ev.Path)
-	case watcher.Created, watcher.Modified:
-		parsed, err := m.ParseAndIndexFile(ev.Path)
+
+		adapter := adapters.ForExtension(ext)
+		if adapter == nil {
+			return nil
+		}
+
+		source, err := os.ReadFile(path)
 		if err != nil {
-			return err
+			return fmt.Errorf("reading %s: %w", path, err)
 		}
-		if parsed == nil {
-			return nil
+
+		info, err := d.Info()
+		if err != nil {
+			return fmt.Errorf("stat %s: %w", path, err)
 		}
-		// Replace or append in the forest.
-		replaced := false
-		for i, f := range m.Forest.Files {
-			if f.Path == ev.Path {
-				m.Forest.Files[i] = parsed
-				replaced = true
-				break
-			}
+		mtime := info.ModTime()
+		contentHash := hashBytes(source)
+
+		storedHash, _ := s.CheckFile(path, mtime)
+		isCached := storedHash == contentHash && storedHash != ""
+
+		parser := tree_sitter.NewParser()
+		defer parser.Close()
+
+		if err := parser.SetLanguage(adapter.Language()); err != nil {
+			return fmt.Errorf("setting language for %s: %w", path, err)
 		}
-		if !replaced {
-			m.Forest.Files = append(m.Forest.Files, parsed)
+
+		tree := parser.Parse(source, nil)
+		if tree == nil {
+			return fmt.Errorf("parsing %s: tree-sitter returned nil", path)
 		}
+
+		parsed := &forest.ParsedFile{
+			Path:           path,
+			OriginalSource: source,
+			Tree:           tree,
+			Adapter:        adapter,
+		}
+
+		if !isCached {
+			_ = s.UpsertFile(path, ext, mtime, contentHash)
+			symbols := index.ExtractSymbols(parsed)
+			records := symbolsToRecords(symbols, path)
+			_ = s.UpdateSymbols(path, records)
+		}
+
+		files = append(files, parsed)
+		return nil
+	})
+	if err != nil {
+		return nil, fmt.Errorf("walking %s: %w", root, err)
 	}
-	return nil
+
+	return &forest.Forest{Files: files}, nil
 }
 
-// skipDirs lists directory names that are always skipped.
 var skipDirs = map[string]bool{
 	"node_modules": true, "target": true, "__pycache__": true,
 	".git": true, ".svn": true, ".hg": true,
@@ -360,66 +439,35 @@ func symbolsToRecords(symbols []index.Symbol, filePath string) []store.SymbolRec
 	return records
 }
 
-// SaveRecipe delegates to the store.
+// --- Store delegates ---
+
 func (m *CodebaseModel) SaveRecipe(name, description string, params []string, steps []byte) error {
 	return m.Store.SaveRecipe(name, description, params, steps)
 }
-
-// LoadRecipe delegates to the store.
 func (m *CodebaseModel) LoadRecipe(name string) (*store.Recipe, error) {
 	return m.Store.LoadRecipe(name)
 }
-
-// ListRecipes delegates to the store.
-func (m *CodebaseModel) ListRecipes() ([]store.Recipe, error) {
-	return m.Store.ListRecipes()
-}
-
-// SaveConvention delegates to the store.
+func (m *CodebaseModel) ListRecipes() ([]store.Recipe, error) { return m.Store.ListRecipes() }
 func (m *CodebaseModel) SaveConvention(name, description, checkProgram string) error {
 	return m.Store.SaveConvention(name, description, checkProgram)
 }
-
-// ListConventions delegates to the store.
 func (m *CodebaseModel) ListConventions() ([]store.Convention, error) {
 	return m.Store.ListConventions()
 }
-
-// DeleteConvention delegates to the store.
 func (m *CodebaseModel) DeleteConvention(name string) (bool, error) {
 	return m.Store.DeleteConvention(name)
 }
-
-// SaveInvariant delegates to the store.
 func (m *CodebaseModel) SaveInvariant(name, description, ruleJSON string) error {
 	return m.Store.SaveInvariant(name, description, ruleJSON)
 }
-
-// ListInvariants delegates to the store.
 func (m *CodebaseModel) ListInvariants() ([]store.Invariant, error) {
 	return m.Store.ListInvariants()
 }
-
-// DeleteInvariant delegates to the store.
 func (m *CodebaseModel) DeleteInvariant(name string) (bool, error) {
 	return m.Store.DeleteInvariant(name)
 }
 
-// SummaryByLanguage returns a map of language → file count.
-func (m *CodebaseModel) SummaryByLanguage() map[string]int {
-	summary := make(map[string]int)
-	for _, file := range m.Forest.Files {
-		lang := file.Adapter.LSPLanguageID()
-		if lang == "" {
-			lang = "unknown"
-		}
-		summary[lang]++
-	}
-	return summary
-}
-
-// MtimeForPath returns the modification time for the given path. Used by
-// incremental parsing. Returns zero time on error.
+// MtimeForPath returns the modification time for the given path.
 func MtimeForPath(path string) time.Time {
 	info, err := os.Stat(path)
 	if err != nil {
@@ -427,3 +475,6 @@ func MtimeForPath(path string) time.Time {
 	}
 	return info.ModTime()
 }
+
+// Removed: Sync() — the manager goroutine drains events continuously.
+// Removed: ParseAndIndexFile() as public method — now internal to manager.

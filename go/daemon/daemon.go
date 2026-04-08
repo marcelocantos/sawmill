@@ -4,7 +4,8 @@
 // Package daemon implements the sawmill daemon — a single global process that
 // manages per-project CodebaseModels and serves MCP tool calls over a Unix
 // domain socket. Each connection announces its project root in the handshake;
-// the daemon lazily loads and shares a CodebaseModel per unique root.
+// the daemon lazily loads and shares a CodebaseModel per unique root. Models
+// are evicted after an idle period when no connections reference them.
 package daemon
 
 import (
@@ -15,6 +16,7 @@ import (
 	"path/filepath"
 	"sync"
 	"syscall"
+	"time"
 
 	"github.com/marcelocantos/mcpbridge"
 
@@ -22,43 +24,87 @@ import (
 	"github.com/marcelocantos/sawmill/model"
 )
 
+const idleEvictionTimeout = 5 * time.Minute
+
+// poolEntry tracks a model, its reference count, and an idle eviction timer.
+type poolEntry struct {
+	model *model.CodebaseModel
+	refs  int
+	timer *time.Timer
+}
+
 // ModelPool manages a shared pool of CodebaseModels keyed by project root.
 // Multiple connections to the same root share one model (amortised parsing).
+// Models are evicted after idleEvictionTimeout with no active connections.
 type ModelPool struct {
-	mu     sync.Mutex
-	models map[string]*model.CodebaseModel
+	mu      sync.Mutex
+	entries map[string]*poolEntry
 }
 
 // NewModelPool creates an empty model pool.
 func NewModelPool() *ModelPool {
-	return &ModelPool{models: make(map[string]*model.CodebaseModel)}
+	return &ModelPool{entries: make(map[string]*poolEntry)}
 }
 
 // Get returns the model for root, loading it lazily on first access.
+// Increments the reference count. Callers must call Release when done.
 func (p *ModelPool) Get(root string) (*model.CodebaseModel, error) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
-	if m, ok := p.models[root]; ok {
-		return m, nil
+	if e, ok := p.entries[root]; ok {
+		e.refs++
+		if e.timer != nil {
+			e.timer.Stop()
+			e.timer = nil
+		}
+		return e.model, nil
 	}
 
 	m, err := model.Load(root)
 	if err != nil {
 		return nil, err
 	}
-	p.models[root] = m
+	p.entries[root] = &poolEntry{model: m, refs: 1}
 	return m, nil
 }
 
-// CloseAll closes all models in the pool.
+// Release decrements the reference count for root. When it reaches zero, an
+// idle timer starts. If no new connection arrives before it fires, the model
+// is closed and removed from the pool.
+func (p *ModelPool) Release(root string) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	e, ok := p.entries[root]
+	if !ok {
+		return
+	}
+	e.refs--
+	if e.refs <= 0 {
+		e.timer = time.AfterFunc(idleEvictionTimeout, func() {
+			p.mu.Lock()
+			defer p.mu.Unlock()
+			if e, ok := p.entries[root]; ok && e.refs <= 0 {
+				log.Printf("evicting idle model for %s", root)
+				e.model.Close()
+				delete(p.entries, root)
+			}
+		})
+	}
+}
+
+// CloseAll closes all models in the pool immediately.
 func (p *ModelPool) CloseAll() {
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	for _, m := range p.models {
-		m.Close()
+	for _, e := range p.entries {
+		if e.timer != nil {
+			e.timer.Stop()
+		}
+		e.model.Close()
 	}
-	p.models = nil
+	p.entries = nil
 }
 
 // Daemon manages a pool of CodebaseModels and an mcpbridge.Server.
@@ -69,7 +115,8 @@ type Daemon struct {
 
 // Start starts the global daemon, listening on socketPath. Each connection
 // announces its project root in the handshake; the daemon lazily loads a
-// shared CodebaseModel per root. Blocks until SIGINT or SIGTERM.
+// shared CodebaseModel per root. Models are evicted when idle. Blocks until
+// SIGINT or SIGTERM.
 func Start(socketPath string) error {
 	if err := os.MkdirAll(filepath.Dir(socketPath), 0o700); err != nil {
 		return fmt.Errorf("creating socket directory: %w", err)
@@ -80,18 +127,17 @@ func Start(socketPath string) error {
 	srv, err := mcpbridge.NewServer(mcpbridge.DaemonConfig{
 		SocketPath: socketPath,
 		Tools:      mcp.Definitions(),
-		HandlerFactory: func(root string) mcpbridge.ToolHandler {
+		HandlerFactory: func(root string) (mcpbridge.ToolHandler, func()) {
 			if root == "" {
-				// No root announced — return a handler with no pre-loaded
-				// model. The client must call parse with an explicit path.
-				return mcp.NewHandler()
+				return mcp.NewHandler(), nil
 			}
 			m, err := pool.Get(root)
 			if err != nil {
 				log.Printf("warning: failed to load model for %q: %v", root, err)
-				return mcp.NewHandler()
+				return mcp.NewHandler(), nil
 			}
-			return mcp.NewHandlerWithModel(m)
+			cleanup := func() { pool.Release(root) }
+			return mcp.NewHandlerWithModel(m), cleanup
 		},
 	})
 	if err != nil {
