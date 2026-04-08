@@ -9,7 +9,7 @@ pre-1.0 period exists to get these right.
 
 ## Interaction surface catalogue
 
-Snapshot as of v0.8.0. 153 public surface items.
+Snapshot as of v0.9.0. 153 public surface items.
 
 ### CLI
 
@@ -64,8 +64,7 @@ Snapshot as of v0.8.0. 153 public surface items.
 
 | Item | Value | Stability |
 |---|---|---|
-| Socket dir | `~/.sawmill/sockets/` | **Stable** |
-| Socket naming | `<sha256-hash-of-root>.sock` | **Stable** |
+| Global socket | `~/.sawmill/sawmill.sock` | **Stable** |
 | Store path | `~/.sawmill/stores/<hash>/store.db` | **Stable** |
 | Backup dir | `~/.sawmill/backups/<hash>/` | **Stable** |
 | Backup suffix | `.bak` | **Stable** |
@@ -80,7 +79,7 @@ Snapshot as of v0.8.0. 153 public surface items.
 | Proxy ↔ daemon | mcpbridge RPC over Unix domain socket | **Stable** |
 | MCP protocol | JSON-RPC 2.0 (via mcp-go) | **Stable** (standard) |
 | Transport (stdio) | stdin/stdout (mcpbridge proxy) | **Stable** |
-| Transport (daemon) | Per-project Unix domain socket | **Stable** |
+| Transport (daemon) | Single global Unix domain socket | **Stable** |
 
 ## Gaps and prerequisites for 1.0
 

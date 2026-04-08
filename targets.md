@@ -2,20 +2,6 @@
 
 ## Active
 
-### 🎯T3 Diagnostic-driven automatic fixes
-- **Weight**: 2 (value 13 / cost 8)
-- **Estimated-cost**: 8
-- **Acceptance**:
-  - teach_fix tool associates a diagnostic regex pattern with a recipe and parameter extraction rules; stored in SQLite
-  - auto_fix tool runs diagnostics, matches against the fix catalogue, applies safe fixes, reports uncertain ones
-  - Fix loop re-runs diagnostics after each apply; terminates when clean, stuck, or iteration limit reached
-  - Per-compiler normalisation handles at least Go, Rust, Python, and TypeScript diagnostic formats
-  - Each fix entry has a confidence annotation (auto-apply vs. suggest)
-- **Context**: The pieces exist — recipes (stored transforms), LSP diagnostics tool, pattern engine from T16. What's missing is the glue: diagnostic pattern → recipe binding, and the apply-recheck convergence loop. Closes the loop between compiler says something is wrong and sawmill fixes it automatically.
-- **Tags**: diagnostics, automation
-- **Status**: Identified
-- **Discovered**: 2026-04-07
-
 ### 🎯T1 Intra-language pattern equivalences
 - **Weight**: 1 (value 21 / cost 21)
 - **Estimated-cost**: 21
@@ -26,6 +12,22 @@
   - Transitive chains produce derived equivalences
 - **Context**: Originates from arr.ai work on cross-language transpilation as set relations. The intra-language case avoids type-bridge and grammar-extension problems. T16's pattern engine provides the foundation.
 - **Tags**: research, pattern-matching
+- **Status**: Identified
+- **Discovered**: 2026-04-07
+
+### 🎯T3 Diagnostic-driven automatic fixes
+- **Weight**: 1 (value 13 / cost 13)
+- **Estimated-cost**: 13
+- **Acceptance**:
+  - teach_fix tool associates a diagnostic pattern with a fix action (inline transform or recipe reference) with parameter extraction from regex captures; stored in SQLite
+  - auto_fix tool runs diagnostics, matches against catalogue, applies safe fixes, reports uncertain ones; convergence loop terminates when clean, stuck, or iteration limit reached
+  - Pre-populated catalogue covers common Go and TypeScript errors out of the box
+  - Observation-based learning: when auto_fix reports unmatched diagnostics and a subsequent operation resolves them, sawmill offers to save the pairing
+  - Per-compiler diagnostic normalisation for at least Go and TypeScript
+  - Each fix entry has a confidence annotation (auto-apply vs. suggest)
+  - Cycle detection: if a diagnostic reappears after its fix was applied, skip it and flag the fix as broken
+- **Context**: Two bootstrapping paths: pre-populated entries from compiler error catalogues for common cases, and learn-from-observation for project-specific patterns. The agent already fixes errors manually — sawmill just needs to watch and remember.
+- **Tags**: diagnostics, automation
 - **Status**: Identified
 - **Discovered**: 2026-04-07
 
