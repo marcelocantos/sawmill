@@ -2,22 +2,6 @@
 
 ## Active
 
-### 🎯T2 Model manager is an active process
-- **Weight**: 2 (value 13 / cost 8)
-- **Estimated-cost**: 8
-- **Acceptance**:
-  - Model manager goroutine owns the forest, store, and symbol index
-  - Watcher goroutine feeds file events to the model manager
-  - On startup, manager reconciles filesystem state against stale SQLite database before accepting queries
-  - MCP handlers send requests to the manager via channels — no direct access to forest or store
-  - After apply writes files, the manager observes watcher events and re-parses automatically
-  - Multiple concurrent MCP sessions on the same root are safe by construction
-  - Test exists: two sessions do independent transforms and applies with consistent model
-- **Context**: The current CodebaseModel is a passive struct with no concurrency control. The watcher produces events on a channel only drained by explicit Sync(). After apply, the model is stale. Multiple handlers sharing the model have unsynchronised access. The fix is making the model an active subsystem (actor pattern) that owns its state and serves queries through channels.
-- **Tags**: daemon, concurrency, architecture
-- **Status**: Identified
-- **Discovered**: 2026-04-07
-
 ### 🎯T3 Diagnostic-driven automatic fixes
 - **Weight**: 2 (value 13 / cost 8)
 - **Estimated-cost**: 8
@@ -47,13 +31,27 @@
 
 ## Achieved
 
-(none)
+### 🎯T2 Model manager is an active process
+- **Weight**: 2 (value 13 / cost 8)
+- **Estimated-cost**: 8
+- **Acceptance**:
+  - Model manager goroutine owns the forest, store, and symbol index
+  - Watcher goroutine feeds file events to the model manager
+  - On startup, manager reconciles filesystem state against stale SQLite database before accepting queries
+  - MCP handlers send requests to the manager via channels — no direct access to forest or store
+  - After apply writes files, the manager observes watcher events and re-parses automatically
+  - Multiple concurrent MCP sessions on the same root are safe by construction
+  - Test exists: two sessions do independent transforms and applies with consistent model
+- **Context**: The current CodebaseModel is a passive struct with no concurrency control. The watcher produces events on a channel only drained by explicit Sync(). After apply, the model is stale. Multiple handlers sharing the model have unsynchronised access. The fix is making the model an active subsystem (actor pattern) that owns its state and serves queries through channels.
+- **Tags**: daemon, concurrency, architecture
+- **Status**: Achieved
+- **Discovered**: 2026-04-07
+- **Achieved**: 2026-04-08
 
 ## Graph
 
 ```mermaid
 graph TD
     T1["Intra-language pattern equiva…"]
-    T2["Model manager is an active pr…"]
     T3["Diagnostic-driven automatic f…"]
 ```
