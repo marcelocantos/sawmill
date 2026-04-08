@@ -17,7 +17,7 @@ targets:
     discovered: 2026-04-07
   T2:
     name: Model manager is an active process
-    status: identified
+    status: achieved
     value: 13.0
     cost: 8.0
     acceptance:
@@ -35,6 +35,7 @@ targets:
     - architecture
     origin: manual
     discovered: 2026-04-07
+    achieved: 2026-04-08
   T3:
     name: Diagnostic-driven automatic fixes
     status: identified

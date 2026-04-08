@@ -55,7 +55,7 @@ not direct field access.
   the forest and store. The fix is not a mutex — it's making the
   model an active subsystem (actor pattern) that owns its state and
   serves queries through a channel-based protocol.
-- **Status**: identified
+- **Status**: achieved
 - **Discovered**: 2026-04-07
 
 ### 🎯T21 Diagnostic-driven automatic fixes
