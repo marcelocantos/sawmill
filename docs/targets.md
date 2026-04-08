@@ -61,28 +61,38 @@ not direct field access.
 ### 🎯T21 Diagnostic-driven automatic fixes
 
 Sawmill can ingest compiler/linter diagnostics, match them against a
-catalogue of learned fixes, and apply corrections automatically. Safe
-fixes are applied in a loop until the build is clean or no more
-catalogue matches exist. Uncertain fixes are reported for human review.
+catalogue of fixes, and apply corrections automatically. The catalogue
+is populated two ways: pre-built entries for common compiler errors
+(scraped from error code catalogues), and learned entries observed from
+the agent's own fix behaviour during sessions.
 
-- **Weight**: 2 (value 13 / cost 8)
-- **Estimated-cost**: 8
+- **Weight**: 1 (value 13 / cost 13)
+- **Estimated-cost**: 13
 - **Acceptance**:
-  - `teach_fix` tool associates a diagnostic regex pattern with a recipe
-    and parameter extraction rules; stored in SQLite
+  - `teach_fix` tool associates a diagnostic pattern with a fix action
+    (inline transform or recipe reference) with parameter extraction
+    from regex captures; stored in SQLite
   - `auto_fix` tool runs diagnostics (via LSP or raw compiler output),
-    matches against the fix catalogue, applies safe fixes, and reports
-    uncertain ones
-  - Fix loop re-runs diagnostics after each apply; terminates when clean,
-    stuck (no new fixes matched), or iteration limit reached
-  - Per-compiler normalisation handles at least Go, Rust, Python, and
-    TypeScript diagnostic formats
+    matches against the fix catalogue, applies safe fixes, reports
+    uncertain ones; convergence loop re-runs diagnostics after each
+    apply, terminates when clean, stuck, or iteration limit reached
+  - Pre-populated catalogue covers common Go and TypeScript errors
+    (unused import, missing return, type mismatch, unreachable code)
+    out of the box — no cold start for bread-and-butter cases
+  - Observation-based learning: when `auto_fix` reports unmatched
+    diagnostics and a subsequent sawmill operation resolves them,
+    sawmill offers to save the diagnostic→fix pairing as a new
+    catalogue entry
+  - Per-compiler diagnostic normalisation for at least Go and TypeScript;
+    Rust and Python as follow-on
   - Each fix entry has a confidence annotation (auto-apply vs. suggest)
+  - Cycle detection: if a diagnostic reappears after its fix was applied,
+    skip it and flag the fix as broken
 - **Context**: The pieces exist — recipes (stored transforms), LSP
-  diagnostics tool, pattern engine from T16. What's missing is the glue:
-  diagnostic pattern → recipe binding, and the apply-recheck convergence
-  loop. This closes the loop between "compiler says something is wrong"
-  and "sawmill fixes it automatically."
+  diagnostics tool, pattern engine from T16. Two bootstrapping paths:
+  pre-populated entries from compiler error catalogues for common cases,
+  and learn-from-observation for project-specific patterns. The agent
+  already fixes errors manually — sawmill just needs to watch and remember.
 - **Status**: identified
 - **Discovered**: 2026-04-07
 
