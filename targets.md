@@ -31,21 +31,6 @@
 - **Status**: Identified
 - **Discovered**: 2026-04-07
 
-### 🎯T4 CST node tree is stored in SQLite — in-memory CSTs are transient parse artifacts only
-- **Weight**: 1 (value 13 / cost 20)
-- **Estimated-cost**: 20
-- **Acceptance**:
-  - Nodes table stores full tree structure (type, field, parent, byte ranges) for all parsed files
-  - All structural queries (find_references, query, pattern matching) run against SQLite, not in-memory CSTs
-  - In-memory CSTs exist only during parse of a single file, then are discarded
-  - Daemon memory stays bounded regardless of project size — scales with SQLite page cache, not file count
-  - Cold start is instant — no full-project reparse needed, nodes persist across restarts
-- **Context**: Tree-sitter CSTs (10-100x source size) were held in memory for every file indefinitely, causing the daemon to consume multiple GB on large projects. The fix is to serialize the full node tree into SQLite after parsing, then discard the in-memory CST. Structural queries become SQL joins against the nodes table — which is actually more powerful than S-expression queries (cross-file joins, aggregation, set operations). Tree-sitter is still used for parsing, but SQLite becomes the query engine.
-- **Tags**: performance, daemon, memory
-- **Origin**: User report — daemon killed due to memory pressure
-- **Status**: Converging
-- **Discovered**: 2026-04-09
-
 ### 🎯T5 Sawmill supports coordinated transforms across multiple repositories
 - **Weight**: 1 (value 8 / cost 13)
 - **Estimated-cost**: 13
@@ -61,6 +46,22 @@
 - **Discovered**: 2026-04-10
 
 ## Achieved
+
+### 🎯T4 CST node tree is stored in SQLite — in-memory CSTs are transient parse artifacts only
+- **Weight**: 1 (value 13 / cost 20)
+- **Estimated-cost**: 20
+- **Acceptance**:
+  - Nodes table stores full tree structure (type, field, parent, byte ranges) for all parsed files
+  - All structural queries (find_references, query, pattern matching) run against SQLite, not in-memory CSTs
+  - In-memory CSTs exist only during parse of a single file, then are discarded
+  - Daemon memory stays bounded regardless of project size — scales with SQLite page cache, not file count
+  - Cold start is instant — no full-project reparse needed, nodes persist across restarts
+- **Context**: Tree-sitter CSTs (10-100x source size) were held in memory for every file indefinitely, causing the daemon to consume multiple GB on large projects. The fix is to serialize the full node tree into SQLite after parsing, then discard the in-memory CST. Structural queries become SQL joins against the nodes table — which is actually more powerful than S-expression queries (cross-file joins, aggregation, set operations). Tree-sitter is still used for parsing, but SQLite becomes the query engine.
+- **Tags**: performance, daemon, memory
+- **Origin**: User report — daemon killed due to memory pressure
+- **Status**: Achieved
+- **Discovered**: 2026-04-09
+- **Achieved**: 2026-04-10
 
 ### 🎯T2 Model manager is an active process
 - **Weight**: 2 (value 13 / cost 8)
@@ -85,6 +86,5 @@
 graph TD
     T1["Intra-language pattern equiva…"]
     T3["Diagnostic-driven automatic f…"]
-    T4["CST node tree is stored in SQ…"]
     T5["Sawmill supports coordinated …"]
 ```

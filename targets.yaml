@@ -57,7 +57,7 @@ targets:
     discovered: 2026-04-07
   T4:
     name: CST node tree is stored in SQLite — in-memory CSTs are transient parse artifacts only
-    status: converging
+    status: achieved
     value: 13.0
     cost: 20.0
     acceptance:
@@ -73,6 +73,7 @@ targets:
     - memory
     origin: User report — daemon killed due to memory pressure
     discovered: 2026-04-09
+    achieved: 2026-04-10
   T5:
     name: Sawmill supports coordinated transforms across multiple repositories
     status: identified
