@@ -1,10 +1,11 @@
 // Copyright 2026 Marcelo Cantos
 // SPDX-License-Identifier: Apache-2.0
 
-// Package model provides the persistent codebase model. A manager goroutine
-// owns all mutable state (the forest of parsed files) and serves snapshots to
-// MCP handlers via a channel-based protocol. File-system changes are picked up
-// by the watcher and applied by the manager — no explicit Sync is needed.
+// Package model provides the persistent codebase model. Source and metadata are
+// stored in SQLite; trees are parsed on demand via a bounded LRU cache. A
+// manager goroutine watches for file changes and updates the store. Handlers
+// access files via FileAccessors (scoped tree access) or ForestSnapshot
+// (transient full parse for codegen).
 package model
 
 import (
@@ -27,14 +28,10 @@ import (
 	"github.com/marcelocantos/sawmill/watcher"
 )
 
-// snapshotReq is sent by handlers to request a point-in-time forest snapshot.
-type snapshotReq struct {
-	reply chan *forest.Forest
-}
-
 // CodebaseModel is a persistent, live-updating codebase model. A manager
-// goroutine owns the forest; handlers interact via ForestSnapshot and
-// NotifyChanged.
+// goroutine watches for file changes and updates the store. Handlers access
+// files via FileAccessors (on-demand parsing) or ForestSnapshot (transient
+// full parse for codegen).
 type CodebaseModel struct {
 	// Root directory being tracked.
 	Root string
@@ -45,15 +42,12 @@ type CodebaseModel struct {
 	// Cache holds recently-parsed trees for on-demand access.
 	Cache *forest.TreeCache
 
-	// forest is owned exclusively by the manager goroutine. Never access
-	// directly from handlers — use ForestSnapshot().
+	// forest is only set for ephemeral models (no manager goroutine).
 	forest *forest.Forest
 	// w watches root for file changes (nil for ephemeral models).
 	w *watcher.Watcher
 	// events is the channel of debounced file events from w.
 	events <-chan watcher.FileEvent
-	// snapshots receives snapshot requests from handlers.
-	snapshots chan snapshotReq
 	// notify receives post-apply re-parse requests (file paths).
 	notify chan []string
 	// done signals the manager goroutine to exit.
@@ -85,8 +79,7 @@ func Load(root string) (*CodebaseModel, error) {
 		return nil, err
 	}
 
-	f, err := incrementalParse(absRoot, s)
-	if err != nil {
+	if err := incrementalParse(absRoot, s); err != nil {
 		s.Close()
 		return nil, err
 	}
@@ -98,17 +91,15 @@ func Load(root string) (*CodebaseModel, error) {
 	}
 
 	m := &CodebaseModel{
-		Root:      absRoot,
-		Store:     s,
-		LSP:       lspclient.NewPool(),
-		Cache:     forest.NewTreeCache(forest.DefaultCacheSize),
-		forest:    f,
-		w:         w,
-		events:    events,
-		snapshots: make(chan snapshotReq),
-		notify:    make(chan []string, 16),
-		done:      make(chan struct{}),
-		stopped:   make(chan struct{}),
+		Root:    absRoot,
+		Store:   s,
+		LSP:     lspclient.NewPool(),
+		Cache:   forest.NewTreeCache(forest.DefaultCacheSize),
+		w:       w,
+		events:  events,
+		notify:  make(chan []string, 16),
+		done:    make(chan struct{}),
+		stopped: make(chan struct{}),
 	}
 	go m.runManager()
 	return m, nil
@@ -186,19 +177,54 @@ func (m *CodebaseModel) FileAccessors(pathFilter string) ([]*forest.FileAccessor
 	return accessors, nil
 }
 
-// ForestSnapshot returns a point-in-time snapshot of the parsed forest. The
-// returned Forest has its own Files slice but shares the underlying ParsedFile
-// values (which are immutable — replaced, not mutated, on re-parse).
+// ForestSnapshot builds a transient forest by parsing all tracked files on
+// demand. The returned trees are cached via the TreeCache for reuse. This
+// method exists for codegen/convention/invariant tools that need a full
+// Forest; most tool handlers should use FileAccessors + WithTree instead.
 //
 // For ephemeral models (no manager goroutine), returns the forest directly.
 func (m *CodebaseModel) ForestSnapshot() *forest.Forest {
-	if m.snapshots == nil {
-		// Ephemeral model — no manager, single-threaded access.
+	if m.forest != nil {
+		// Ephemeral model — has an in-memory forest.
 		return m.forest
 	}
-	req := snapshotReq{reply: make(chan *forest.Forest, 1)}
-	m.snapshots <- req
-	return <-req.reply
+
+	records, err := m.Store.TrackedFilesWithMeta()
+	if err != nil {
+		return &forest.Forest{}
+	}
+
+	var files []*forest.ParsedFile
+	for _, rec := range records {
+		adapter := adapters.ForExtension(rec.Language)
+		if adapter == nil {
+			continue
+		}
+		source, tree, err := m.Cache.GetOrParse(rec.Path, rec.ContentHash, func() ([]byte, *tree_sitter.Tree, error) {
+			src, err := m.Store.ReadSource(rec.Path)
+			if err != nil {
+				return nil, nil, err
+			}
+			t, err := forest.ParseSource(src, adapter)
+			if err != nil {
+				return nil, nil, err
+			}
+			if t == nil {
+				return nil, nil, fmt.Errorf("parsing %s: nil tree", rec.Path)
+			}
+			return src, t, nil
+		})
+		if err != nil {
+			continue
+		}
+		files = append(files, &forest.ParsedFile{
+			Path:           rec.Path,
+			OriginalSource: source,
+			Tree:           tree,
+			Adapter:        adapter,
+		})
+	}
+	return &forest.Forest{Files: files}
 }
 
 // NotifyChanged tells the manager to immediately re-parse the given paths.
@@ -217,26 +243,13 @@ func (m *CodebaseModel) NotifyChanged(changedPaths []string) {
 
 // FileCount returns the number of tracked files.
 func (m *CodebaseModel) FileCount() int {
-	return len(m.ForestSnapshot().Files)
+	n, _ := m.Store.FileCount()
+	return n
 }
 
 // FindSymbols finds symbols by name, using the persistent index.
 func (m *CodebaseModel) FindSymbols(name, kind string) ([]store.SymbolRecord, error) {
 	return m.Store.FindSymbols(name, kind)
-}
-
-// SummaryByLanguage returns a map of language → file count.
-func (m *CodebaseModel) SummaryByLanguage() map[string]int {
-	snap := m.ForestSnapshot()
-	summary := make(map[string]int)
-	for _, file := range snap.Files {
-		lang := file.Adapter.LSPLanguageID()
-		if lang == "" {
-			lang = "unknown"
-		}
-		summary[lang]++
-	}
-	return summary
 }
 
 // --- Manager goroutine ---
@@ -256,54 +269,27 @@ func (m *CodebaseModel) runManager() {
 			for _, p := range changedPaths {
 				m.reparse(p)
 			}
-		case req := <-m.snapshots:
-			files := make([]*forest.ParsedFile, len(m.forest.Files))
-			copy(files, m.forest.Files)
-			req.reply <- &forest.Forest{Files: files}
 		case <-m.done:
 			return
 		}
 	}
 }
 
-// reparse re-parses a single file and updates the forest and store.
+// reparse re-parses a single file and updates the store and cache.
 func (m *CodebaseModel) reparse(path string) {
 	if m.Cache != nil {
 		m.Cache.Evict(path)
 	}
-	parsed, err := m.parseAndIndexFile(path)
-	if err != nil || parsed == nil {
-		return
-	}
-	replaced := false
-	for i, f := range m.forest.Files {
-		if f.Path == path {
-			m.forest.Files[i] = parsed
-			replaced = true
-			break
-		}
-	}
-	if !replaced {
-		m.forest.Files = append(m.forest.Files, parsed)
-	}
+	m.parseAndIndexFile(path)
 }
 
-// applyEvent updates the forest and store for a single file event.
+// applyEvent updates the store and cache for a single file event.
 func (m *CodebaseModel) applyEvent(ev watcher.FileEvent) {
 	switch ev.Kind {
 	case watcher.Removed:
 		if m.Cache != nil {
 			m.Cache.Evict(ev.Path)
 		}
-		// Allocate a new slice — outstanding snapshots hold references to
-		// the old backing array.
-		newFiles := make([]*forest.ParsedFile, 0, len(m.forest.Files))
-		for _, f := range m.forest.Files {
-			if f.Path != ev.Path {
-				newFiles = append(newFiles, f)
-			}
-		}
-		m.forest.Files = newFiles
 		_ = m.Store.RemoveFile(ev.Path)
 	case watcher.Created, watcher.Modified:
 		m.reparse(ev.Path)
@@ -311,68 +297,54 @@ func (m *CodebaseModel) applyEvent(ev watcher.FileEvent) {
 }
 
 // parseAndIndexFile re-parses a single file and updates the store.
-func (m *CodebaseModel) parseAndIndexFile(path string) (*forest.ParsedFile, error) {
+func (m *CodebaseModel) parseAndIndexFile(path string) {
 	ext := strings.TrimPrefix(filepath.Ext(path), ".")
 	if ext == "" {
-		return nil, nil
+		return
 	}
 
 	adapter := adapters.ForExtension(ext)
 	if adapter == nil {
-		return nil, nil
+		return
 	}
 
 	source, err := os.ReadFile(path)
 	if err != nil {
-		return nil, fmt.Errorf("reading %s: %w", path, err)
+		return
 	}
 
 	info, err := os.Stat(path)
 	if err != nil {
-		return nil, fmt.Errorf("stat %s: %w", path, err)
+		return
 	}
 	mtime := info.ModTime()
 	contentHash := hashBytes(source)
 
-	parser := tree_sitter.NewParser()
-	defer parser.Close()
-
-	if err := parser.SetLanguage(adapter.Language()); err != nil {
-		return nil, fmt.Errorf("setting language for %s: %w", path, err)
+	// Parse to extract symbols, then discard the tree.
+	tree, err := forest.ParseSource(source, adapter)
+	if err != nil || tree == nil {
+		return
 	}
+	defer tree.Close()
 
-	tree := parser.Parse(source, nil)
-	if tree == nil {
-		return nil, fmt.Errorf("parsing %s: tree-sitter returned nil", path)
-	}
-
-	parsed := &forest.ParsedFile{
-		Path:           path,
-		OriginalSource: source,
-		Tree:           tree,
-		Adapter:        adapter,
-	}
+	symbols := index.ExtractSymbolsFromParts(source, tree, adapter, path)
+	records := symbolsToRecords(symbols, path)
 
 	_ = m.Store.UpsertFile(path, ext, mtime, contentHash, source)
-	symbols := index.ExtractSymbols(parsed)
-	records := symbolsToRecords(symbols, path)
 	_ = m.Store.UpdateSymbols(path, records)
-
-	return parsed, nil
 }
 
 // --- Static helpers ---
 
-func incrementalParse(root string, s *store.Store) (*forest.Forest, error) {
-	var files []*forest.ParsedFile
-
-	err := filepath.WalkDir(root, func(path string, d os.DirEntry, walkErr error) error {
+// incrementalParse walks root, parses changed files, and populates the store.
+// Trees are parsed only to extract symbols, then discarded.
+func incrementalParse(root string, s *store.Store) error {
+	return filepath.WalkDir(root, func(path string, d os.DirEntry, walkErr error) error {
 		if walkErr != nil {
 			return walkErr
 		}
 		if d.IsDir() {
-			name := d.Name()
-			if shouldSkipDir(name) {
+			if shouldSkipDir(d.Name()) {
 				return filepath.SkipDir
 			}
 			return nil
@@ -401,42 +373,26 @@ func incrementalParse(root string, s *store.Store) (*forest.Forest, error) {
 		contentHash := hashBytes(source)
 
 		storedHash, _ := s.CheckFile(path, mtime)
-		isCached := storedHash == contentHash && storedHash != ""
-
-		parser := tree_sitter.NewParser()
-		defer parser.Close()
-
-		if err := parser.SetLanguage(adapter.Language()); err != nil {
-			return fmt.Errorf("setting language for %s: %w", path, err)
+		if storedHash == contentHash && storedHash != "" {
+			// File unchanged — source is already in the store.
+			return nil
 		}
 
-		tree := parser.Parse(source, nil)
-		if tree == nil {
-			return fmt.Errorf("parsing %s: tree-sitter returned nil", path)
+		// Parse to extract symbols, then discard.
+		tree, err := forest.ParseSource(source, adapter)
+		if err != nil || tree == nil {
+			return nil // skip unparseable files
 		}
 
-		parsed := &forest.ParsedFile{
-			Path:           path,
-			OriginalSource: source,
-			Tree:           tree,
-			Adapter:        adapter,
-		}
+		symbols := index.ExtractSymbolsFromParts(source, tree, adapter, path)
+		tree.Close()
 
-		if !isCached {
-			_ = s.UpsertFile(path, ext, mtime, contentHash, source)
-			symbols := index.ExtractSymbols(parsed)
-			records := symbolsToRecords(symbols, path)
-			_ = s.UpdateSymbols(path, records)
-		}
+		records := symbolsToRecords(symbols, path)
+		_ = s.UpsertFile(path, ext, mtime, contentHash, source)
+		_ = s.UpdateSymbols(path, records)
 
-		files = append(files, parsed)
 		return nil
 	})
-	if err != nil {
-		return nil, fmt.Errorf("walking %s: %w", root, err)
-	}
-
-	return &forest.Forest{Files: files}, nil
 }
 
 var skipDirs = map[string]bool{
