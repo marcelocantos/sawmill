@@ -10,6 +10,7 @@ import (
 
 	tree_sitter "github.com/tree-sitter/go-tree-sitter"
 
+	"github.com/marcelocantos/sawmill/adapters"
 	"github.com/marcelocantos/sawmill/forest"
 	"github.com/marcelocantos/sawmill/rewrite"
 	"github.com/marcelocantos/sawmill/transform"
@@ -69,19 +70,28 @@ func buildParamText(name string, paramType, defaultValue *string) string {
 // integer). Returns the modified source bytes, or the original bytes if the
 // function is not found.
 func addParamInFile(file *forest.ParsedFile, funcName, paramText, position string) ([]byte, error) {
-	queryStr := file.Adapter.FunctionDefQuery()
+	return addParamInSource(file.OriginalSource, file.Tree, file.Adapter, funcName, paramText, position)
+}
+
+// addParamInSource is the decomposed form of addParamInFile.
+func addParamInSource(
+	source []byte,
+	tree *tree_sitter.Tree,
+	adapter adapters.LanguageAdapter,
+	funcName, paramText, position string,
+) ([]byte, error) {
+	queryStr := adapter.FunctionDefQuery()
 	if queryStr == "" {
-		return file.OriginalSource, nil
+		return source, nil
 	}
 
-	lang := file.Adapter.Language()
+	lang := adapter.Language()
 	query, qErr := tree_sitter.NewQuery(lang, queryStr)
 	if qErr != nil {
-		return file.OriginalSource, nil
+		return source, nil
 	}
 	defer query.Close()
 
-	// Find the @name and @func capture indices.
 	nameIdx := -1
 	funcIdx := -1
 	for i, n := range query.CaptureNames() {
@@ -93,18 +103,17 @@ func addParamInFile(file *forest.ParsedFile, funcName, paramText, position strin
 		}
 	}
 	if nameIdx < 0 || funcIdx < 0 {
-		return file.OriginalSource, nil
+		return source, nil
 	}
 
 	cursor := tree_sitter.NewQueryCursor()
 	defer cursor.Close()
 
-	matches := cursor.Matches(query, file.Tree.RootNode(), file.OriginalSource)
+	matches := cursor.Matches(query, tree.RootNode(), source)
 
 	var edits []rewrite.Edit
 
 	for m := matches.Next(); m != nil; m = matches.Next() {
-		// Find the whole function node (@func capture) and the name node (@name capture).
 		var funcNode, nameNode *tree_sitter.Node
 		for i := range m.Captures {
 			c := &m.Captures[i]
@@ -120,20 +129,18 @@ func addParamInFile(file *forest.ParsedFile, funcName, paramText, position strin
 			continue
 		}
 
-		name := string(file.OriginalSource[nameNode.StartByte():nameNode.EndByte()])
+		name := string(source[nameNode.StartByte():nameNode.EndByte()])
 		if name != funcName {
 			continue
 		}
 
-		// Find the parameters node.
 		paramsNode := funcNode.ChildByFieldName("parameters")
 		if paramsNode == nil {
 			continue
 		}
 
-		// Determine insertion point based on position.
 		insertOffset, insertPrefix, insertSuffix, err := resolveParamPosition(
-			file.OriginalSource, paramsNode, paramText, position,
+			source, paramsNode, paramText, position,
 		)
 		if err != nil {
 			return nil, err
@@ -147,10 +154,10 @@ func addParamInFile(file *forest.ParsedFile, funcName, paramText, position strin
 	}
 
 	if len(edits) == 0 {
-		return file.OriginalSource, nil
+		return source, nil
 	}
 
-	return rewrite.ApplyEdits(file.OriginalSource, edits), nil
+	return rewrite.ApplyEdits(source, edits), nil
 }
 
 // resolveParamPosition determines where and how to insert a new parameter
@@ -241,15 +248,25 @@ func resolveParamPosition(
 // removeParamInFile finds the named function in file and removes paramName from
 // its parameter list. Returns the modified source bytes.
 func removeParamInFile(file *forest.ParsedFile, funcName, paramName string) ([]byte, error) {
-	queryStr := file.Adapter.FunctionDefQuery()
+	return removeParamInSource(file.OriginalSource, file.Tree, file.Adapter, funcName, paramName)
+}
+
+// removeParamInSource is the decomposed form of removeParamInFile.
+func removeParamInSource(
+	source []byte,
+	tree *tree_sitter.Tree,
+	adapter adapters.LanguageAdapter,
+	funcName, paramName string,
+) ([]byte, error) {
+	queryStr := adapter.FunctionDefQuery()
 	if queryStr == "" {
-		return file.OriginalSource, nil
+		return source, nil
 	}
 
-	lang := file.Adapter.Language()
+	lang := adapter.Language()
 	query, qErr := tree_sitter.NewQuery(lang, queryStr)
 	if qErr != nil {
-		return file.OriginalSource, nil
+		return source, nil
 	}
 	defer query.Close()
 
@@ -264,13 +281,13 @@ func removeParamInFile(file *forest.ParsedFile, funcName, paramName string) ([]b
 		}
 	}
 	if nameIdx < 0 || funcIdx < 0 {
-		return file.OriginalSource, nil
+		return source, nil
 	}
 
 	cursor := tree_sitter.NewQueryCursor()
 	defer cursor.Close()
 
-	matches := cursor.Matches(query, file.Tree.RootNode(), file.OriginalSource)
+	matches := cursor.Matches(query, tree.RootNode(), source)
 
 	var edits []rewrite.Edit
 
@@ -289,7 +306,7 @@ func removeParamInFile(file *forest.ParsedFile, funcName, paramName string) ([]b
 			continue
 		}
 
-		name := string(file.OriginalSource[nameNode.StartByte():nameNode.EndByte()])
+		name := string(source[nameNode.StartByte():nameNode.EndByte()])
 		if name != funcName {
 			continue
 		}
@@ -299,17 +316,17 @@ func removeParamInFile(file *forest.ParsedFile, funcName, paramName string) ([]b
 			continue
 		}
 
-		edit, found := removeParamFromParamsNode(file.OriginalSource, paramsNode, paramName)
+		edit, found := removeParamFromParamsNode(source, paramsNode, paramName)
 		if found {
 			edits = append(edits, edit)
 		}
 	}
 
 	if len(edits) == 0 {
-		return file.OriginalSource, nil
+		return source, nil
 	}
 
-	return rewrite.ApplyEdits(file.OriginalSource, edits), nil
+	return rewrite.ApplyEdits(source, edits), nil
 }
 
 // removeParamFromParamsNode locates paramName inside a Tree-sitter parameters
