@@ -96,10 +96,28 @@ func (h *Handler) handleParse(args map[string]any) (string, bool, error) {
 		h.model = m
 	}
 
-	// Build summary.
-	summary := h.model.SummaryByLanguage()
+	// Build summary from the store (avoids ForestSnapshot).
+	fileCount, err := h.model.Store.FileCount()
+	if err != nil {
+		return fmt.Sprintf("counting files: %v", err), true, nil
+	}
+	extSummary, err := h.model.Store.LanguageSummary()
+	if err != nil {
+		return fmt.Sprintf("language summary: %v", err), true, nil
+	}
+	// Map extensions to human-readable language names via adapters.
+	summary := make(map[string]int, len(extSummary))
+	for ext, count := range extSummary {
+		lang := ext
+		if adapter := adapters.ForExtension(ext); adapter != nil {
+			if id := adapter.LSPLanguageID(); id != "" {
+				lang = id
+			}
+		}
+		summary[lang] += count
+	}
 	var sb strings.Builder
-	fmt.Fprintf(&sb, "Parsed %d file(s) in %s\n", h.model.FileCount(), h.model.Root)
+	fmt.Fprintf(&sb, "Parsed %d file(s) in %s\n", fileCount, h.model.Root)
 	for lang, count := range summary {
 		fmt.Fprintf(&sb, "  %s: %d\n", lang, count)
 	}
@@ -132,32 +150,35 @@ func (h *Handler) handleRename(args map[string]any) (string, bool, error) {
 	var changes []forest.FileChange
 	var diffs []string
 
-	for _, file := range m.ForestSnapshot().Files {
-		if pathFilter != "" && !strings.Contains(file.Path, pathFilter) {
-			continue
-		}
+	accessors, err := m.FileAccessors(pathFilter)
+	if err != nil {
+		return fmt.Sprintf("listing files: %v", err), true, nil
+	}
 
-		newSource, err := rewrite.RenameInFile(file.OriginalSource, file.Tree, file.Adapter, from, to)
-		if err != nil {
-			return fmt.Sprintf("renaming in %s: %v", file.Path, err), true, nil
-		}
-
-		if string(newSource) == string(file.OriginalSource) {
-			continue
-		}
-
-		if format {
-			newSource, _ = rewrite.FormatSource(file.Adapter, newSource)
-		}
-
-		diff := rewrite.UnifiedDiff(file.Path, file.OriginalSource, newSource)
-		diffs = append(diffs, diff)
-
-		changes = append(changes, forest.FileChange{
-			Path:      file.Path,
-			Original:  file.OriginalSource,
-			NewSource: newSource,
+	for _, acc := range accessors {
+		err := acc.WithTree(func(source []byte, tree *tree_sitter.Tree) error {
+			newSource, rerr := rewrite.RenameInFile(source, tree, acc.Adapter(), from, to)
+			if rerr != nil {
+				return rerr
+			}
+			if string(newSource) == string(source) {
+				return nil
+			}
+			if format {
+				newSource, _ = rewrite.FormatSource(acc.Adapter(), newSource)
+			}
+			diff := rewrite.UnifiedDiff(acc.Path(), source, newSource)
+			diffs = append(diffs, diff)
+			changes = append(changes, forest.FileChange{
+				Path:      acc.Path(),
+				Original:  source,
+				NewSource: newSource,
+			})
+			return nil
 		})
+		if err != nil {
+			return fmt.Sprintf("renaming in %s: %v", acc.Path(), err), true, nil
+		}
 	}
 
 	if len(changes) == 0 {
@@ -203,15 +224,22 @@ func (h *Handler) handleQuery(args map[string]any) (string, bool, error) {
 	}
 
 	var results []forest.QueryResult
-	for _, file := range m.ForestSnapshot().Files {
-		if pathFilter != "" && !strings.Contains(file.Path, pathFilter) {
-			continue
-		}
-		fileResults, err := transform.QueryFile(file, matchSpec)
+	accessors, err := m.FileAccessors(pathFilter)
+	if err != nil {
+		return fmt.Sprintf("listing files: %v", err), true, nil
+	}
+	for _, acc := range accessors {
+		err := acc.WithTree(func(source []byte, tree *tree_sitter.Tree) error {
+			fileResults, qerr := transform.QuerySource(source, tree, acc.Adapter(), acc.Path(), matchSpec)
+			if qerr != nil {
+				return qerr
+			}
+			results = append(results, fileResults...)
+			return nil
+		})
 		if err != nil {
-			return fmt.Sprintf("querying %s: %v", file.Path, err), true, nil
+			return fmt.Sprintf("querying %s: %v", acc.Path(), err), true, nil
 		}
-		results = append(results, fileResults...)
 	}
 
 	if len(results) == 0 {
@@ -396,53 +424,60 @@ func applyTransformSpec(m *model.CodebaseModel, spec transformSpec, format bool)
 	var changes []forest.FileChange
 	var diffs []string
 
-	for _, file := range m.ForestSnapshot().Files {
-		if spec.Path != "" && !strings.Contains(file.Path, spec.Path) {
-			continue
-		}
+	accessors, err := m.FileAccessors(spec.Path)
+	if err != nil {
+		return nil, nil, fmt.Errorf("listing files: %w", err)
+	}
 
-		var newSource []byte
-		var err error
+	for _, acc := range accessors {
+		err := acc.WithTree(func(source []byte, tree *tree_sitter.Tree) error {
+			var newSource []byte
+			var terr error
 
-		if spec.TransformFn != "" {
-			// JS-based transform.
-			queryStr := ""
-			if matchSpec != nil {
-				queryStr, err = transform.ResolveQueryStr(file.Adapter, matchSpec)
-				if err != nil {
-					return nil, nil, fmt.Errorf("resolving query for %s: %w", file.Path, err)
+			if spec.TransformFn != "" {
+				// JS-based transform.
+				queryStr := ""
+				if matchSpec != nil {
+					queryStr, terr = transform.ResolveQueryStr(acc.Adapter(), matchSpec)
+					if terr != nil {
+						return fmt.Errorf("resolving query for %s: %w", acc.Path(), terr)
+					}
 				}
+				if queryStr == "" {
+					return nil
+				}
+				newSource, terr = jsengine.RunJSTransform(
+					source, tree, queryStr, spec.TransformFn, acc.Path(), acc.Adapter(),
+				)
+			} else {
+				// Declarative match/act transform.
+				newSource, terr = transform.TransformSource(source, tree, acc.Adapter(), acc.Path(), matchSpec, action)
 			}
-			if queryStr == "" {
-				continue
+
+			if terr != nil {
+				return fmt.Errorf("transforming %s: %w", acc.Path(), terr)
 			}
-			newSource, err = jsengine.RunJSTransform(
-				file.OriginalSource, file.Tree, queryStr, spec.TransformFn, file.Path, file.Adapter,
-			)
-		} else {
-			// Declarative match/act transform.
-			newSource, err = transform.TransformFile(file, matchSpec, action)
-		}
 
-		if err != nil {
-			return nil, nil, fmt.Errorf("transforming %s: %w", file.Path, err)
-		}
+			if string(newSource) == string(source) {
+				return nil
+			}
 
-		if string(newSource) == string(file.OriginalSource) {
-			continue
-		}
+			if format {
+				newSource, _ = rewrite.FormatSource(acc.Adapter(), newSource)
+			}
 
-		if format {
-			newSource, _ = rewrite.FormatSource(file.Adapter, newSource)
-		}
-
-		diff := rewrite.UnifiedDiff(file.Path, file.OriginalSource, newSource)
-		diffs = append(diffs, diff)
-		changes = append(changes, forest.FileChange{
-			Path:      file.Path,
-			Original:  file.OriginalSource,
-			NewSource: newSource,
+			diff := rewrite.UnifiedDiff(acc.Path(), source, newSource)
+			diffs = append(diffs, diff)
+			changes = append(changes, forest.FileChange{
+				Path:      acc.Path(),
+				Original:  source,
+				NewSource: newSource,
+			})
+			return nil
 		})
+		if err != nil {
+			return nil, nil, err
+		}
 	}
 
 	return changes, diffs, nil
@@ -546,66 +581,65 @@ func applyTransformSpecWithOverrides(
 	var changes []forest.FileChange
 	var diffs []string
 
-	for _, file := range m.ForestSnapshot().Files {
-		if spec.Path != "" && !strings.Contains(file.Path, spec.Path) {
-			continue
-		}
+	accessors, err := m.FileAccessors(spec.Path)
+	if err != nil {
+		return nil, nil, fmt.Errorf("listing files: %w", err)
+	}
 
-		// Use the overridden source if available.
-		currentSource := file.OriginalSource
-		if ov, ok := overrides[file.Path]; ok {
-			currentSource = ov
-		}
+	for _, acc := range accessors {
+		err := acc.WithTree(func(source []byte, tree *tree_sitter.Tree) error {
+			// Use the overridden source if available.
+			currentSource := source
+			if ov, ok := overrides[acc.Path()]; ok {
+				currentSource = ov
+			}
 
-		// Build a temporary file view with the overridden source.
-		tmpFile := &forest.ParsedFile{
-			Path:           file.Path,
-			OriginalSource: currentSource,
-			Tree:           file.Tree,
-			Adapter:        file.Adapter,
-		}
+			var newSource []byte
+			var terr error
 
-		var newSource []byte
-		var err error
-
-		if spec.TransformFn != "" {
-			queryStr := ""
-			if matchSpec != nil {
-				queryStr, err = transform.ResolveQueryStr(file.Adapter, matchSpec)
-				if err != nil {
-					return nil, nil, err
+			if spec.TransformFn != "" {
+				queryStr := ""
+				if matchSpec != nil {
+					queryStr, terr = transform.ResolveQueryStr(acc.Adapter(), matchSpec)
+					if terr != nil {
+						return terr
+					}
 				}
+				if queryStr == "" {
+					return nil
+				}
+				newSource, terr = jsengine.RunJSTransform(
+					currentSource, tree, queryStr, spec.TransformFn, acc.Path(), acc.Adapter(),
+				)
+			} else {
+				newSource, terr = transform.TransformSource(currentSource, tree, acc.Adapter(), acc.Path(), matchSpec, action)
 			}
-			if queryStr == "" {
-				continue
+
+			if terr != nil {
+				return fmt.Errorf("transforming %s: %w", acc.Path(), terr)
 			}
-			newSource, err = jsengine.RunJSTransform(
-				currentSource, file.Tree, queryStr, spec.TransformFn, file.Path, file.Adapter,
-			)
-		} else {
-			newSource, err = transform.TransformFile(tmpFile, matchSpec, action)
-		}
 
-		if err != nil {
-			return nil, nil, fmt.Errorf("transforming %s: %w", file.Path, err)
-		}
+			if string(newSource) == string(currentSource) {
+				return nil
+			}
 
-		if string(newSource) == string(currentSource) {
-			continue
-		}
+			if format {
+				newSource, _ = rewrite.FormatSource(acc.Adapter(), newSource)
+			}
 
-		if format {
-			newSource, _ = rewrite.FormatSource(file.Adapter, newSource)
-		}
-
-		// Diff against the original file (not the step-accumulated source).
-		diff := rewrite.UnifiedDiff(file.Path, file.OriginalSource, newSource)
-		diffs = append(diffs, diff)
-		changes = append(changes, forest.FileChange{
-			Path:      file.Path,
-			Original:  file.OriginalSource,
-			NewSource: newSource,
+			// Diff against the original file (not the step-accumulated source).
+			diff := rewrite.UnifiedDiff(acc.Path(), source, newSource)
+			diffs = append(diffs, diff)
+			changes = append(changes, forest.FileChange{
+				Path:      acc.Path(),
+				Original:  source,
+				NewSource: newSource,
+			})
+			return nil
 		})
+		if err != nil {
+			return nil, nil, err
+		}
 	}
 
 	return changes, diffs, nil
@@ -1208,31 +1242,35 @@ func (h *Handler) handleAddParameter(args map[string]any) (string, bool, error) 
 	var changes []forest.FileChange
 	var diffs []string
 
-	for _, file := range m.ForestSnapshot().Files {
-		if pathFilter != "" && !strings.Contains(file.Path, pathFilter) {
-			continue
-		}
+	accessors, err := m.FileAccessors(pathFilter)
+	if err != nil {
+		return fmt.Sprintf("listing files: %v", err), true, nil
+	}
 
-		newSource, err := addParamInFile(file, funcName, paramText, position)
-		if err != nil {
-			return fmt.Sprintf("adding param to %s: %v", file.Path, err), true, nil
-		}
-
-		if string(newSource) == string(file.OriginalSource) {
-			continue
-		}
-
-		if format {
-			newSource, _ = rewrite.FormatSource(file.Adapter, newSource)
-		}
-
-		diff := rewrite.UnifiedDiff(file.Path, file.OriginalSource, newSource)
-		diffs = append(diffs, diff)
-		changes = append(changes, forest.FileChange{
-			Path:      file.Path,
-			Original:  file.OriginalSource,
-			NewSource: newSource,
+	for _, acc := range accessors {
+		err := acc.WithTree(func(source []byte, tree *tree_sitter.Tree) error {
+			newSource, perr := addParamInSource(source, tree, acc.Adapter(), funcName, paramText, position)
+			if perr != nil {
+				return perr
+			}
+			if string(newSource) == string(source) {
+				return nil
+			}
+			if format {
+				newSource, _ = rewrite.FormatSource(acc.Adapter(), newSource)
+			}
+			diff := rewrite.UnifiedDiff(acc.Path(), source, newSource)
+			diffs = append(diffs, diff)
+			changes = append(changes, forest.FileChange{
+				Path:      acc.Path(),
+				Original:  source,
+				NewSource: newSource,
+			})
+			return nil
 		})
+		if err != nil {
+			return fmt.Sprintf("adding param to %s: %v", acc.Path(), err), true, nil
+		}
 	}
 
 	if len(changes) == 0 {
@@ -1275,31 +1313,35 @@ func (h *Handler) handleRemoveParameter(args map[string]any) (string, bool, erro
 	var changes []forest.FileChange
 	var diffs []string
 
-	for _, file := range m.ForestSnapshot().Files {
-		if pathFilter != "" && !strings.Contains(file.Path, pathFilter) {
-			continue
-		}
+	accessors, err := m.FileAccessors(pathFilter)
+	if err != nil {
+		return fmt.Sprintf("listing files: %v", err), true, nil
+	}
 
-		newSource, err := removeParamInFile(file, funcName, paramName)
-		if err != nil {
-			return fmt.Sprintf("removing param from %s: %v", file.Path, err), true, nil
-		}
-
-		if string(newSource) == string(file.OriginalSource) {
-			continue
-		}
-
-		if format {
-			newSource, _ = rewrite.FormatSource(file.Adapter, newSource)
-		}
-
-		diff := rewrite.UnifiedDiff(file.Path, file.OriginalSource, newSource)
-		diffs = append(diffs, diff)
-		changes = append(changes, forest.FileChange{
-			Path:      file.Path,
-			Original:  file.OriginalSource,
-			NewSource: newSource,
+	for _, acc := range accessors {
+		err := acc.WithTree(func(source []byte, tree *tree_sitter.Tree) error {
+			newSource, rerr := removeParamInSource(source, tree, acc.Adapter(), funcName, paramName)
+			if rerr != nil {
+				return rerr
+			}
+			if string(newSource) == string(source) {
+				return nil
+			}
+			if format {
+				newSource, _ = rewrite.FormatSource(acc.Adapter(), newSource)
+			}
+			diff := rewrite.UnifiedDiff(acc.Path(), source, newSource)
+			diffs = append(diffs, diff)
+			changes = append(changes, forest.FileChange{
+				Path:      acc.Path(),
+				Original:  source,
+				NewSource: newSource,
+			})
+			return nil
 		})
+		if err != nil {
+			return fmt.Sprintf("removing param from %s: %v", acc.Path(), err), true, nil
+		}
 	}
 
 	if len(changes) == 0 {
@@ -1342,10 +1384,14 @@ func (h *Handler) handleRenameFile(args map[string]any) (string, bool, error) {
 	absFrom := filepath.Join(root, from)
 	absTo := filepath.Join(root, to)
 
-	// Verify the source file exists in the forest.
+	// Verify the source file exists among tracked files.
+	allAccessors, err := m.FileAccessors("")
+	if err != nil {
+		return fmt.Sprintf("listing files: %v", err), true, nil
+	}
 	var found bool
-	for _, file := range m.ForestSnapshot().Files {
-		if file.Path == absFrom {
+	for _, acc := range allAccessors {
+		if acc.Path() == absFrom {
 			found = true
 			break
 		}
@@ -1358,95 +1404,97 @@ func (h *Handler) handleRenameFile(args map[string]any) (string, bool, error) {
 	var diffs []string
 
 	// Scan all files for imports that resolve to absFrom.
-	for _, file := range m.ForestSnapshot().Files {
-		importQuery := file.Adapter.ImportQuery()
+	for _, acc := range allAccessors {
+		importQuery := acc.Adapter().ImportQuery()
 		if importQuery == "" {
 			continue
 		}
 
-		query, qErr := tree_sitter.NewQuery(file.Adapter.Language(), importQuery)
-		if qErr != nil {
-			continue
-		}
-
-		// Find the @name capture index.
-		nameIdx := uint32(0)
-		nameFound := false
-		for i, name := range query.CaptureNames() {
-			if name == "name" {
-				nameIdx = uint32(i)
-				nameFound = true
-				break
+		err := acc.WithTree(func(source []byte, tree *tree_sitter.Tree) error {
+			query, qErr := tree_sitter.NewQuery(acc.Adapter().Language(), importQuery)
+			if qErr != nil {
+				return nil
 			}
-		}
-		if !nameFound {
+
+			// Find the @name capture index.
+			nameIdx := uint32(0)
+			nameFound := false
+			for i, name := range query.CaptureNames() {
+				if name == "name" {
+					nameIdx = uint32(i)
+					nameFound = true
+					break
+				}
+			}
+			if !nameFound {
+				query.Close()
+				return nil
+			}
+
+			cursor := tree_sitter.NewQueryCursor()
+			matches := cursor.Matches(query, tree.RootNode(), source)
+
+			var edits []rewrite.Edit
+			for match := matches.Next(); match != nil; match = matches.Next() {
+				for _, capture := range match.Captures {
+					if capture.Index != nameIdx {
+						continue
+					}
+					node := capture.Node
+					importText := string(source[node.StartByte():node.EndByte()])
+
+					resolved := acc.Adapter().ResolveImportPath(importText, acc.Path(), root)
+					if resolved == "" {
+						continue
+					}
+
+					absResolved := resolved
+					if !filepath.IsAbs(resolved) {
+						absResolved = filepath.Join(root, resolved)
+					}
+
+					if absResolved != absFrom {
+						continue
+					}
+
+					newImport := acc.Adapter().BuildImportPath(absTo, acc.Path(), root)
+					if newImport == "" {
+						continue
+					}
+
+					edits = append(edits, rewrite.Edit{
+						Start:       node.StartByte(),
+						End:         node.EndByte(),
+						Replacement: newImport,
+					})
+				}
+			}
+
+			cursor.Close()
 			query.Close()
-			continue
-		}
 
-		cursor := tree_sitter.NewQueryCursor()
-		matches := cursor.Matches(query, file.Tree.RootNode(), file.OriginalSource)
-
-		var edits []rewrite.Edit
-		for match := matches.Next(); match != nil; match = matches.Next() {
-			for _, capture := range match.Captures {
-				if capture.Index != nameIdx {
-					continue
-				}
-				node := capture.Node
-				importText := string(file.OriginalSource[node.StartByte():node.EndByte()])
-
-				resolved := file.Adapter.ResolveImportPath(importText, file.Path, root)
-				if resolved == "" {
-					continue
-				}
-
-				// ResolveImportPath may return absolute or relative paths
-				// depending on the adapter. Normalise to absolute for comparison.
-				absResolved := resolved
-				if !filepath.IsAbs(resolved) {
-					absResolved = filepath.Join(root, resolved)
-				}
-
-				if absResolved != absFrom {
-					continue
-				}
-
-				// This import references the file being renamed — compute the
-				// new import text.
-				newImport := file.Adapter.BuildImportPath(absTo, file.Path, root)
-				if newImport == "" {
-					continue
-				}
-
-				edits = append(edits, rewrite.Edit{
-					Start:       node.StartByte(),
-					End:         node.EndByte(),
-					Replacement: newImport,
-				})
+			if len(edits) == 0 {
+				return nil
 			}
-		}
 
-		cursor.Close()
-		query.Close()
+			newSource := rewrite.ApplyEdits(source, edits)
 
-		if len(edits) == 0 {
-			continue
-		}
+			if format {
+				newSource, _ = rewrite.FormatSource(acc.Adapter(), newSource)
+			}
 
-		newSource := rewrite.ApplyEdits(file.OriginalSource, edits)
-
-		if format {
-			newSource, _ = rewrite.FormatSource(file.Adapter, newSource)
-		}
-
-		diff := rewrite.UnifiedDiff(file.Path, file.OriginalSource, newSource)
-		diffs = append(diffs, diff)
-		changes = append(changes, forest.FileChange{
-			Path:      file.Path,
-			Original:  file.OriginalSource,
-			NewSource: newSource,
+			diff := rewrite.UnifiedDiff(acc.Path(), source, newSource)
+			diffs = append(diffs, diff)
+			changes = append(changes, forest.FileChange{
+				Path:      acc.Path(),
+				Original:  source,
+				NewSource: newSource,
+			})
+			return nil
 		})
+		if err != nil {
+			return fmt.Sprintf("scanning imports in %s: %v", acc.Path(), err), true, nil
+		}
 	}
 
 	renames := []FileRename{{From: absFrom, To: absTo}}
@@ -1507,11 +1555,10 @@ func (h *Handler) handleCloneAndAdapt(args map[string]any) (string, bool, error)
 	}
 
 	// Step 1: Extract source text.
-	sourceText, sourceFile, err := extractCloneSource(m, source)
+	sourceText, err := extractCloneSource(m, source)
 	if err != nil {
 		return err.Error(), true, nil
 	}
-	_ = sourceFile // used for future import propagation
 
 	// Step 2: Apply substitutions (longest keys first to avoid partial matches).
 	keys := make([]string, 0, len(subs))
@@ -1526,57 +1573,73 @@ func (h *Handler) handleCloneAndAdapt(args map[string]any) (string, bool, error)
 		clonedText = strings.ReplaceAll(clonedText, k, subs[k])
 	}
 
-	// Step 3: Find target file in the forest.
-	var targetPF *forest.ParsedFile
-	for _, file := range m.ForestSnapshot().Files {
-		if file.Path == targetFile || strings.HasSuffix(file.Path, targetFile) {
-			targetPF = file
+	// Step 3: Find target file among tracked files.
+	accessors, err := m.FileAccessors("")
+	if err != nil {
+		return fmt.Sprintf("listing files: %v", err), true, nil
+	}
+	var targetAcc *forest.FileAccessor
+	for _, acc := range accessors {
+		if acc.Path() == targetFile || strings.HasSuffix(acc.Path(), targetFile) {
+			targetAcc = acc
 			break
 		}
 	}
-	if targetPF == nil {
+	if targetAcc == nil {
 		return fmt.Sprintf("Target file %q not found in the parsed forest.", targetFile), true, nil
 	}
 
-	// Step 4: Determine insertion point.
-	insertOffset, err := resolveInsertPosition(targetPF, position)
+	// Step 4+5: Within WithTree, determine insertion point and build new source.
+	var changes []forest.FileChange
+	var diffs []string
+
+	err = targetAcc.WithTree(func(original []byte, tree *tree_sitter.Tree) error {
+		pf := &forest.ParsedFile{
+			Path:           targetAcc.Path(),
+			OriginalSource: original,
+			Tree:           tree,
+			Adapter:        targetAcc.Adapter(),
+		}
+		insertOffset, perr := resolveInsertPosition(pf, position)
+		if perr != nil {
+			return perr
+		}
+
+		var newSource []byte
+		prefix := "\n\n"
+		suffix := "\n"
+		if insertOffset == 0 {
+			prefix = ""
+			suffix = "\n\n"
+		}
+		newSource = make([]byte, 0, len(original)+len(clonedText)+4)
+		newSource = append(newSource, original[:insertOffset]...)
+		newSource = append(newSource, prefix...)
+		newSource = append(newSource, clonedText...)
+		newSource = append(newSource, suffix...)
+		newSource = append(newSource, original[insertOffset:]...)
+
+		if format {
+			newSource, _ = rewrite.FormatSource(targetAcc.Adapter(), newSource)
+		}
+
+		diff := rewrite.UnifiedDiff(targetAcc.Path(), original, newSource)
+		changes = append(changes, forest.FileChange{
+			Path:      targetAcc.Path(),
+			Original:  original,
+			NewSource: newSource,
+		})
+		diffs = append(diffs, diff)
+		return nil
+	})
 	if err != nil {
 		return err.Error(), true, nil
 	}
 
-	// Step 5: Build the new source with the cloned text inserted.
-	original := targetPF.OriginalSource
-	var newSource []byte
-	// Ensure the cloned text is separated by blank lines.
-	prefix := "\n\n"
-	suffix := "\n"
-	if insertOffset == 0 {
-		prefix = ""
-		suffix = "\n\n"
-	}
-	newSource = make([]byte, 0, len(original)+len(clonedText)+4)
-	newSource = append(newSource, original[:insertOffset]...)
-	newSource = append(newSource, prefix...)
-	newSource = append(newSource, clonedText...)
-	newSource = append(newSource, suffix...)
-	newSource = append(newSource, original[insertOffset:]...)
-
-	if format {
-		newSource, _ = rewrite.FormatSource(targetPF.Adapter, newSource)
-	}
-
-	diff := rewrite.UnifiedDiff(targetPF.Path, original, newSource)
-	changes := []forest.FileChange{{
-		Path:      targetPF.Path,
-		Original:  original,
-		NewSource: newSource,
-	}}
-	diffs := []string{diff}
-
 	h.pending = &PendingChanges{Changes: changes, Diffs: diffs}
 
 	var sb strings.Builder
-	fmt.Fprintf(&sb, "Cloned and adapted into %s. Call apply to write.\n", targetPF.Path)
+	fmt.Fprintf(&sb, "Cloned and adapted into %s. Call apply to write.\n", targetAcc.Path())
 	sb.WriteString("Note: You may need to add imports manually.\n\n")
 	for _, d := range diffs {
 		sb.WriteString(d)
@@ -1586,8 +1649,8 @@ func (h *Handler) handleCloneAndAdapt(args map[string]any) (string, bool, error)
 }
 
 // extractCloneSource extracts source text from either a file:line_range spec or
-// a symbol name search across the forest. Returns the text and the source file.
-func extractCloneSource(m *model.CodebaseModel, source string) (string, *forest.ParsedFile, error) {
+// a symbol name search across tracked files. Returns the extracted text.
+func extractCloneSource(m *model.CodebaseModel, source string) (string, error) {
 	// Check for file:start-end range syntax.
 	if idx := strings.LastIndex(source, ":"); idx > 0 {
 		filePart := source[:idx]
@@ -1596,36 +1659,60 @@ func extractCloneSource(m *model.CodebaseModel, source string) (string, *forest.
 			startLine, err1 := strconv.Atoi(rangePart[:dashIdx])
 			endLine, err2 := strconv.Atoi(rangePart[dashIdx+1:])
 			if err1 == nil && err2 == nil && startLine > 0 && endLine >= startLine {
-				// Find the file in the forest.
-				for _, file := range m.ForestSnapshot().Files {
-					if file.Path == filePart || strings.HasSuffix(file.Path, filePart) {
-						lines := strings.Split(string(file.OriginalSource), "\n")
+				accessors, err := m.FileAccessors("")
+				if err != nil {
+					return "", fmt.Errorf("listing files: %w", err)
+				}
+				for _, acc := range accessors {
+					if acc.Path() == filePart || strings.HasSuffix(acc.Path(), filePart) {
+						src, err := acc.Source()
+						if err != nil {
+							return "", fmt.Errorf("reading %s: %w", acc.Path(), err)
+						}
+						lines := strings.Split(string(src), "\n")
 						if startLine > len(lines) {
-							return "", nil, fmt.Errorf("start line %d exceeds file length %d", startLine, len(lines))
+							return "", fmt.Errorf("start line %d exceeds file length %d", startLine, len(lines))
 						}
 						if endLine > len(lines) {
 							endLine = len(lines)
 						}
-						// Lines are 1-based.
 						text := strings.Join(lines[startLine-1:endLine], "\n")
-						return text, file, nil
+						return text, nil
 					}
 				}
-				return "", nil, fmt.Errorf("file %q not found in the parsed forest", filePart)
+				return "", fmt.Errorf("file %q not found in the parsed forest", filePart)
 			}
 		}
 	}
 
 	// Treat source as a symbol name — search all files for a matching
 	// function or type definition.
-	for _, file := range m.ForestSnapshot().Files {
-		text, found := findSymbolNode(file, source)
+	accessors, err := m.FileAccessors("")
+	if err != nil {
+		return "", fmt.Errorf("listing files: %w", err)
+	}
+	for _, acc := range accessors {
+		var text string
+		var found bool
+		err := acc.WithTree(func(src []byte, tree *tree_sitter.Tree) error {
+			pf := &forest.ParsedFile{
+				Path:           acc.Path(),
+				OriginalSource: src,
+				Tree:           tree,
+				Adapter:        acc.Adapter(),
+			}
+			text, found = findSymbolNode(pf, source)
+			return nil
+		})
+		if err != nil {
+			return "", err
+		}
 		if found {
-			return text, file, nil
+			return text, nil
 		}
 	}
 
-	return "", nil, fmt.Errorf("symbol %q not found in any parsed file", source)
+	return "", fmt.Errorf("symbol %q not found in any parsed file", source)
 }
 
 // findSymbolNode searches a single file for a function or type definition with
@@ -2057,47 +2144,57 @@ func (h *Handler) handleDependencyUsage(args map[string]any) (string, bool, erro
 	var exposures []depPublicExposure
 	importCount := 0
 
-	for _, file := range m.ForestSnapshot().Files {
-		if pathFilter != "" && !strings.Contains(file.Path, pathFilter) {
-			continue
-		}
+	accessors, err := m.FileAccessors(pathFilter)
+	if err != nil {
+		return fmt.Sprintf("listing files: %v", err), true, nil
+	}
 
-		importQuery := file.Adapter.ImportQuery()
+	for _, acc := range accessors {
+		importQuery := acc.Adapter().ImportQuery()
 		if importQuery == "" {
 			continue
 		}
 
-		// --- Step 1: find imports matching the target package ---
-		alias, found := depFindImport(file, importQuery, pkg, localName)
-		if !found {
-			continue
-		}
+		err := acc.WithTree(func(source []byte, tree *tree_sitter.Tree) error {
+			pf := &forest.ParsedFile{
+				Path:           acc.Path(),
+				OriginalSource: source,
+				Tree:           tree,
+				Adapter:        acc.Adapter(),
+			}
 
-		importCount++
+			// --- Step 1: find imports matching the target package ---
+			alias, found := depFindImport(pf, importQuery, pkg, localName)
+			if !found {
+				return nil
+			}
 
-		if alias == "_" {
-			// Side-effect import — no symbols to track.
-			continue
-		}
+			importCount++
 
-		// --- Step 2: find qualified access (alias.Symbol) ---
-		localAlias := alias
-		if localAlias == "" {
-			localAlias = localName
-		}
+			if alias == "_" {
+				return nil
+			}
 
-		if localAlias != "." {
-			// Qualified access: localAlias.Symbol
-			depCollectQualifiedAccess(file, localAlias, symbolUsage)
-		} else {
-			// Dot import: all identifiers could be from the package;
-			// we cannot attribute them without LSP.
-			depNoteDirectImport(file, symbolUsage)
-		}
+			// --- Step 2: find qualified access (alias.Symbol) ---
+			localAlias := alias
+			if localAlias == "" {
+				localAlias = localName
+			}
 
-		// --- Step 3: public API exposure ---
-		if localAlias != "." && localAlias != "_" {
-			depCollectPublicExposure(file, localAlias, &exposures)
+			if localAlias != "." {
+				depCollectQualifiedAccess(pf, localAlias, symbolUsage)
+			} else {
+				depNoteDirectImport(pf, symbolUsage)
+			}
+
+			// --- Step 3: public API exposure ---
+			if localAlias != "." && localAlias != "_" {
+				depCollectPublicExposure(pf, localAlias, &exposures)
+			}
+			return nil
+		})
+		if err != nil {
+			return fmt.Sprintf("scanning %s: %v", acc.Path(), err), true, nil
 		}
 	}
 
@@ -2530,32 +2627,42 @@ func (h *Handler) handleAddField(args map[string]any) (string, bool, error) {
 	var changes []forest.FileChange
 	var diffs []string
 
-	for _, file := range m.ForestSnapshot().Files {
-		if pathFilter != "" && !strings.Contains(file.Path, pathFilter) {
-			continue
-		}
+	accessors, err := m.FileAccessors(pathFilter)
+	if err != nil {
+		return fmt.Sprintf("listing files: %v", err), true, nil
+	}
 
-		edits := collectAddFieldEdits(file, typeName, fieldName, fieldType, defaultValue)
-		if len(edits) == 0 {
-			continue
-		}
-
-		newSource := rewrite.ApplyEdits(file.OriginalSource, edits)
-		if string(newSource) == string(file.OriginalSource) {
-			continue
-		}
-
-		if format {
-			newSource, _ = rewrite.FormatSource(file.Adapter, newSource)
-		}
-
-		diff := rewrite.UnifiedDiff(file.Path, file.OriginalSource, newSource)
-		diffs = append(diffs, diff)
-		changes = append(changes, forest.FileChange{
-			Path:      file.Path,
-			Original:  file.OriginalSource,
-			NewSource: newSource,
+	for _, acc := range accessors {
+		err := acc.WithTree(func(source []byte, tree *tree_sitter.Tree) error {
+			pf := &forest.ParsedFile{
+				Path:           acc.Path(),
+				OriginalSource: source,
+				Tree:           tree,
+				Adapter:        acc.Adapter(),
+			}
+			edits := collectAddFieldEdits(pf, typeName, fieldName, fieldType, defaultValue)
+			if len(edits) == 0 {
+				return nil
+			}
+			newSource := rewrite.ApplyEdits(source, edits)
+			if string(newSource) == string(source) {
+				return nil
+			}
+			if format {
+				newSource, _ = rewrite.FormatSource(acc.Adapter(), newSource)
+			}
+			diff := rewrite.UnifiedDiff(acc.Path(), source, newSource)
+			diffs = append(diffs, diff)
+			changes = append(changes, forest.FileChange{
+				Path:      acc.Path(),
+				Original:  source,
+				NewSource: newSource,
+			})
+			return nil
 		})
+		if err != nil {
+			return fmt.Sprintf("adding field to %s: %v", acc.Path(), err), true, nil
+		}
 	}
 
 	if len(changes) == 0 {
@@ -2603,32 +2710,42 @@ func (h *Handler) handleMigrateType(args map[string]any) (string, bool, error) {
 	var changes []forest.FileChange
 	var diffs []string
 
-	for _, file := range m.ForestSnapshot().Files {
-		if pathFilter != "" && !strings.Contains(file.Path, pathFilter) {
-			continue
-		}
+	accessors, err := m.FileAccessors(pathFilter)
+	if err != nil {
+		return fmt.Sprintf("listing files: %v", err), true, nil
+	}
 
-		edits := migrateTypeInFile(file, typeName, rules)
-		if len(edits) == 0 {
-			continue
-		}
-
-		newSource := rewrite.ApplyEdits(file.OriginalSource, edits)
-		if string(newSource) == string(file.OriginalSource) {
-			continue
-		}
-
-		if format {
-			newSource, _ = rewrite.FormatSource(file.Adapter, newSource)
-		}
-
-		diff := rewrite.UnifiedDiff(file.Path, file.OriginalSource, newSource)
-		diffs = append(diffs, diff)
-		changes = append(changes, forest.FileChange{
-			Path:      file.Path,
-			Original:  file.OriginalSource,
-			NewSource: newSource,
+	for _, acc := range accessors {
+		err := acc.WithTree(func(source []byte, tree *tree_sitter.Tree) error {
+			pf := &forest.ParsedFile{
+				Path:           acc.Path(),
+				OriginalSource: source,
+				Tree:           tree,
+				Adapter:        acc.Adapter(),
+			}
+			edits := migrateTypeInFile(pf, typeName, rules)
+			if len(edits) == 0 {
+				return nil
+			}
+			newSource := rewrite.ApplyEdits(source, edits)
+			if string(newSource) == string(source) {
+				return nil
+			}
+			if format {
+				newSource, _ = rewrite.FormatSource(acc.Adapter(), newSource)
+			}
+			diff := rewrite.UnifiedDiff(acc.Path(), source, newSource)
+			diffs = append(diffs, diff)
+			changes = append(changes, forest.FileChange{
+				Path:      acc.Path(),
+				Original:  source,
+				NewSource: newSource,
+			})
+			return nil
 		})
+		if err != nil {
+			return fmt.Sprintf("migrating type in %s: %v", acc.Path(), err), true, nil
+		}
 	}
 
 	if len(changes) == 0 {
