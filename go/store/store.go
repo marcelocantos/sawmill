@@ -85,6 +85,8 @@ func (s *Store) init() error {
 	_, err := s.db.Exec(`
 		PRAGMA journal_mode=WAL;
 		PRAGMA foreign_keys=ON;
+		PRAGMA cache_size=-16000;
+		PRAGMA mmap_size=268435456;
 
 		CREATE TABLE IF NOT EXISTS files (
 			path TEXT PRIMARY KEY,
@@ -142,6 +144,8 @@ func (s *Store) init() error {
 		CREATE INDEX IF NOT EXISTS idx_symbols_name ON symbols(name);
 		CREATE INDEX IF NOT EXISTS idx_symbols_file ON symbols(file_path);
 		CREATE INDEX IF NOT EXISTS idx_symbols_kind ON symbols(kind);
+
+		CREATE INDEX IF NOT EXISTS idx_files_language ON files(language);
 
 		CREATE TABLE IF NOT EXISTS recipes (
 			name TEXT PRIMARY KEY,
