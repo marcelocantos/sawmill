@@ -316,7 +316,7 @@ func (m *CodebaseModel) parseAndIndexFile(path string) (*forest.ParsedFile, erro
 		Adapter:        adapter,
 	}
 
-	_ = m.Store.UpsertFile(path, ext, mtime, contentHash)
+	_ = m.Store.UpsertFile(path, ext, mtime, contentHash, source)
 	symbols := index.ExtractSymbols(parsed)
 	records := symbolsToRecords(symbols, path)
 	_ = m.Store.UpdateSymbols(path, records)
@@ -386,7 +386,7 @@ func incrementalParse(root string, s *store.Store) (*forest.Forest, error) {
 		}
 
 		if !isCached {
-			_ = s.UpsertFile(path, ext, mtime, contentHash)
+			_ = s.UpsertFile(path, ext, mtime, contentHash, source)
 			symbols := index.ExtractSymbols(parsed)
 			records := symbolsToRecords(symbols, path)
 			_ = s.UpdateSymbols(path, records)

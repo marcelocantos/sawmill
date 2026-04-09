@@ -92,7 +92,39 @@ func (s *Store) init() error {
 			mtime_secs INTEGER NOT NULL,
 			mtime_nanos INTEGER NOT NULL,
 			content_hash TEXT NOT NULL
-		);
+		);`)
+	if err != nil {
+		return fmt.Errorf("initialising store schema: %w", err)
+	}
+
+	// Migration: add source column if it doesn't exist yet.
+	var hasSource bool
+	rows, err := s.db.Query("PRAGMA table_info(files)")
+	if err != nil {
+		return fmt.Errorf("checking files schema: %w", err)
+	}
+	for rows.Next() {
+		var cid int
+		var name, typ string
+		var notnull int
+		var dflt sql.NullString
+		var pk int
+		if err := rows.Scan(&cid, &name, &typ, &notnull, &dflt, &pk); err != nil {
+			rows.Close()
+			return fmt.Errorf("scanning table_info: %w", err)
+		}
+		if name == "source" {
+			hasSource = true
+		}
+	}
+	rows.Close()
+	if !hasSource {
+		if _, err := s.db.Exec("ALTER TABLE files ADD COLUMN source BLOB"); err != nil {
+			return fmt.Errorf("adding source column: %w", err)
+		}
+	}
+
+	_, err = s.db.Exec(`
 
 		CREATE TABLE IF NOT EXISTS symbols (
 			id INTEGER PRIMARY KEY,
@@ -161,23 +193,79 @@ func (s *Store) CheckFile(path string, mtime time.Time) (string, error) {
 	return hash, nil
 }
 
-// UpsertFile records a parsed file's metadata.
-func (s *Store) UpsertFile(path, language string, mtime time.Time, contentHash string) error {
+// UpsertFile records a parsed file's metadata and source bytes.
+func (s *Store) UpsertFile(path, language string, mtime time.Time, contentHash string, source []byte) error {
 	secs, nanos := splitMtime(mtime)
 	_, err := s.db.Exec(
-		`INSERT INTO files (path, language, mtime_secs, mtime_nanos, content_hash)
-		 VALUES (?, ?, ?, ?, ?)
+		`INSERT INTO files (path, language, mtime_secs, mtime_nanos, content_hash, source)
+		 VALUES (?, ?, ?, ?, ?, ?)
 		 ON CONFLICT(path) DO UPDATE SET
 			language = excluded.language,
 			mtime_secs = excluded.mtime_secs,
 			mtime_nanos = excluded.mtime_nanos,
-			content_hash = excluded.content_hash`,
-		path, language, secs, nanos, contentHash,
+			content_hash = excluded.content_hash,
+			source = excluded.source`,
+		path, language, secs, nanos, contentHash, source,
 	)
 	if err != nil {
 		return fmt.Errorf("upserting file %s: %w", path, err)
 	}
 	return nil
+}
+
+// ReadSource returns the stored source bytes for a file.
+func (s *Store) ReadSource(path string) ([]byte, error) {
+	var source []byte
+	err := s.db.QueryRow("SELECT source FROM files WHERE path = ?", path).Scan(&source)
+	if err == sql.ErrNoRows {
+		return nil, fmt.Errorf("file %s not found in store", path)
+	}
+	if err != nil {
+		return nil, fmt.Errorf("reading source for %s: %w", path, err)
+	}
+	return source, nil
+}
+
+// FileLanguage returns the stored language extension for a file.
+func (s *Store) FileLanguage(path string) (string, error) {
+	var lang string
+	err := s.db.QueryRow("SELECT language FROM files WHERE path = ?", path).Scan(&lang)
+	if err == sql.ErrNoRows {
+		return "", fmt.Errorf("file %s not found in store", path)
+	}
+	if err != nil {
+		return "", fmt.Errorf("reading language for %s: %w", path, err)
+	}
+	return lang, nil
+}
+
+// LanguageSummary returns a map of language -> file count from the store.
+func (s *Store) LanguageSummary() (map[string]int, error) {
+	rows, err := s.db.Query("SELECT language, COUNT(*) FROM files GROUP BY language")
+	if err != nil {
+		return nil, fmt.Errorf("querying language summary: %w", err)
+	}
+	defer rows.Close()
+	summary := make(map[string]int)
+	for rows.Next() {
+		var lang string
+		var count int
+		if err := rows.Scan(&lang, &count); err != nil {
+			return nil, fmt.Errorf("scanning language summary: %w", err)
+		}
+		summary[lang] = count
+	}
+	return summary, rows.Err()
+}
+
+// FileCount returns the total number of tracked files.
+func (s *Store) FileCount() (int, error) {
+	var count int
+	err := s.db.QueryRow("SELECT COUNT(*) FROM files").Scan(&count)
+	if err != nil {
+		return 0, fmt.Errorf("counting files: %w", err)
+	}
+	return count, nil
 }
 
 // RemoveFile removes a file and its symbols (via ON DELETE CASCADE).
