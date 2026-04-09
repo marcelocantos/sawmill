@@ -296,6 +296,32 @@ func (s *Store) TrackedFiles() ([]string, error) {
 	return paths, rows.Err()
 }
 
+// TrackedFileRecord is the metadata for a tracked file, without source bytes.
+type TrackedFileRecord struct {
+	Path        string
+	Language    string
+	ContentHash string
+}
+
+// TrackedFilesWithMeta returns metadata for all tracked files.
+func (s *Store) TrackedFilesWithMeta() ([]TrackedFileRecord, error) {
+	rows, err := s.db.Query("SELECT path, language, content_hash FROM files ORDER BY path")
+	if err != nil {
+		return nil, fmt.Errorf("listing tracked files: %w", err)
+	}
+	defer rows.Close()
+
+	var records []TrackedFileRecord
+	for rows.Next() {
+		var r TrackedFileRecord
+		if err := rows.Scan(&r.Path, &r.Language, &r.ContentHash); err != nil {
+			return nil, fmt.Errorf("scanning tracked file: %w", err)
+		}
+		records = append(records, r)
+	}
+	return records, rows.Err()
+}
+
 // --- Symbols ---
 
 // UpdateSymbols clears and re-inserts symbols for a file.

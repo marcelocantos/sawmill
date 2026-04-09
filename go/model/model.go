@@ -42,6 +42,8 @@ type CodebaseModel struct {
 	Store *store.Store
 	// LSP is the pool of language server clients (may be nil).
 	LSP *lspclient.Pool
+	// Cache holds recently-parsed trees for on-demand access.
+	Cache *forest.TreeCache
 
 	// forest is owned exclusively by the manager goroutine. Never access
 	// directly from handlers — use ForestSnapshot().
@@ -99,6 +101,7 @@ func Load(root string) (*CodebaseModel, error) {
 		Root:      absRoot,
 		Store:     s,
 		LSP:       lspclient.NewPool(),
+		Cache:     forest.NewTreeCache(forest.DefaultCacheSize),
 		forest:    f,
 		w:         w,
 		events:    events,
@@ -136,7 +139,7 @@ func LoadEphemeral(root string) (*CodebaseModel, error) {
 		_ = s.UpdateSymbols(file.Path, records)
 	}
 
-	return &CodebaseModel{Root: absRoot, Store: s, LSP: lspclient.NewPool(), forest: f}, nil
+	return &CodebaseModel{Root: absRoot, Store: s, LSP: lspclient.NewPool(), Cache: forest.NewTreeCache(forest.DefaultCacheSize), forest: f}, nil
 }
 
 // Close stops the manager goroutine, the file watcher, LSP clients, and the
@@ -149,10 +152,38 @@ func (m *CodebaseModel) Close() error {
 	if m.LSP != nil {
 		m.LSP.Close()
 	}
+	if m.Cache != nil {
+		m.Cache.Clear()
+	}
 	if m.w != nil {
 		_ = m.w.Close()
 	}
 	return m.Store.Close()
+}
+
+// FileAccessors returns a FileAccessor for each tracked file, optionally
+// filtered by a path substring. These accessors load source from SQLite and
+// parse trees on demand via the cache.
+func (m *CodebaseModel) FileAccessors(pathFilter string) ([]*forest.FileAccessor, error) {
+	records, err := m.Store.TrackedFilesWithMeta()
+	if err != nil {
+		return nil, err
+	}
+
+	var accessors []*forest.FileAccessor
+	for _, rec := range records {
+		if pathFilter != "" && !strings.Contains(rec.Path, pathFilter) {
+			continue
+		}
+		adapter := adapters.ForExtension(rec.Language)
+		if adapter == nil {
+			continue
+		}
+		accessors = append(accessors, forest.NewFileAccessor(
+			rec.Path, rec.Language, rec.ContentHash, adapter, m.Store, m.Cache,
+		))
+	}
+	return accessors, nil
 }
 
 // ForestSnapshot returns a point-in-time snapshot of the parsed forest. The
@@ -237,6 +268,9 @@ func (m *CodebaseModel) runManager() {
 
 // reparse re-parses a single file and updates the forest and store.
 func (m *CodebaseModel) reparse(path string) {
+	if m.Cache != nil {
+		m.Cache.Evict(path)
+	}
 	parsed, err := m.parseAndIndexFile(path)
 	if err != nil || parsed == nil {
 		return
@@ -258,6 +292,9 @@ func (m *CodebaseModel) reparse(path string) {
 func (m *CodebaseModel) applyEvent(ev watcher.FileEvent) {
 	switch ev.Kind {
 	case watcher.Removed:
+		if m.Cache != nil {
+			m.Cache.Evict(ev.Path)
+		}
 		// Allocate a new slice — outstanding snapshots hold references to
 		// the old backing array.
 		newFiles := make([]*forest.ParsedFile, 0, len(m.forest.Files))
