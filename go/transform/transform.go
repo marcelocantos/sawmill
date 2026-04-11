@@ -132,29 +132,53 @@ func resolveAbstractQuery(adapter adapters.LanguageAdapter, kind, name string) (
 // TransformFile finds all nodes matching matchSpec in file and applies action,
 // returning the transformed source bytes.
 func TransformFile(file *forest.ParsedFile, matchSpec *Match, action *Action) ([]byte, error) {
-	edits, err := collectEdits(file, matchSpec, action)
+	return TransformSource(file.OriginalSource, file.Tree, file.Adapter, file.Path, matchSpec, action)
+}
+
+// TransformSource is the decomposed form of TransformFile that accepts raw
+// source, tree, and adapter. Use this with FileAccessor.WithTree.
+func TransformSource(
+	source []byte,
+	tree *tree_sitter.Tree,
+	adapter adapters.LanguageAdapter,
+	path string,
+	matchSpec *Match,
+	action *Action,
+) ([]byte, error) {
+	edits, err := collectEditsFromParts(source, tree, adapter, path, matchSpec, action)
 	if err != nil {
 		return nil, err
 	}
 	if len(edits) == 0 {
-		return file.OriginalSource, nil
+		return source, nil
 	}
-	return applyEdits(file.OriginalSource, edits)
+	return applyEdits(source, edits)
 }
 
 // QueryFile finds all nodes matching matchSpec in file and returns query
 // results without making any edits.
 func QueryFile(file *forest.ParsedFile, matchSpec *Match) ([]forest.QueryResult, error) {
-	queryStr, captureName, err := resolveMatchSpec(file, matchSpec)
+	return QuerySource(file.OriginalSource, file.Tree, file.Adapter, file.Path, matchSpec)
+}
+
+// QuerySource is the decomposed form of QueryFile that accepts raw source,
+// tree, and adapter.
+func QuerySource(
+	source []byte,
+	tree *tree_sitter.Tree,
+	adapter adapters.LanguageAdapter,
+	path string,
+	matchSpec *Match,
+) ([]forest.QueryResult, error) {
+	queryStr, captureName, err := resolveMatchSpecFromParts(adapter, path, matchSpec)
 	if err != nil {
 		return nil, err
 	}
 	if queryStr == "" {
-		// File filter didn't match.
 		return nil, nil
 	}
 
-	lang := file.Adapter.Language()
+	lang := adapter.Language()
 	query, qErr := tree_sitter.NewQuery(lang, queryStr)
 	if qErr != nil {
 		return nil, fmt.Errorf("compiling query %q: %v", queryStr, qErr)
@@ -169,7 +193,7 @@ func QueryFile(file *forest.ParsedFile, matchSpec *Match) ([]forest.QueryResult,
 	cursor := tree_sitter.NewQueryCursor()
 	defer cursor.Close()
 
-	matches := cursor.Matches(query, file.Tree.RootNode(), file.OriginalSource)
+	matches := cursor.Matches(query, tree.RootNode(), source)
 
 	var results []forest.QueryResult
 	for match := matches.Next(); match != nil; match = matches.Next() {
@@ -181,18 +205,18 @@ func QueryFile(file *forest.ParsedFile, matchSpec *Match) ([]forest.QueryResult,
 		nameText := ""
 		if nameIdx >= 0 {
 			if nameNode := findCapture(match.Captures, uint32(nameIdx)); nameNode != nil {
-				nameText = string(file.OriginalSource[nameNode.StartByte():nameNode.EndByte()])
+				nameText = string(source[nameNode.StartByte():nameNode.EndByte()])
 			}
 		}
 
-		text := string(file.OriginalSource[targetNode.StartByte():targetNode.EndByte()])
+		text := string(source[targetNode.StartByte():targetNode.EndByte()])
 		if len(text) > 200 {
 			text = text[:200] + "..."
 		}
 
 		startPos := targetNode.StartPosition()
 		results = append(results, forest.QueryResult{
-			Path:      file.Path,
+			Path:      path,
 			StartLine: uint(startPos.Row) + 1,
 			StartCol:  uint(startPos.Column) + 1,
 			Kind:      targetNode.Kind(),
@@ -206,7 +230,19 @@ func QueryFile(file *forest.ParsedFile, matchSpec *Match) ([]forest.QueryResult,
 
 // collectEdits runs the query and builds the list of edits to apply.
 func collectEdits(file *forest.ParsedFile, matchSpec *Match, action *Action) ([]rewrite.Edit, error) {
-	queryStr, captureName, err := resolveMatchSpec(file, matchSpec)
+	return collectEditsFromParts(file.OriginalSource, file.Tree, file.Adapter, file.Path, matchSpec, action)
+}
+
+// collectEditsFromParts is the decomposed form of collectEdits.
+func collectEditsFromParts(
+	source []byte,
+	tree *tree_sitter.Tree,
+	adapter adapters.LanguageAdapter,
+	path string,
+	matchSpec *Match,
+	action *Action,
+) ([]rewrite.Edit, error) {
+	queryStr, captureName, err := resolveMatchSpecFromParts(adapter, path, matchSpec)
 	if err != nil {
 		return nil, err
 	}
@@ -214,7 +250,7 @@ func collectEdits(file *forest.ParsedFile, matchSpec *Match, action *Action) ([]
 		return nil, nil
 	}
 
-	lang := file.Adapter.Language()
+	lang := adapter.Language()
 	query, qErr := tree_sitter.NewQuery(lang, queryStr)
 	if qErr != nil {
 		return nil, fmt.Errorf("compiling query %q: %v", queryStr, qErr)
@@ -229,7 +265,7 @@ func collectEdits(file *forest.ParsedFile, matchSpec *Match, action *Action) ([]
 	cursor := tree_sitter.NewQueryCursor()
 	defer cursor.Close()
 
-	matches := cursor.Matches(query, file.Tree.RootNode(), file.OriginalSource)
+	matches := cursor.Matches(query, tree.RootNode(), source)
 
 	var edits []rewrite.Edit
 	for match := matches.Next(); match != nil; match = matches.Next() {
@@ -243,7 +279,7 @@ func collectEdits(file *forest.ParsedFile, matchSpec *Match, action *Action) ([]
 			nameNode = findCapture(match.Captures, uint32(nameIdx))
 		}
 
-		edit, err := makeEdit(file.OriginalSource, targetNode, nameNode, action)
+		edit, err := makeEdit(source, targetNode, nameNode, action)
 		if err != nil {
 			return nil, err
 		}
@@ -252,7 +288,6 @@ func collectEdits(file *forest.ParsedFile, matchSpec *Match, action *Action) ([]
 		}
 	}
 
-	// Sort by start position ascending for apply_edits.
 	sortEdits(edits)
 	return edits, nil
 }
@@ -261,13 +296,18 @@ func collectEdits(file *forest.ParsedFile, matchSpec *Match, action *Action) ([]
 // Match, applying any file-path filter. Returns ("", "", nil) when the file
 // filter excludes this file.
 func resolveMatchSpec(file *forest.ParsedFile, matchSpec *Match) (queryStr, captureName string, err error) {
+	return resolveMatchSpecFromParts(file.Adapter, file.Path, matchSpec)
+}
+
+// resolveMatchSpecFromParts is the decomposed form of resolveMatchSpec.
+func resolveMatchSpecFromParts(adapter adapters.LanguageAdapter, path string, matchSpec *Match) (queryStr, captureName string, err error) {
 	if matchSpec.IsRaw {
 		return matchSpec.RawQuery, matchSpec.Capture, nil
 	}
-	if matchSpec.File != "" && !strings.Contains(file.Path, matchSpec.File) {
+	if matchSpec.File != "" && !strings.Contains(path, matchSpec.File) {
 		return "", "", nil
 	}
-	q, err := resolveAbstractQuery(file.Adapter, matchSpec.Kind, matchSpec.Name)
+	q, err := resolveAbstractQuery(adapter, matchSpec.Kind, matchSpec.Name)
 	return q, "", err
 }
 

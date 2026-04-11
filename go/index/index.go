@@ -11,6 +11,7 @@ package index
 import (
 	tree_sitter "github.com/tree-sitter/go-tree-sitter"
 
+	"github.com/marcelocantos/sawmill/adapters"
 	"github.com/marcelocantos/sawmill/forest"
 )
 
@@ -38,25 +39,31 @@ type Symbol struct {
 // ExtractSymbols runs function_def, type_def, import, and call queries against
 // the file and returns all symbols found.
 func ExtractSymbols(file *forest.ParsedFile) []Symbol {
+	return ExtractSymbolsFromParts(file.OriginalSource, file.Tree, file.Adapter, file.Path)
+}
+
+// ExtractSymbolsFromParts is the decomposed form of ExtractSymbols that accepts
+// raw source, tree, adapter, and path. Use this with FileAccessor.WithTree.
+func ExtractSymbolsFromParts(
+	source []byte,
+	tree *tree_sitter.Tree,
+	adapter adapters.LanguageAdapter,
+	filePath string,
+) []Symbol {
 	var symbols []Symbol
-	filePath := file.Path
 
-	// Functions.
-	extractWithQuery(file, "function", file.Adapter.FunctionDefQuery(), filePath, &symbols)
+	extractFromParts(source, tree, adapter, "function", adapter.FunctionDefQuery(), filePath, &symbols)
 
-	// Types (only if the adapter supplies a query).
-	if q := file.Adapter.TypeDefQuery(); q != "" {
-		extractWithQuery(file, "type", q, filePath, &symbols)
+	if q := adapter.TypeDefQuery(); q != "" {
+		extractFromParts(source, tree, adapter, "type", q, filePath, &symbols)
 	}
 
-	// Imports.
-	if q := file.Adapter.ImportQuery(); q != "" {
-		extractWithQuery(file, "import", q, filePath, &symbols)
+	if q := adapter.ImportQuery(); q != "" {
+		extractFromParts(source, tree, adapter, "import", q, filePath, &symbols)
 	}
 
-	// Calls.
-	if q := file.Adapter.CallExprQuery(); q != "" {
-		extractWithQuery(file, "call", q, filePath, &symbols)
+	if q := adapter.CallExprQuery(); q != "" {
+		extractFromParts(source, tree, adapter, "call", q, filePath, &symbols)
 	}
 
 	return symbols
@@ -68,14 +75,24 @@ var wholeCaptureNames = []string{"func", "call", "type_def", "import"}
 // extractWithQuery runs a single query against file and appends discovered
 // symbols to *out.
 func extractWithQuery(file *forest.ParsedFile, kind, queryStr, filePath string, out *[]Symbol) {
+	extractFromParts(file.OriginalSource, file.Tree, file.Adapter, kind, queryStr, filePath, out)
+}
+
+// extractFromParts is the decomposed form of extractWithQuery.
+func extractFromParts(
+	source []byte,
+	tree *tree_sitter.Tree,
+	adapter adapters.LanguageAdapter,
+	kind, queryStr, filePath string,
+	out *[]Symbol,
+) {
 	if queryStr == "" {
 		return
 	}
 
-	lang := file.Adapter.Language()
+	lang := adapter.Language()
 	query, qErr := tree_sitter.NewQuery(lang, queryStr)
 	if qErr != nil {
-		// Skip — query doesn't compile for this grammar variant.
 		return
 	}
 	defer query.Close()
@@ -92,11 +109,9 @@ func extractWithQuery(file *forest.ParsedFile, kind, queryStr, filePath string, 
 
 	nameIdx := indexOf("name")
 	if nameIdx < 0 {
-		// No @name capture — nothing to index.
 		return
 	}
 
-	// Find the "whole node" capture; fall back to @name itself.
 	wholeIdx := nameIdx
 	for _, candidate := range wholeCaptureNames {
 		if idx := indexOf(candidate); idx >= 0 {
@@ -108,7 +123,7 @@ func extractWithQuery(file *forest.ParsedFile, kind, queryStr, filePath string, 
 	cursor := tree_sitter.NewQueryCursor()
 	defer cursor.Close()
 
-	matches := cursor.Matches(query, file.Tree.RootNode(), file.OriginalSource)
+	matches := cursor.Matches(query, tree.RootNode(), source)
 
 	for match := matches.Next(); match != nil; match = matches.Next() {
 		nameNode := captureNode(match.Captures, uint32(nameIdx))
@@ -118,7 +133,7 @@ func extractWithQuery(file *forest.ParsedFile, kind, queryStr, filePath string, 
 			continue
 		}
 
-		name := string(file.OriginalSource[nameNode.StartByte():nameNode.EndByte()])
+		name := string(source[nameNode.StartByte():nameNode.EndByte()])
 		if name == "" {
 			continue
 		}
