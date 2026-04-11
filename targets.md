@@ -3,8 +3,8 @@
 ## Active
 
 ### 🎯T1 Intra-language pattern equivalences
-- **Weight**: 1 (value 21 / cost 21)
-- **Estimated-cost**: 21
+- **Value**: 21
+- **Cost**: 21
 - **Acceptance**:
   - teach_equivalence tool stores bidirectional pattern pairs
   - apply_equivalence rewrites matches in either direction
@@ -16,8 +16,8 @@
 - **Discovered**: 2026-04-07
 
 ### 🎯T3 Diagnostic-driven automatic fixes
-- **Weight**: 1 (value 13 / cost 13)
-- **Estimated-cost**: 13
+- **Value**: 13
+- **Cost**: 13
 - **Acceptance**:
   - teach_fix tool associates a diagnostic pattern with a fix action (inline transform or recipe reference) with parameter extraction from regex captures; stored in SQLite
   - auto_fix tool runs diagnostics, matches against catalogue, applies safe fixes, reports uncertain ones; convergence loop terminates when clean, stuck, or iteration limit reached
@@ -32,8 +32,8 @@
 - **Discovered**: 2026-04-07
 
 ### 🎯T5 Sawmill supports coordinated transforms across multiple repositories
-- **Weight**: 1 (value 8 / cost 13)
-- **Estimated-cost**: 13
+- **Value**: 8
+- **Cost**: 13
 - **Acceptance**:
   - Transforms can target multiple project roots in a single operation
   - Daemon manages models for multiple repos concurrently (already partially true)
@@ -45,11 +45,61 @@
 - **Status**: Identified
 - **Discovered**: 2026-04-10
 
+### 🎯T6 Git history is semantically indexed — commits are parsed with Tree-sitter and symbol changes are queryable via MCP tools
+- **Value**: 20
+- **Cost**: 20
+- **Acceptance**:
+  - Commits are lazily parsed with Tree-sitter and symbol tables stored in SQLite keyed by commit SHA
+  - Blob-SHA deduplication avoids re-parsing unchanged files across commits
+  - MCP tools provide structured git queries: git_log (structured metadata), git_blame_symbol (who last touched a symbol), git_diff_summary (added/removed/modified symbols per file)
+  - Semantic bisect finds the commit where a structural predicate changed (e.g. function gained a parameter)
+  - Semantic blame distinguishes when a symbol was introduced, when its body was last modified, and when its signature last changed
+  - Refactoring detection recognises renames and moves across files by comparing AST structure minus identifiers
+  - API surface changelog can be auto-generated from semantic diffs between tags
+- **Context**: Agents constantly shell out to git log, git diff, git blame and parse text output, wasting context window and losing structural information. Sawmill already has Tree-sitter parsing and a SQLite symbol index for the working tree — extending this across git history creates a 'semantic git' layer where queries operate on structure (functions, types, parameters) rather than text (lines, hunks). The daemon architecture means the index persists and only grows with new commits. Git history is immutable, so once indexed, it's indexed forever. This is the foundation layer that enables cross-version queries, semantic diffing, convention drift detection, and dead code archaeology.
+- **Tags**: git, indexing, semantic, foundation
+- **Origin**: design discussion — git indexing in sawmill
+- **Status**: Identified
+- **Discovered**: 2026-04-10
+
+### 🎯T7 Sawmill understands semantic identity across representations — the same value in code, config, schema, and embedded DSLs is recognised as one entity
+- **Value**: 13
+- **Cost**: 20
+- **Acceptance**:
+  - Sawmill can parse embedded DSLs within string literals (SQL in Go, regex in Python, GraphQL in TS tagged templates) using Tree-sitter injection grammars
+  - Cross-file semantic identity: a timeout value in Go code, the same key in YAML config, and a DEFAULT in a SQL migration are linked as the same entity
+  - Git history detects cross-representation migrations: literal deleted from code + key added to config = migration, not unrelated changes
+  - Convention drift detection: track when extracted values regress to hardcoded literals
+  - Interface-implementation tracking: detect when a proto/OpenAPI schema adds a field but the Go implementation doesn't use it yet
+- **Context**: Real codebases express the same semantic content in multiple formats: Go structs mirror protobuf schemas, config YAML duplicates code defaults, SQL migrations encode the same constraints as validation logic. Today these connections are invisible to tools — git sees unrelated text changes across files. Inspired by the Real language design discussion about 'the end of all strings' — every structured value is the same entity regardless of its syntactic representation. Sawmill's multi-language Tree-sitter parsing and SQLite store are uniquely positioned to track these cross-representation relationships. Builds on git semantic indexing to detect migrations and drift over time.
+- **Tags**: cross-representation, semantic, embedded-dsl, detection
+- **Origin**: design discussion — cross-representation awareness, inspired by Real macro invocation architecture
+- **Status**: Identified
+- **Discovered**: 2026-04-10
+
+### 🎯T8 Sawmill actively transforms content between representations — extract literals to config, inline config to code, extract embedded DSLs to files, sync schemas with implementations
+- **Value**: 13
+- **Cost**: 20
+- **Acceptance**:
+  - extract_to_config: select code literals, generate YAML/JSON config with sensible keys, rewrite code to read from config, generate loader boilerplate
+  - extract_to_env: generate .env.example, rewrite code to use os.Getenv/process.env, update .gitignore
+  - extract_dsl: move SQL string literals to .sql files with go:embed, regex to compiled patterns, GraphQL to .graphql files
+  - promote_constant: magic numbers become named constants, config entries, or enum members depending on semantic context
+  - align_representations: given a protobuf schema and Go struct, generate missing fields in either direction; sync JSON Schema with TypeScript interfaces
+  - internalise_dependency: inline config values used only once, collapse single-use .sql files back to code
+  - migrate_pattern: structurally identify all instances of an old pattern and rewrite to a new one with proper import management
+  - All transforms produce diff previews and support undo, consistent with existing sawmill transform workflow
+- **Context**: Sawmill currently transforms code within a single language. The natural extension is cross-file, cross-format transforms: extract structured content from one representation, create it in another, and rewrite the original to reference the extraction. This is a generic pattern — extract_to(source_pattern, target_format, reference_style) — of which specific transforms like extract_to_config and extract_dsl are instances. Combined with git semantic indexing, the system creates a feedback loop: transforms perform migrations, git indexing verifies they stuck, and the convention system flags regressions. Also enables git workflow automation: post-squash-merge cleanup, semantic bisect on structural predicates, branch hygiene with semantic merge detection.
+- **Tags**: cross-representation, transform, extraction, git-workflow
+- **Origin**: design discussion — cross-representation transforms and git workflow automation
+- **Status**: Identified
+- **Discovered**: 2026-04-10
+
 ## Achieved
 
 ### 🎯T4 CST node tree is stored in SQLite — in-memory CSTs are transient parse artifacts only
-- **Weight**: 1 (value 13 / cost 20)
-- **Estimated-cost**: 20
+- **Value**: 13
+- **Cost**: 20
 - **Acceptance**:
   - Nodes table stores full tree structure (type, field, parent, byte ranges) for all parsed files
   - All structural queries (find_references, query, pattern matching) run against SQLite, not in-memory CSTs
@@ -64,8 +114,8 @@
 - **Achieved**: 2026-04-10
 
 ### 🎯T2 Model manager is an active process
-- **Weight**: 2 (value 13 / cost 8)
-- **Estimated-cost**: 8
+- **Value**: 13
+- **Cost**: 8
 - **Acceptance**:
   - Model manager goroutine owns the forest, store, and symbol index
   - Watcher goroutine feeds file events to the model manager
@@ -87,4 +137,7 @@ graph TD
     T1["Intra-language pattern equiva…"]
     T3["Diagnostic-driven automatic f…"]
     T5["Sawmill supports coordinated …"]
+    T6["Git history is semantically i…"]
+    T7["Sawmill understands semantic …"]
+    T8["Sawmill actively transforms c…"]
 ```
