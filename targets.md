@@ -15,6 +15,87 @@
 - **Status**: Identified
 - **Discovered**: 2026-04-07
 
+### 🎯T10 ASTs are stored relationally in SQLite — normalised node tables with integer FK node types, field names, and blob-SHA dedup across commits
+- **Value**: 13
+- **Cost**: 13
+- **Acceptance**:
+  - A nodes table stores (id, file_blob_sha, parent_id, node_type_id, field_name_id, start_byte, end_byte) with integer FKs to lookup tables
+  - node_types and field_names lookup tables normalise repeated strings to integer IDs
+  - Byte offsets use delta encoding from parent where beneficial
+  - File content is stored once per unique blob SHA — if the same file appears across 500 commits unchanged, one copy exists
+  - A commit_files junction table maps (commit_sha, file_path) → blob_sha
+  - SQL can answer structural queries: function parameters, method receivers, return types, parent-child relationships
+  - Indexing a commit parses only files whose blob SHA is not already indexed
+- **Context**: This is the core data model for 🎯T6. The design was discussed in detail: normalised node types/field names as integer FKs, blob-SHA dedup to avoid re-parsing unchanged files, relational AST storage so SQL can answer structural queries directly without Tree-sitter round-trips. This replaces the current flat symbol-only index with a full structural representation.
+- **Depends on**: 🎯T9
+- **Tags**: git, schema, sqlite, T6
+- **Origin**: decomposition of 🎯T6
+- **Status**: Identified
+- **Discovered**: 2026-04-11
+
+### 🎯T11 Commits are lazily indexed — walking the commit graph and parsing files on demand, with progress tracking for bulk indexing
+- **Value**: 8
+- **Cost**: 8
+- **Acceptance**:
+  - HEAD, branch tips, and tags are indexed automatically when the daemon starts or a branch changes
+  - Older commits are indexed lazily when a query touches them
+  - Bulk indexing (index all commits) is available as an explicit MCP tool with progress reporting
+  - First-parent walking is the default for linear history; merge commits fan out on demand
+  - Already-indexed commits are skipped (commit SHA is the cache key)
+- **Context**: Controls when and how commits get indexed. The key insight is that most queries only need recent history, so lazy indexing avoids upfront cost. Bulk indexing is available for users who want the full history. Depends on git object access (🎯T6.1) and the relational AST schema (🎯T6.2).
+- **Depends on**: 🎯T9, 🎯T10
+- **Tags**: git, indexing, daemon, T6
+- **Origin**: decomposition of 🎯T6
+- **Status**: Identified
+- **Discovered**: 2026-04-11
+
+### 🎯T12 MCP tools expose structured git queries — git_log, git_diff_summary, git_blame_symbol return structured data instead of text
+- **Value**: 13
+- **Cost**: 8
+- **Acceptance**:
+  - git_log returns structured commit metadata (SHA, author, date, message, files changed, symbols changed) with filtering and pagination
+  - git_diff_summary returns added/removed/modified symbols per file between any two refs, not raw hunks
+  - git_blame_symbol returns the commit that last modified a given symbol's body, signature, or existence separately
+  - All tools accept refs (branch names, tags, SHAs) and resolve them via the git object layer
+  - Results are compact structured data suitable for agent consumption without context window waste
+- **Context**: The agent-facing surface of 🎯T6. These tools replace shelling out to git and parsing text output. They operate on the indexed data, so responses are fast. Depends on the indexing layer (🎯T6.3) being able to ensure queried commits are indexed.
+- **Depends on**: 🎯T11
+- **Tags**: git, mcp, tools, T6
+- **Origin**: decomposition of 🎯T6
+- **Status**: Identified
+- **Discovered**: 2026-04-11
+
+### 🎯T13 Semantic diffing compares ASTs structurally — detecting moves, renames, parameter changes, and generating API surface changelogs
+- **Value**: 13
+- **Cost**: 13
+- **Acceptance**:
+  - Structural diff between two commits produces edit operations: add, remove, modify, move, rename
+  - Move detection: a function deleted from file A and added to file B with similar AST structure is reported as a move
+  - Rename detection: a symbol with changed name but preserved structure is reported as a rename
+  - Signature change detection: parameter list or return type changes are reported specifically
+  - API surface changelog between two tags lists added/removed/changed public symbols with their signature changes
+  - Data format diffs (YAML, JSON, TOML, XML) report key-level changes, not line-level
+- **Context**: The high-value capability that makes semantic git qualitatively different from text-based git. Uses the relational AST data to compare structure rather than text. GumTree-style algorithm (top-down isomorphic subtree matching, bottom-up container matching) is the likely approach. Data format diffs are trivially enabled since Tree-sitter already parses them. Depends on the relational AST schema (🎯T6.2) and query tools (🎯T6.4).
+- **Depends on**: 🎯T10, 🎯T12
+- **Tags**: git, diffing, semantic, T6
+- **Origin**: decomposition of 🎯T6
+- **Status**: Identified
+- **Discovered**: 2026-04-11
+
+### 🎯T14 Semantic bisect finds the commit where a structural predicate changed — without running the code
+- **Value**: 8
+- **Cost**: 5
+- **Acceptance**:
+  - git_semantic_bisect accepts a structural predicate (e.g. 'function X has parameter Y', 'type T implements interface I') and a commit range
+  - Binary search over the commit range, indexing commits as needed, to find the first commit where the predicate flips
+  - Returns the commit SHA, author, message, and the specific structural change that caused the predicate to flip
+- **Context**: A natural combination of lazy indexing and structural queries. Instead of 'does this commit build?' (requiring code execution), it answers 'at which commit did this structural property change?' (requiring only parsing). Depends on the indexing layer and structural query capability.
+- **Depends on**: 🎯T11, 🎯T13
+- **Tags**: git, bisect, semantic, T6
+- **Origin**: decomposition of 🎯T6
+- **Status**: Identified
+- **Discovered**: 2026-04-11
+
 ### 🎯T3 Diagnostic-driven automatic fixes
 - **Value**: 13
 - **Cost**: 13
@@ -57,6 +138,7 @@
   - Refactoring detection recognises renames and moves across files by comparing AST structure minus identifiers
   - API surface changelog can be auto-generated from semantic diffs between tags
 - **Context**: Agents constantly shell out to git log, git diff, git blame and parse text output, wasting context window and losing structural information. Sawmill already has Tree-sitter parsing and a SQLite symbol index for the working tree — extending this across git history creates a 'semantic git' layer where queries operate on structure (functions, types, parameters) rather than text (lines, hunks). The daemon architecture means the index persists and only grows with new commits. Git history is immutable, so once indexed, it's indexed forever. This is the foundation layer that enables cross-version queries, semantic diffing, convention drift detection, and dead code archaeology.
+- **Depends on**: 🎯T9, 🎯T10, 🎯T11, 🎯T12, 🎯T13, 🎯T14
 - **Tags**: git, indexing, semantic, foundation
 - **Origin**: design discussion — git indexing in sawmill
 - **Status**: Identified
@@ -97,6 +179,21 @@
 
 ## Achieved
 
+### 🎯T9 Git objects are accessible from Go — sawmill can read commits, trees, and blobs from the git repo without shelling out
+- **Value**: 8
+- **Cost**: 5
+- **Acceptance**:
+  - A git package provides Go functions to walk commits, read trees, and extract blob contents by SHA
+  - No dependency on the git CLI — uses go-git or direct packfile reading
+  - Blob content is accessible as []byte for feeding to Tree-sitter
+  - Commit metadata (author, date, message, parent SHAs) is available as structured data
+- **Context**: Everything in 🎯T6 depends on being able to read git objects programmatically. This is the lowest-level foundation — without it, nothing else can be built. Pure Go is preferred (go-git or similar) to maintain the no-CGo property.
+- **Tags**: git, foundation, T6
+- **Origin**: decomposition of 🎯T6
+- **Status**: Achieved
+- **Discovered**: 2026-04-11
+- **Achieved**: 2026-04-11
+
 ### 🎯T4 CST node tree is stored in SQLite — in-memory CSTs are transient parse artifacts only
 - **Value**: 13
 - **Cost**: 20
@@ -135,9 +232,25 @@
 ```mermaid
 graph TD
     T1["Intra-language pattern equiva…"]
+    T10["ASTs are stored relationally …"]
+    T11["Commits are lazily indexed — …"]
+    T12["MCP tools expose structured g…"]
+    T13["Semantic diffing compares AST…"]
+    T14["Semantic bisect finds the com…"]
     T3["Diagnostic-driven automatic f…"]
     T5["Sawmill supports coordinated …"]
     T6["Git history is semantically i…"]
     T7["Sawmill understands semantic …"]
     T8["Sawmill actively transforms c…"]
+    T11 -.->|needs| T10
+    T12 -.->|needs| T11
+    T13 -.->|needs| T10
+    T13 -.->|needs| T12
+    T14 -.->|needs| T11
+    T14 -.->|needs| T13
+    T6 -.->|needs| T10
+    T6 -.->|needs| T11
+    T6 -.->|needs| T12
+    T6 -.->|needs| T13
+    T6 -.->|needs| T14
 ```
