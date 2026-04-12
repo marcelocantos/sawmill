@@ -29,6 +29,9 @@ func NewIndexer(store *Store, repo *gitrepo.Repo) *Indexer {
 // Store returns the underlying Store for direct queries.
 func (ix *Indexer) Store() *Store { return ix.store }
 
+// Repo returns the underlying git repository.
+func (ix *Indexer) Repo() *gitrepo.Repo { return ix.repo }
+
 // Close closes the underlying store.
 func (ix *Indexer) Close() error { return ix.store.Close() }
 

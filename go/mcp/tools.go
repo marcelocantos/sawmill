@@ -8,6 +8,7 @@ import (
 	_ "embed"
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"sort"
@@ -20,6 +21,8 @@ import (
 	"github.com/marcelocantos/sawmill/codegen"
 	"github.com/marcelocantos/sawmill/exemplar"
 	"github.com/marcelocantos/sawmill/forest"
+	"github.com/marcelocantos/sawmill/gitindex"
+	"github.com/marcelocantos/sawmill/gitrepo"
 	"github.com/marcelocantos/sawmill/jsengine"
 	"github.com/marcelocantos/sawmill/lspclient"
 	"github.com/marcelocantos/sawmill/model"
@@ -2923,6 +2926,485 @@ func (h *Handler) handleDeleteInvariant(args map[string]any) (string, bool, erro
 	}
 
 	return fmt.Sprintf("Invariant %q deleted.", name), false, nil
+}
+
+// ---- git_log ----------------------------------------------------------------
+
+func (h *Handler) handleGitLog(args map[string]any) (string, bool, error) {
+	ref := optString(args, "ref")
+	if ref == "" {
+		ref = "HEAD"
+	}
+	limitF, _ := args["limit"].(float64)
+	limit := int(limitF)
+	if limit <= 0 {
+		limit = 20
+	}
+	pathFilter := optString(args, "path")
+
+	h.mu.Lock()
+	m, err := h.requireModel()
+	h.mu.Unlock()
+	if err != nil {
+		return err.Error(), true, nil
+	}
+
+	if m.GitIndex == nil {
+		return "git index is not available (project root is not inside a git repository)", true, nil
+	}
+
+	repo := m.GitIndex.Repo()
+	store := m.GitIndex.Store()
+
+	startSHA, err := repo.Resolve(ref)
+	if err != nil {
+		return fmt.Sprintf("resolving ref %q: %v", ref, err), true, nil
+	}
+
+	type commitEntry struct {
+		SHA          string   `json:"sha"`
+		ShortSHA     string   `json:"short_sha"`
+		Author       string   `json:"author"`
+		Email        string   `json:"email"`
+		Date         string   `json:"date"`
+		Message      string   `json:"message"`
+		FilesChanged []string `json:"files_changed"`
+	}
+
+	var result []commitEntry
+	prevBlobForPath := ""
+
+	walkErr := repo.WalkCommits(startSHA, func(c *gitrepo.Commit) error {
+		if err := m.GitIndex.EnsureCommitIndexed(c.SHA); err != nil {
+			return fmt.Errorf("indexing commit %s: %w", c.SHA, err)
+		}
+
+		// Apply path filter if specified.
+		if pathFilter != "" {
+			blobSHA, ok, err := store.BlobSHAForFile(c.SHA, pathFilter)
+			if err != nil {
+				return err
+			}
+			if !ok {
+				return nil // file not in this commit
+			}
+			if blobSHA == prevBlobForPath {
+				return nil // file unchanged since last commit
+			}
+			prevBlobForPath = blobSHA
+		}
+
+		files, err := store.CommitFiles(c.SHA)
+		if err != nil {
+			return fmt.Errorf("getting files for commit %s: %w", c.SHA, err)
+		}
+		filePaths := make([]string, len(files))
+		for i, f := range files {
+			filePaths[i] = f.FilePath
+		}
+
+		msg := c.Message
+		if idx := strings.IndexByte(msg, '\n'); idx >= 0 {
+			msg = msg[:idx]
+		}
+		msg = strings.TrimSpace(msg)
+
+		sha := c.SHA
+		shortSHA := sha
+		if len(shortSHA) > 7 {
+			shortSHA = shortSHA[:7]
+		}
+
+		result = append(result, commitEntry{
+			SHA:          sha,
+			ShortSHA:     shortSHA,
+			Author:       c.Author,
+			Email:        c.Email,
+			Date:         c.When.UTC().Format("2006-01-02T15:04:05Z"),
+			Message:      msg,
+			FilesChanged: filePaths,
+		})
+
+		if len(result) >= limit {
+			return io.EOF
+		}
+		return nil
+	})
+	if walkErr != nil {
+		return fmt.Sprintf("walking commits: %v", walkErr), true, nil
+	}
+
+	out, err := json.MarshalIndent(result, "", "  ")
+	if err != nil {
+		return fmt.Sprintf("marshalling result: %v", err), true, nil
+	}
+	return string(out), false, nil
+}
+
+// ---- git_diff_summary -------------------------------------------------------
+
+func (h *Handler) handleGitDiffSummary(args map[string]any) (string, bool, error) {
+	base, err := requireString(args, "base")
+	if err != nil {
+		return err.Error(), true, nil
+	}
+	head := optString(args, "head")
+	if head == "" {
+		head = "HEAD"
+	}
+	pathFilter := optString(args, "path")
+
+	h.mu.Lock()
+	m, merr := h.requireModel()
+	h.mu.Unlock()
+	if merr != nil {
+		return merr.Error(), true, nil
+	}
+
+	if m.GitIndex == nil {
+		return "git index is not available (project root is not inside a git repository)", true, nil
+	}
+
+	repo := m.GitIndex.Repo()
+	store := m.GitIndex.Store()
+
+	baseSHA, err := repo.Resolve(base)
+	if err != nil {
+		return fmt.Sprintf("resolving base ref %q: %v", base, err), true, nil
+	}
+	headSHA, err := repo.Resolve(head)
+	if err != nil {
+		return fmt.Sprintf("resolving head ref %q: %v", head, err), true, nil
+	}
+
+	if err := m.GitIndex.EnsureCommitIndexed(baseSHA); err != nil {
+		return fmt.Sprintf("indexing base commit: %v", err), true, nil
+	}
+	if err := m.GitIndex.EnsureCommitIndexed(headSHA); err != nil {
+		return fmt.Sprintf("indexing head commit: %v", err), true, nil
+	}
+
+	baseFiles, err := store.CommitFiles(baseSHA)
+	if err != nil {
+		return fmt.Sprintf("getting base files: %v", err), true, nil
+	}
+	headFiles, err := store.CommitFiles(headSHA)
+	if err != nil {
+		return fmt.Sprintf("getting head files: %v", err), true, nil
+	}
+
+	baseMap := make(map[string]string, len(baseFiles))
+	for _, f := range baseFiles {
+		baseMap[f.FilePath] = f.BlobSHA
+	}
+	headMap := make(map[string]string, len(headFiles))
+	for _, f := range headFiles {
+		headMap[f.FilePath] = f.BlobSHA
+	}
+
+	type fileDiff struct {
+		Path    string     `json:"path"`
+		Status  string     `json:"status"`
+		Symbols symbolDiff `json:"symbols"`
+	}
+	type diffResult struct {
+		Files []fileDiff `json:"files"`
+	}
+
+	// Collect all paths from both commits.
+	allPaths := make(map[string]bool)
+	for p := range baseMap {
+		allPaths[p] = true
+	}
+	for p := range headMap {
+		allPaths[p] = true
+	}
+
+	var files []fileDiff
+	for path := range allPaths {
+		if pathFilter != "" && path != pathFilter {
+			continue
+		}
+		baseBlobSHA, inBase := baseMap[path]
+		headBlobSHA, inHead := headMap[path]
+
+		var status string
+		switch {
+		case inBase && inHead && baseBlobSHA == headBlobSHA:
+			continue // unchanged
+		case inBase && inHead:
+			status = "modified"
+		case inHead:
+			status = "added"
+		default:
+			status = "removed"
+		}
+
+		var syms symbolDiff
+		if status == "modified" {
+			baseSymbols, err := symbolsForBlob(store, repo, baseBlobSHA)
+			if err != nil {
+				return fmt.Sprintf("getting symbols for base blob %s: %v", baseBlobSHA, err), true, nil
+			}
+			headSymbols, err := symbolsForBlob(store, repo, headBlobSHA)
+			if err != nil {
+				return fmt.Sprintf("getting symbols for head blob %s: %v", headBlobSHA, err), true, nil
+			}
+			syms = diffSymbols(baseSymbols, headSymbols)
+		} else if status == "added" {
+			headSymbols, err := symbolsForBlob(store, repo, headBlobSHA)
+			if err != nil {
+				return fmt.Sprintf("getting symbols for head blob %s: %v", headBlobSHA, err), true, nil
+			}
+			names := symbolNames(headSymbols)
+			syms = symbolDiff{Added: names, Removed: []string{}, Modified: []string{}}
+		} else {
+			baseSymbols, err := symbolsForBlob(store, repo, baseBlobSHA)
+			if err != nil {
+				return fmt.Sprintf("getting symbols for base blob %s: %v", baseBlobSHA, err), true, nil
+			}
+			names := symbolNames(baseSymbols)
+			syms = symbolDiff{Added: []string{}, Removed: names, Modified: []string{}}
+		}
+
+		files = append(files, fileDiff{Path: path, Status: status, Symbols: syms})
+	}
+
+	// Sort by path for stable output.
+	sort.Slice(files, func(i, j int) bool { return files[i].Path < files[j].Path })
+
+	out, err := json.MarshalIndent(diffResult{Files: files}, "", "  ")
+	if err != nil {
+		return fmt.Sprintf("marshalling result: %v", err), true, nil
+	}
+	return string(out), false, nil
+}
+
+// symbolsForBlob retrieves SymbolInfo for a blob, reading source from git.
+func symbolsForBlob(store *gitindex.Store, repo *gitrepo.Repo, blobSHA string) ([]gitindex.SymbolInfo, error) {
+	indexed, err := store.IsIndexed(blobSHA)
+	if err != nil {
+		return nil, err
+	}
+	if !indexed {
+		return nil, nil
+	}
+	source, err := repo.ReadBlob(blobSHA)
+	if err != nil {
+		return nil, err
+	}
+	return store.SymbolNames(blobSHA, source)
+}
+
+// symbolNames extracts just the names from a slice of SymbolInfo.
+func symbolNames(syms []gitindex.SymbolInfo) []string {
+	names := make([]string, len(syms))
+	for i, s := range syms {
+		names[i] = s.Name
+	}
+	return names
+}
+
+type symbolDiff struct {
+	Added    []string `json:"added"`
+	Removed  []string `json:"removed"`
+	Modified []string `json:"modified"`
+}
+
+// diffSymbols compares two sets of symbols and returns added/removed/modified lists.
+// A symbol is "modified" if its name exists in both sets but at a different byte range.
+func diffSymbols(base, head []gitindex.SymbolInfo) symbolDiff {
+	type byteRange struct{ start, end int }
+	baseMap := make(map[string]byteRange, len(base))
+	for _, s := range base {
+		baseMap[s.Name] = byteRange{s.StartByte, s.EndByte}
+	}
+	headMap := make(map[string]byteRange, len(head))
+	for _, s := range head {
+		headMap[s.Name] = byteRange{s.StartByte, s.EndByte}
+	}
+
+	var added, removed, modified []string
+	for name, hr := range headMap {
+		br, inBase := baseMap[name]
+		if !inBase {
+			added = append(added, name)
+		} else if br != hr {
+			modified = append(modified, name)
+		}
+	}
+	for name := range baseMap {
+		if _, inHead := headMap[name]; !inHead {
+			removed = append(removed, name)
+		}
+	}
+	sort.Strings(added)
+	sort.Strings(removed)
+	sort.Strings(modified)
+	return symbolDiff{
+		Added:    nullSafeStringSlice(added),
+		Removed:  nullSafeStringSlice(removed),
+		Modified: nullSafeStringSlice(modified),
+	}
+}
+
+func nullSafeStringSlice(s []string) []string {
+	if s == nil {
+		return []string{}
+	}
+	return s
+}
+
+// ---- git_blame_symbol -------------------------------------------------------
+
+func (h *Handler) handleGitBlameSymbol(args map[string]any) (string, bool, error) {
+	filePath, err := requireString(args, "path")
+	if err != nil {
+		return err.Error(), true, nil
+	}
+	symbolName, err := requireString(args, "symbol")
+	if err != nil {
+		return err.Error(), true, nil
+	}
+	ref := optString(args, "ref")
+	if ref == "" {
+		ref = "HEAD"
+	}
+
+	h.mu.Lock()
+	m, merr := h.requireModel()
+	h.mu.Unlock()
+	if merr != nil {
+		return merr.Error(), true, nil
+	}
+
+	if m.GitIndex == nil {
+		return "git index is not available (project root is not inside a git repository)", true, nil
+	}
+
+	repo := m.GitIndex.Repo()
+	store := m.GitIndex.Store()
+
+	startSHA, err := repo.Resolve(ref)
+	if err != nil {
+		return fmt.Sprintf("resolving ref %q: %v", ref, err), true, nil
+	}
+
+	type commitRef struct {
+		SHA     string `json:"sha"`
+		Author  string `json:"author"`
+		Date    string `json:"date"`
+		Message string `json:"message"`
+	}
+
+	type blameResult struct {
+		Symbol       string     `json:"symbol"`
+		Path         string     `json:"path"`
+		LastModified *commitRef `json:"last_modified,omitempty"`
+		Introduced   *commitRef `json:"introduced,omitempty"`
+	}
+
+	var lastModified *commitRef
+	var introduced *commitRef
+	prevBlobSHA := ""
+	const maxDepth = 100
+
+	walkErr := repo.WalkCommits(startSHA, func(c *gitrepo.Commit) error {
+		if err := m.GitIndex.EnsureCommitIndexed(c.SHA); err != nil {
+			return fmt.Errorf("indexing commit %s: %w", c.SHA, err)
+		}
+
+		blobSHA, ok, err := store.BlobSHAForFile(c.SHA, filePath)
+		if err != nil {
+			return err
+		}
+
+		if !ok {
+			// File not in this commit; if we had it before, that means it was added
+			// in the previous (newer) commit — but we walk newest-first, so here
+			// it means the file didn't exist yet. Stop.
+			return io.EOF
+		}
+
+		if blobSHA == prevBlobSHA {
+			return nil // file unchanged
+		}
+
+		// Blob changed (or this is the first commit we're seeing with this file).
+		syms, err := symbolsForBlob(store, repo, blobSHA)
+		if err != nil {
+			return err
+		}
+
+		hasSymbol := false
+		for _, s := range syms {
+			if s.Name == symbolName {
+				hasSymbol = true
+				break
+			}
+		}
+
+		msg := c.Message
+		if idx := strings.IndexByte(msg, '\n'); idx >= 0 {
+			msg = msg[:idx]
+		}
+		msg = strings.TrimSpace(msg)
+
+		ref := &commitRef{
+			SHA:     c.SHA,
+			Author:  c.Author,
+			Date:    c.When.UTC().Format("2006-01-02T15:04:05Z"),
+			Message: msg,
+		}
+
+		if hasSymbol {
+			if prevBlobSHA == "" {
+				// This is the HEAD commit (first seen); record as last_modified candidate.
+				// We track when the blob changes and the symbol was present.
+			}
+			// Symbol exists in this commit's version; record as candidate for introduced.
+			introduced = ref
+			if prevBlobSHA != "" && lastModified == nil {
+				// The blob changed and symbol still exists; this commit is where the
+				// change was introduced (walking newest-first, so the previous blob had it too).
+				lastModified = ref
+			}
+		} else {
+			// Symbol absent in this commit; the previous (newer) commit introduced it.
+			if lastModified == nil && introduced != nil {
+				lastModified = introduced
+			}
+			return io.EOF
+		}
+
+		prevBlobSHA = blobSHA
+		return nil
+	})
+
+	if walkErr != nil {
+		return fmt.Sprintf("walking commits: %v", walkErr), true, nil
+	}
+
+	// If we only found it in all commits (never disappeared going back), introduced
+	// is the oldest commit with the symbol.
+	if lastModified == nil && introduced != nil {
+		lastModified = introduced
+	}
+
+	if introduced == nil {
+		return fmt.Sprintf("symbol %q not found in %s at %s", symbolName, filePath, ref), true, nil
+	}
+
+	out, err := json.MarshalIndent(blameResult{
+		Symbol:       symbolName,
+		Path:         filePath,
+		LastModified: lastModified,
+		Introduced:   introduced,
+	}, "", "  ")
+	if err != nil {
+		return fmt.Sprintf("marshalling result: %v", err), true, nil
+	}
+	return string(out), false, nil
 }
 
 // ---- git_index ----------------------------------------------------------------

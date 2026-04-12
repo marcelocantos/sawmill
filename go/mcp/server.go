@@ -135,6 +135,12 @@ func (h *Handler) Call(name string, args map[string]any) (string, bool, error) {
 		return h.handleMigrateType(args)
 	case "git_index":
 		return h.handleGitIndex(args)
+	case "git_log":
+		return h.handleGitLog(args)
+	case "git_diff_summary":
+		return h.handleGitDiffSummary(args)
+	case "git_blame_symbol":
+		return h.handleGitBlameSymbol(args)
 	default:
 		return "", false, fmt.Errorf("unknown tool: %s", name)
 	}
@@ -652,6 +658,51 @@ func Definitions() []mcpgo.Tool {
 			),
 			mcpgo.WithNumber("limit",
 				mcpgo.Description("Maximum number of commits to index (0 = all, default 0)."),
+			),
+		),
+
+		// git_log
+		mcpgo.NewTool("git_log",
+			mcpgo.WithDescription("Structured commit history with file-change metadata from the semantic git index."),
+			mcpgo.WithString("ref",
+				mcpgo.Description("Starting ref (branch, tag, SHA). Default: HEAD"),
+			),
+			mcpgo.WithNumber("limit",
+				mcpgo.Description("Max commits to return. Default: 20"),
+			),
+			mcpgo.WithString("path",
+				mcpgo.Description("Filter to commits touching this file path"),
+			),
+		),
+
+		// git_diff_summary
+		mcpgo.NewTool("git_diff_summary",
+			mcpgo.WithDescription("Symbol-level diff between two refs — shows added/removed/modified functions and types per file."),
+			mcpgo.WithString("base",
+				mcpgo.Required(),
+				mcpgo.Description("Base ref (branch, tag, SHA)"),
+			),
+			mcpgo.WithString("head",
+				mcpgo.Description("Head ref. Default: HEAD"),
+			),
+			mcpgo.WithString("path",
+				mcpgo.Description("Filter to a specific file path"),
+			),
+		),
+
+		// git_blame_symbol
+		mcpgo.NewTool("git_blame_symbol",
+			mcpgo.WithDescription("Find which commit last modified or introduced a symbol."),
+			mcpgo.WithString("path",
+				mcpgo.Required(),
+				mcpgo.Description("File path containing the symbol"),
+			),
+			mcpgo.WithString("symbol",
+				mcpgo.Required(),
+				mcpgo.Description("Symbol name to trace"),
+			),
+			mcpgo.WithString("ref",
+				mcpgo.Description("Starting ref. Default: HEAD"),
 			),
 		),
 	}

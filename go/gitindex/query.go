@@ -8,6 +8,83 @@ import (
 	"fmt"
 )
 
+// SymbolInfo describes a named declaration extracted from an indexed blob.
+type SymbolInfo struct {
+	Name      string
+	Kind      string // "function" or "type"
+	StartByte int
+	EndByte   int
+}
+
+// SymbolNames extracts function and type names from a blob's indexed AST using
+// source bytes to resolve identifier text. It queries declaration nodes and
+// finds their first identifier child to extract the name.
+func (s *Store) SymbolNames(blobSHA string, source []byte) ([]SymbolInfo, error) {
+	// Query declaration nodes and their first identifier/type_identifier child in
+	// a single pass. We track the first identifier child per parent to avoid
+	// duplicates (e.g. functions with multiple identifier nodes).
+	rows, err := s.db.Query(`
+		SELECT
+			parent.id,
+			parent_type.name AS parent_type_name,
+			child.start_byte,
+			child.end_byte,
+			child_type.name  AS child_type_name
+		FROM nodes parent
+		JOIN node_types parent_type ON parent_type.id = parent.node_type_id
+		JOIN nodes child ON child.parent_id = parent.id
+		JOIN node_types child_type ON child_type.id = child.node_type_id
+		WHERE parent.blob_sha = ?
+		  AND parent_type.name IN (
+			'function_declaration', 'method_declaration',
+			'type_declaration', 'type_spec',
+			'struct_item', 'function_item', 'function_definition',
+			'class_definition'
+		  )
+		  AND child_type.name IN ('identifier', 'type_identifier', 'field_identifier')
+		ORDER BY parent.start_byte, child.start_byte
+	`, blobSHA)
+	if err != nil {
+		return nil, fmt.Errorf("querying symbol names for blob %s: %w", blobSHA, err)
+	}
+	defer rows.Close()
+
+	// Collect the first identifier child per parent.
+	seen := make(map[int64]bool)
+	var symbols []SymbolInfo
+	for rows.Next() {
+		var parentID int64
+		var parentTypeName, childTypeName string
+		var startByte, endByte int
+		if err := rows.Scan(&parentID, &parentTypeName, &startByte, &endByte, &childTypeName); err != nil {
+			return nil, fmt.Errorf("scanning symbol name row: %w", err)
+		}
+		if seen[parentID] {
+			continue // already got the first identifier for this parent
+		}
+		seen[parentID] = true
+
+		if startByte < 0 || endByte > len(source) || startByte >= endByte {
+			continue
+		}
+		name := string(source[startByte:endByte])
+
+		kind := "function"
+		switch parentTypeName {
+		case "type_declaration", "type_spec", "struct_item":
+			kind = "type"
+		}
+
+		symbols = append(symbols, SymbolInfo{
+			Name:      name,
+			Kind:      kind,
+			StartByte: startByte,
+			EndByte:   endByte,
+		})
+	}
+	return symbols, rows.Err()
+}
+
 // NodeRecord is a row from the nodes table with type and field name strings
 // resolved from their interning tables.
 type NodeRecord struct {
