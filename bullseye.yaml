@@ -18,7 +18,7 @@ targets:
     discovered: 2026-04-07
   T10:
     name: ASTs are stored relationally in SQLite — normalised node tables with integer FK node types, field names, and blob-SHA dedup across commits
-    status: identified
+    status: achieved
     value: 13.0
     cost: 13.0
     acceptance:
@@ -39,6 +39,7 @@ targets:
     - T6
     origin: decomposition of 🎯T6
     discovered: 2026-04-11
+    achieved: 2026-04-12
   T11:
     name: Commits are lazily indexed — walking the commit graph and parsing files on demand, with progress tracking for bulk indexing
     status: identified
