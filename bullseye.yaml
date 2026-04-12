@@ -66,6 +66,7 @@ targets:
     status: identified
     value: 13.0
     cost: 8.0
+    observable: true
     acceptance:
     - git_log returns structured commit metadata (SHA, author, date, message, files changed, symbols changed) with filtering and pagination
     - git_diff_summary returns added/removed/modified symbols per file between any two refs, not raw hunks
@@ -125,6 +126,65 @@ targets:
     - T6
     origin: decomposition of 🎯T6
     discovered: 2026-04-11
+  T15:
+    name: Early milestones — phases 2–6, rich ctx API, teach by example, convention invariants, LSP on ctx, structural pre-flight checks, agent prompt generation
+    status: achieved
+    value: 1.0
+    cost: 1.0
+    acceptance:
+    - All early milestone sub-targets (originally T1–T10) completed during the Rust era
+    context: Phases 2–6, rich ctx API, teach by example, convention invariants, LSP on ctx, structural pre-flight checks, agent prompt generation. All completed during the Rust era.
+    origin: manual
+    discovered: 2026-04-06
+    achieved: 2026-04-06
+  T16:
+    name: Rewrite in Go + daemon architecture
+    status: achieved
+    value: 21.0
+    cost: 13.0
+    acceptance:
+    - Full rewrite from Rust to Go with daemon architecture
+    - 7 sub-targets (T11.1–T11.7) all achieved
+    context: Full rewrite from Rust to Go with daemon architecture. 7 sub-targets all achieved.
+    origin: manual
+    discovered: 2026-04-06
+    achieved: 2026-04-06
+  T17:
+    name: LSP client integration
+    status: achieved
+    value: 21.0
+    cost: 8.0
+    acceptance:
+    - go/lspclient/ package
+    - hover/definition/references/diagnostics MCP tools
+    - Codegen ctx LSP methods
+    - Graceful degradation without LSP binary
+    context: go/lspclient/ package. hover/definition/references/diagnostics MCP tools. Codegen ctx LSP methods. Graceful degradation without LSP binary.
+    origin: manual
+    discovered: 2026-04-06
+    achieved: 2026-04-06
+  T18:
+    name: File rename with import cascade
+    status: achieved
+    value: 8.0
+    cost: 3.0
+    acceptance:
+    - rename_file tool with import path updates across 5 languages
+    context: rename_file tool with import path updates across 5 languages.
+    origin: manual
+    discovered: 2026-04-06
+    achieved: 2026-04-06
+  T19:
+    name: Add field + propagate to construction sites
+    status: achieved
+    value: 21.0
+    cost: 8.0
+    acceptance:
+    - add_field tool with struct literal and factory propagation
+    context: add_field tool with struct literal and factory propagation.
+    origin: manual
+    discovered: 2026-04-06
+    achieved: 2026-04-06
   T2:
     name: Model manager is an active process
     status: achieved
@@ -146,6 +206,50 @@ targets:
     origin: manual
     discovered: 2026-04-07
     achieved: 2026-04-08
+  T20:
+    name: Type shape migration
+    status: achieved
+    value: 21.0
+    cost: 13.0
+    acceptance:
+    - migrate_type tool with pattern matching engine for construction rewriting, field/method access rewriting, and type renaming
+    context: migrate_type tool with pattern matching engine for construction rewriting, field/method access rewriting, and type renaming.
+    origin: manual
+    discovered: 2026-04-06
+    achieved: 2026-04-06
+  T21:
+    name: Dependency impact analysis
+    status: achieved
+    value: 8.0
+    cost: 3.0
+    acceptance:
+    - dependency_usage tool with heuristic qualified-access matching
+    context: dependency_usage tool with heuristic qualified-access matching.
+    origin: manual
+    discovered: 2026-04-06
+    achieved: 2026-04-06
+  T22:
+    name: Clone-and-adapt
+    status: achieved
+    value: 8.0
+    cost: 2.0
+    acceptance:
+    - clone_and_adapt tool with symbol/range extraction
+    context: clone_and_adapt tool with symbol/range extraction.
+    origin: manual
+    discovered: 2026-04-06
+    achieved: 2026-04-06
+  T23:
+    name: Structural invariants
+    status: achieved
+    value: 13.0
+    cost: 5.0
+    acceptance:
+    - teach_invariant, check_invariants, list_invariants, delete_invariant tools with JSON rule language
+    context: teach_invariant, check_invariants, list_invariants, delete_invariant tools with JSON rule language.
+    origin: manual
+    discovered: 2026-04-06
+    achieved: 2026-04-06
   T3:
     name: Diagnostic-driven automatic fixes
     status: identified
@@ -206,6 +310,7 @@ targets:
     status: identified
     value: 20.0
     cost: 20.0
+    observable: true
     acceptance:
     - Commits are lazily parsed with Tree-sitter and symbol tables stored in SQLite keyed by commit SHA
     - Blob-SHA deduplication avoids re-parsing unchanged files across commits
