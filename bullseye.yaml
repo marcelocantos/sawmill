@@ -42,7 +42,7 @@ targets:
     achieved: 2026-04-12
   T11:
     name: Commits are lazily indexed — walking the commit graph and parsing files on demand, with progress tracking for bulk indexing
-    status: identified
+    status: achieved
     value: 8.0
     cost: 8.0
     acceptance:
@@ -62,6 +62,7 @@ targets:
     - T6
     origin: decomposition of 🎯T6
     discovered: 2026-04-11
+    achieved: 2026-04-12
   T12:
     name: MCP tools expose structured git queries — git_log, git_diff_summary, git_blame_symbol return structured data instead of text
     status: identified
