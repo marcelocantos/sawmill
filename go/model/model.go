@@ -19,8 +19,12 @@ import (
 
 	tree_sitter "github.com/tree-sitter/go-tree-sitter"
 
+	"log"
+
 	"github.com/marcelocantos/sawmill/adapters"
 	"github.com/marcelocantos/sawmill/forest"
+	"github.com/marcelocantos/sawmill/gitindex"
+	"github.com/marcelocantos/sawmill/gitrepo"
 	"github.com/marcelocantos/sawmill/index"
 	"github.com/marcelocantos/sawmill/lspclient"
 	"github.com/marcelocantos/sawmill/paths"
@@ -41,6 +45,8 @@ type CodebaseModel struct {
 	LSP *lspclient.Pool
 	// Cache holds recently-parsed trees for on-demand access.
 	Cache *forest.TreeCache
+	// GitIndex is the lazy git commit indexer (nil if the root is not a git repo).
+	GitIndex *gitindex.Indexer
 
 	// forest is only set for ephemeral models (no manager goroutine).
 	forest *forest.Forest
@@ -101,8 +107,36 @@ func Load(root string) (*CodebaseModel, error) {
 		done:    make(chan struct{}),
 		stopped: make(chan struct{}),
 	}
+
+	// Open the git index if this directory is inside a git repo. Index HEAD in
+	// the background so startup is not blocked.
+	if ix, err := openGitIndex(absRoot); err == nil {
+		m.GitIndex = ix
+		go func() {
+			if err := ix.IndexHead(); err != nil {
+				log.Printf("sawmill: git index HEAD: %v", err)
+			}
+		}()
+	}
+
 	go m.runManager()
 	return m, nil
+}
+
+// openGitIndex opens (or creates) the git index store for absRoot and returns
+// an Indexer. Returns an error if absRoot is not inside a git repo.
+func openGitIndex(absRoot string) (*gitindex.Indexer, error) {
+	repo, err := gitrepo.Open(absRoot)
+	if err != nil {
+		return nil, err
+	}
+	storeDir := paths.StoreDir(absRoot)
+	giPath := filepath.Join(storeDir, "gitindex.db")
+	giStore, err := gitindex.Open(giPath)
+	if err != nil {
+		return nil, err
+	}
+	return gitindex.NewIndexer(giStore, repo), nil
 }
 
 // LoadEphemeral loads without persistence (for testing or one-shot CLI use).
@@ -133,8 +167,8 @@ func LoadEphemeral(root string) (*CodebaseModel, error) {
 	return &CodebaseModel{Root: absRoot, Store: s, LSP: lspclient.NewPool(), Cache: forest.NewTreeCache(forest.DefaultCacheSize), forest: f}, nil
 }
 
-// Close stops the manager goroutine, the file watcher, LSP clients, and the
-// store.
+// Close stops the manager goroutine, the file watcher, LSP clients, the git
+// index, and the store.
 func (m *CodebaseModel) Close() error {
 	if m.done != nil {
 		close(m.done)
@@ -148,6 +182,9 @@ func (m *CodebaseModel) Close() error {
 	}
 	if m.w != nil {
 		_ = m.w.Close()
+	}
+	if m.GitIndex != nil {
+		_ = m.GitIndex.Close()
 	}
 	return m.Store.Close()
 }

@@ -2924,3 +2924,39 @@ func (h *Handler) handleDeleteInvariant(args map[string]any) (string, bool, erro
 
 	return fmt.Sprintf("Invariant %q deleted.", name), false, nil
 }
+
+// ---- git_index ----------------------------------------------------------------
+
+func (h *Handler) handleGitIndex(args map[string]any) (string, bool, error) {
+	ref := optString(args, "ref")
+	if ref == "" {
+		ref = "HEAD"
+	}
+	limitF, _ := args["limit"].(float64)
+	limit := int(limitF)
+
+	h.mu.Lock()
+	m, err := h.requireModel()
+	h.mu.Unlock()
+	if err != nil {
+		return err.Error(), true, nil
+	}
+
+	if m.GitIndex == nil {
+		return "git index is not available (project root is not inside a git repository)", true, nil
+	}
+
+	if limit > 0 {
+		n, err := m.GitIndex.IndexRange(ref, limit)
+		if err != nil {
+			return fmt.Sprintf("indexing commits: %v", err), true, nil
+		}
+		return fmt.Sprintf("Indexed %d commits from %s.", n, ref), false, nil
+	}
+
+	indexed := 0
+	if err := m.GitIndex.IndexAll(ref, func(n int) { indexed = n }); err != nil {
+		return fmt.Sprintf("indexing commits: %v", err), true, nil
+	}
+	return fmt.Sprintf("Indexed %d commits from %s.", indexed, ref), false, nil
+}

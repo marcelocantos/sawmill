@@ -111,11 +111,16 @@ func (s *Store) init() error {
 		CREATE TABLE IF NOT EXISTS commit_files (
 			commit_sha TEXT NOT NULL,
 			file_path  TEXT NOT NULL,
-			blob_sha   TEXT NOT NULL REFERENCES blobs(sha),
+			blob_sha   TEXT NOT NULL,
 			PRIMARY KEY (commit_sha, file_path)
 		);
 
 		CREATE INDEX IF NOT EXISTS idx_commit_files_blob ON commit_files(blob_sha);
+
+		CREATE TABLE IF NOT EXISTS indexed_commits (
+			sha        TEXT PRIMARY KEY,
+			indexed_at TEXT NOT NULL DEFAULT (datetime('now'))
+		);
 	`)
 	if err != nil {
 		return fmt.Errorf("initialising gitindex schema: %w", err)
@@ -311,6 +316,24 @@ func (s *Store) walkAndInsertNodes(tx *sql.Tx, blobSHA string, tree *tree_sitter
 			}
 		}
 	}
+}
+
+// IsCommitIndexed reports whether the given commit SHA has been fully indexed.
+func (s *Store) IsCommitIndexed(sha string) (bool, error) {
+	var exists bool
+	err := s.db.QueryRow("SELECT EXISTS(SELECT 1 FROM indexed_commits WHERE sha = ?)", sha).Scan(&exists)
+	if err != nil {
+		return false, fmt.Errorf("checking if commit %s is indexed: %w", sha, err)
+	}
+	return exists, nil
+}
+
+// MarkCommitIndexed records that the given commit SHA has been fully indexed.
+func (s *Store) MarkCommitIndexed(sha string) error {
+	if _, err := s.db.Exec("INSERT OR IGNORE INTO indexed_commits (sha) VALUES (?)", sha); err != nil {
+		return fmt.Errorf("marking commit %s as indexed: %w", sha, err)
+	}
+	return nil
 }
 
 // RegisterCommitFiles inserts commit-to-file-to-blob mappings.

@@ -133,6 +133,8 @@ func (h *Handler) Call(name string, args map[string]any) (string, bool, error) {
 		return h.handleDeleteInvariant(args)
 	case "migrate_type":
 		return h.handleMigrateType(args)
+	case "git_index":
+		return h.handleGitIndex(args)
 	default:
 		return "", false, fmt.Errorf("unknown tool: %s", name)
 	}
@@ -639,6 +641,17 @@ func Definitions() []mcpgo.Tool {
 			),
 			mcpgo.WithString("path",
 				mcpgo.Description("Restrict to files matching this path substring"),
+			),
+		),
+
+		// git_index
+		mcpgo.NewTool("git_index",
+			mcpgo.WithDescription("Index git commits by parsing their files with Tree-sitter and storing AST nodes in the git index. Enables structural queries over git history."),
+			mcpgo.WithString("ref",
+				mcpgo.Description("Starting ref (branch, tag, or commit SHA). Defaults to HEAD."),
+			),
+			mcpgo.WithNumber("limit",
+				mcpgo.Description("Maximum number of commits to index (0 = all, default 0)."),
 			),
 		),
 	}
