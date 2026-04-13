@@ -27,6 +27,7 @@ import (
 	"github.com/marcelocantos/sawmill/lspclient"
 	"github.com/marcelocantos/sawmill/model"
 	"github.com/marcelocantos/sawmill/rewrite"
+	"github.com/marcelocantos/sawmill/semdiff"
 	"github.com/marcelocantos/sawmill/transform"
 )
 
@@ -3441,4 +3442,120 @@ func (h *Handler) handleGitIndex(args map[string]any) (string, bool, error) {
 		return fmt.Sprintf("indexing commits: %v", err), true, nil
 	}
 	return fmt.Sprintf("Indexed %d commits from %s.", indexed, ref), false, nil
+}
+
+// ---- semantic_diff ------------------------------------------------------------
+
+func (h *Handler) handleSemanticDiff(args map[string]any) (string, bool, error) {
+	base, err := requireString(args, "base")
+	if err != nil {
+		return err.Error(), true, nil
+	}
+	head := optString(args, "head")
+	if head == "" {
+		head = "HEAD"
+	}
+	pathFilter := optString(args, "path")
+
+	h.mu.Lock()
+	m, merr := h.requireModel()
+	h.mu.Unlock()
+	if merr != nil {
+		return merr.Error(), true, nil
+	}
+
+	if m.GitIndex == nil {
+		return "git index is not available (project root is not inside a git repository)", true, nil
+	}
+
+	repo := m.GitIndex.Repo()
+	store := m.GitIndex.Store()
+
+	baseSHA, err := repo.Resolve(base)
+	if err != nil {
+		return fmt.Sprintf("resolving base ref %q: %v", base, err), true, nil
+	}
+	headSHA, err := repo.Resolve(head)
+	if err != nil {
+		return fmt.Sprintf("resolving head ref %q: %v", head, err), true, nil
+	}
+
+	if err := m.GitIndex.EnsureCommitIndexed(baseSHA); err != nil {
+		return fmt.Sprintf("indexing base commit: %v", err), true, nil
+	}
+	if err := m.GitIndex.EnsureCommitIndexed(headSHA); err != nil {
+		return fmt.Sprintf("indexing head commit: %v", err), true, nil
+	}
+
+	result, err := semdiff.Diff(store, repo, baseSHA, headSHA)
+	if err != nil {
+		return fmt.Sprintf("computing semantic diff: %v", err), true, nil
+	}
+
+	// Apply path filter if specified.
+	if pathFilter != "" {
+		var filtered []semdiff.FileDiff
+		for _, f := range result.Files {
+			if f.Path == pathFilter || f.OldPath == pathFilter {
+				filtered = append(filtered, f)
+			}
+		}
+		result.Files = filtered
+	}
+
+	out, err := json.MarshalIndent(result, "", "  ")
+	if err != nil {
+		return fmt.Sprintf("marshalling result: %v", err), true, nil
+	}
+	return string(out), false, nil
+}
+
+// ---- api_changelog ------------------------------------------------------------
+
+func (h *Handler) handleAPIChangelog(args map[string]any) (string, bool, error) {
+	base, err := requireString(args, "base")
+	if err != nil {
+		return err.Error(), true, nil
+	}
+	head := optString(args, "head")
+	if head == "" {
+		head = "HEAD"
+	}
+
+	h.mu.Lock()
+	m, merr := h.requireModel()
+	h.mu.Unlock()
+	if merr != nil {
+		return merr.Error(), true, nil
+	}
+
+	if m.GitIndex == nil {
+		return "git index is not available (project root is not inside a git repository)", true, nil
+	}
+
+	repo := m.GitIndex.Repo()
+	store := m.GitIndex.Store()
+
+	baseSHA, err := repo.Resolve(base)
+	if err != nil {
+		return fmt.Sprintf("resolving base ref %q: %v", base, err), true, nil
+	}
+	headSHA, err := repo.Resolve(head)
+	if err != nil {
+		return fmt.Sprintf("resolving head ref %q: %v", head, err), true, nil
+	}
+
+	if err := m.GitIndex.EnsureCommitIndexed(baseSHA); err != nil {
+		return fmt.Sprintf("indexing base commit: %v", err), true, nil
+	}
+	if err := m.GitIndex.EnsureCommitIndexed(headSHA); err != nil {
+		return fmt.Sprintf("indexing head commit: %v", err), true, nil
+	}
+
+	result, err := semdiff.Diff(store, repo, baseSHA, headSHA)
+	if err != nil {
+		return fmt.Sprintf("computing semantic diff: %v", err), true, nil
+	}
+
+	return semdiff.Changelog(result), false, nil
 }

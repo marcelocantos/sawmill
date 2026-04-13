@@ -10,10 +10,14 @@ import (
 
 // SymbolInfo describes a named declaration extracted from an indexed blob.
 type SymbolInfo struct {
-	Name      string
-	Kind      string // "function" or "type"
-	StartByte int
-	EndByte   int
+	NodeID         int64  // database ID of the declaration node
+	Name           string // identifier text
+	Kind           string // "function" or "type"
+	StartByte      int    // byte offset of the identifier
+	EndByte        int    // byte end of the identifier
+	DeclStartByte  int    // byte offset of the entire declaration
+	DeclEndByte    int    // byte end of the entire declaration
+	DeclNodeType   string // tree-sitter node type of the declaration
 }
 
 // SymbolNames extracts function and type names from a blob's indexed AST using
@@ -27,6 +31,8 @@ func (s *Store) SymbolNames(blobSHA string, source []byte) ([]SymbolInfo, error)
 		SELECT
 			parent.id,
 			parent_type.name AS parent_type_name,
+			parent.start_byte AS decl_start,
+			parent.end_byte   AS decl_end,
 			child.start_byte,
 			child.end_byte,
 			child_type.name  AS child_type_name
@@ -55,8 +61,8 @@ func (s *Store) SymbolNames(blobSHA string, source []byte) ([]SymbolInfo, error)
 	for rows.Next() {
 		var parentID int64
 		var parentTypeName, childTypeName string
-		var startByte, endByte int
-		if err := rows.Scan(&parentID, &parentTypeName, &startByte, &endByte, &childTypeName); err != nil {
+		var startByte, endByte, declStart, declEnd int
+		if err := rows.Scan(&parentID, &parentTypeName, &declStart, &declEnd, &startByte, &endByte, &childTypeName); err != nil {
 			return nil, fmt.Errorf("scanning symbol name row: %w", err)
 		}
 		if seen[parentID] {
@@ -76,10 +82,14 @@ func (s *Store) SymbolNames(blobSHA string, source []byte) ([]SymbolInfo, error)
 		}
 
 		symbols = append(symbols, SymbolInfo{
-			Name:      name,
-			Kind:      kind,
-			StartByte: startByte,
-			EndByte:   endByte,
+			NodeID:        parentID,
+			Name:          name,
+			Kind:          kind,
+			StartByte:     startByte,
+			EndByte:       endByte,
+			DeclStartByte: declStart,
+			DeclEndByte:   declEnd,
+			DeclNodeType:  parentTypeName,
 		})
 	}
 	return symbols, rows.Err()
@@ -197,6 +207,25 @@ func (s *Store) nodeByID(id int64) (*NodeRecord, error) {
 		rec.ParentID = &parentID.Int64
 	}
 	return &rec, nil
+}
+
+// AllNodes returns every node for a blob, ordered by start_byte.
+// This enables building an in-memory tree for structural comparison
+// without many individual queries.
+func (s *Store) AllNodes(blobSHA string) ([]NodeRecord, error) {
+	rows, err := s.db.Query(`
+		SELECT n.id, n.blob_sha, n.parent_id, nt.name, COALESCE(fn.name, ''), n.start_byte, n.end_byte
+		FROM nodes n
+		JOIN node_types nt ON nt.id = n.node_type_id
+		LEFT JOIN field_names fn ON fn.id = n.field_name_id
+		WHERE n.blob_sha = ?
+		ORDER BY n.start_byte
+	`, blobSHA)
+	if err != nil {
+		return nil, fmt.Errorf("querying all nodes for blob %s: %w", blobSHA, err)
+	}
+	defer rows.Close()
+	return scanNodeRows(rows)
 }
 
 func scanNodeRows(rows *sql.Rows) ([]NodeRecord, error) {

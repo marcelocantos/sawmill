@@ -141,6 +141,10 @@ func (h *Handler) Call(name string, args map[string]any) (string, bool, error) {
 		return h.handleGitDiffSummary(args)
 	case "git_blame_symbol":
 		return h.handleGitBlameSymbol(args)
+	case "semantic_diff":
+		return h.handleSemanticDiff(args)
+	case "api_changelog":
+		return h.handleAPIChangelog(args)
 	default:
 		return "", false, fmt.Errorf("unknown tool: %s", name)
 	}
@@ -703,6 +707,33 @@ func Definitions() []mcpgo.Tool {
 			),
 			mcpgo.WithString("ref",
 				mcpgo.Description("Starting ref. Default: HEAD"),
+			),
+		),
+
+		// semantic_diff
+		mcpgo.NewTool("semantic_diff",
+			mcpgo.WithDescription("Structural AST-level diff between two refs. Detects moves (symbol deleted from one file, added to another), renames (name changed but structure preserved), parameter/return type changes, and key-level changes in data formats (JSON, YAML). Produces richer output than git_diff_summary."),
+			mcpgo.WithString("base",
+				mcpgo.Required(),
+				mcpgo.Description("Base ref (branch, tag, SHA)"),
+			),
+			mcpgo.WithString("head",
+				mcpgo.Description("Head ref. Default: HEAD"),
+			),
+			mcpgo.WithString("path",
+				mcpgo.Description("Filter to a specific file path"),
+			),
+		),
+
+		// api_changelog
+		mcpgo.NewTool("api_changelog",
+			mcpgo.WithDescription("Generate a markdown API surface changelog between two refs. Lists added/removed/changed public symbols with signature changes, moves, and renames."),
+			mcpgo.WithString("base",
+				mcpgo.Required(),
+				mcpgo.Description("Base ref (tag, branch, SHA) — typically the older release"),
+			),
+			mcpgo.WithString("head",
+				mcpgo.Description("Head ref. Default: HEAD"),
 			),
 		),
 	}

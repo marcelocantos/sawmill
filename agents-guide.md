@@ -141,6 +141,17 @@ replaces any unapplied pending changes.
 | `lsp_references` | Find all references via LSP | `file`, `line`, `column` |
 | `diagnostics` | Get compile errors/warnings | `file`, `content` (optional) |
 
+### Git History
+
+| Tool | Purpose | Key params |
+|---|---|---|
+| `git_log` | Structured commit history with file-change metadata | `ref`, `limit`, `path` |
+| `git_diff_summary` | Symbol-level diff (added/removed/modified) between two refs | `base`, `head`, `path` |
+| `git_blame_symbol` | Find which commit last modified or introduced a symbol | `path`, `symbol`, `ref` |
+| `git_index` | Index commit history for structural queries | `ref`, `limit` |
+| `semantic_diff` | Structural AST diff — detects moves, renames, signature changes, key-level data format changes | `base`, `head`, `path` |
+| `api_changelog` | Markdown API surface changelog between two refs | `base`, `head` |
+
 ### Application
 
 | Tool | Purpose | Key params |
