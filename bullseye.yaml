@@ -88,7 +88,7 @@ targets:
     achieved: 2026-04-12
   T13:
     name: Semantic diffing compares ASTs structurally — detecting moves, renames, parameter changes, and generating API surface changelogs
-    status: identified
+    status: achieved
     value: 13.0
     cost: 13.0
     acceptance:
@@ -109,6 +109,7 @@ targets:
     - T6
     origin: decomposition of 🎯T6
     discovered: 2026-04-11
+    achieved: 2026-04-13
   T14:
     name: Semantic bisect finds the commit where a structural predicate changed — without running the code
     status: identified
