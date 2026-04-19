@@ -389,7 +389,7 @@ targets:
     achieved: 2026-04-19
   T3:
     name: Diagnostic-driven automatic fixes
-    status: identified
+    status: achieved
     value: 13.0
     cost: 13.0
     acceptance:
@@ -412,6 +412,7 @@ targets:
     - automation
     origin: manual
     discovered: 2026-04-07
+    achieved: 2026-04-19
   T3.1:
     name: Fix entries are stored — teach_fix MCP tool persists diagnostic-pattern → fix-action mappings in SQLite
     status: achieved
@@ -480,7 +481,7 @@ targets:
     achieved: 2026-04-19
   T3.4:
     name: A starter fix catalogue covers common Go and TypeScript errors out of the box
-    status: identified
+    status: achieved
     value: 0.0
     cost: 0.0
     observable: true
@@ -498,9 +499,10 @@ targets:
     - T3
     origin: manual
     discovered: 2026-04-19
+    achieved: 2026-04-19
   T3.5:
     name: Observation-based learning — sawmill offers to save fix pairings inferred from agent edits that resolve diagnostics
-    status: identified
+    status: achieved
     value: 0.0
     cost: 0.0
     observable: true
@@ -519,6 +521,7 @@ targets:
     - T3
     origin: manual
     discovered: 2026-04-19
+    achieved: 2026-04-19
   T4:
     name: CST node tree is stored in SQLite — in-memory CSTs are transient parse artifacts only
     status: achieved

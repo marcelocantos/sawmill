@@ -207,6 +207,10 @@ func (h *Handler) Call(name string, args map[string]any) (string, bool, error) {
 		return h.handleDeleteFix(args)
 	case "auto_fix":
 		return h.handleAutoFix(args)
+	case "seed_fixes":
+		return h.handleSeedFixes(args)
+	case "learn_from_observation":
+		return h.handleLearnFromObservation(args)
 	default:
 		return "", false, fmt.Errorf("unknown tool: %s", name)
 	}
@@ -942,6 +946,23 @@ func Definitions() []mcpgo.Tool {
 				mcpgo.Required(),
 				mcpgo.Description("Fix name to delete"),
 			),
+		),
+
+		// learn_from_observation
+		mcpgo.NewTool("learn_from_observation",
+			mcpgo.WithDescription("Infer candidate fix-catalogue entries from a pre/post diagnostic snapshot. Takes pre_diagnostics and post_diagnostics (both JSON arrays from `diagnostics format=json`); diagnostics that disappeared in the post-state become candidate entries. Each candidate has a generalised regex (quoted runs become named captures), a draft suggested name, and a placeholder action JSON the user fills in before calling teach_fix to make it permanent."),
+			mcpgo.WithString("pre_diagnostics",
+				mcpgo.Required(),
+				mcpgo.Description("Pre-edit diagnostic snapshot — a JSON array of Diagnostic objects (typically captured via `diagnostics format=json` before applying changes)"),
+			),
+			mcpgo.WithString("post_diagnostics",
+				mcpgo.Description("Post-edit diagnostic snapshot. Defaults to []; resolved diagnostics are those present in pre but absent from post."),
+			),
+		),
+
+		// seed_fixes
+		mcpgo.NewTool("seed_fixes",
+			mcpgo.WithDescription("Install a curated starter catalogue of fix entries for common Go (unused import, missing struct field, return-type mismatch) and TypeScript (TS2304 cannot find name, TS6133 declared but never read, TS2532 possibly undefined) errors. Idempotent: existing entries with the same name are kept (delete them first to overwrite). Auto-confidence entries are known-safe inline transforms; suggest entries describe a recommended fix without applying it."),
 		),
 
 		// auto_fix
