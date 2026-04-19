@@ -340,6 +340,48 @@ targets:
     origin: manual
     discovered: 2026-04-06
     achieved: 2026-04-06
+  T24:
+    name: Sawmill's verification tools emit structured failure payloads that downstream orchestrators can consume programmatically
+    status: identified
+    value: 0.0
+    cost: 0.0
+    observable: true
+    acceptance:
+    - '`check_conventions` supports a structured-output mode in which each violation is an object with `source`, `file`, `line`, optional `column`, `severity`, `rule`, `message`, and optional `snippet`/`suggested_fix` — not just a free-form string constructed by the convention''s JS program'
+    - The convention DSL allows a program to return either `string[]` (current behaviour, preserved) or an array of structured violation objects; sawmill normalises both into the same structured output shape
+    - '`check_invariants` (has_field / has_method variants) emits the same structured payload shape — file, type name, rule identifier, missing-field/method detail — instead of the current `fmt.Sprintf`-constructed strings'
+    - '`query` returns each match with file, line, column, and snippet in a stable shape suitable for programmatic consumption'
+    - 'Prose rendering is preserved as the default or selectable via a format parameter (e.g. `format: "text" | "json"`) so existing human-facing callers don''t break'
+    - Documentation and agent guide describe the structured payload schema, with worked examples of how an orchestrator (e.g. bullseye's rework flow) would consume it
+    context: |-
+      Downstream consumer: bullseye 🎯T1.5 "Rework diagnosis integration" wants to combine `{sawmill structured failure report} + {mnemo prior-attempt history}` into a `targets_rework` payload. Today sawmill's three check families all return prose — `check_conventions` wraps JS-produced strings in `Convention "X": N violation(s):\n<line>...`, `check_invariants` uses `fmt.Sprintf("%s: %s: missing field %q of type %q", ...)`, `query` returns formatted text. Any downstream orchestrator has to parse prose to build machine-readable diagnosis, which is the exact bottleneck blocking bullseye T1.5.
+
+      Minimum viable structured violation:
+      ```
+      { source: "convention:name" | "invariant:name" | "query",
+        file: "src/foo.go", line: 42, column?: 10,
+        severity: "error" | "warning",
+        rule: "<id>", message: "<human text>",
+        snippet?: "...", suggested_fix?: "..." }
+      ```
+
+      Scope boundary — this target is specifically about _producing_ structured output from the three existing check families. It is NOT:
+      - auto-fix orchestration (that's 🎯T3 "Diagnostic-driven automatic fixes", which _consumes_ structured diagnostics — this target provides the input 🎯T3 will want)
+      - cross-compiler diagnostic normalisation (a broader concern in 🎯T3)
+      - a convention DSL rewrite — the JS program's current contract (`return []string`) stays working; structured return is additive
+
+      Backwards compatibility is a hard requirement. Existing human-facing callers (agents running `check_conventions` interactively) must keep getting readable prose by default. Add structured output as a parallel mode (format flag or sibling field), don't break the text path.
+
+      Complements 🎯T3: this target produces structured diagnostics; T3 consumes them to drive automated fixes. T3 is higher value but depends on this one's output shape settling first, so this target could reasonably be filed as a T3 prerequisite (`blocks: [T3]`) — but the dependency is implicit in T3's scope rather than explicit in today's acceptance criteria, so leaving the edge informal until T3 is picked up.
+
+      Discovered 2026-04-18 while triaging bullseye 🎯T1.5's "externally blocked" context during a bullseye /cv run.
+    tags:
+    - diagnostics
+    - api-shape
+    - mcp
+    - foundation
+    origin: forked-from bullseye 🎯T1.5 triage 2026-04-18 — surfaced as the upstream prerequisite that makes T1.5 actionable
+    discovered: 2026-04-19
   T3:
     name: Diagnostic-driven automatic fixes
     status: identified
