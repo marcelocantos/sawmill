@@ -211,6 +211,8 @@ func (h *Handler) Call(name string, args map[string]any) (string, bool, error) {
 		return h.handleSeedFixes(args)
 	case "learn_from_observation":
 		return h.handleLearnFromObservation(args)
+	case "promote_constant":
+		return h.handlePromoteConstant(args)
 	default:
 		return "", false, fmt.Errorf("unknown tool: %s", name)
 	}
@@ -945,6 +947,25 @@ func Definitions() []mcpgo.Tool {
 			mcpgo.WithString("name",
 				mcpgo.Required(),
 				mcpgo.Description("Fix name to delete"),
+			),
+		),
+
+		// promote_constant
+		mcpgo.NewTool("promote_constant",
+			mcpgo.WithDescription("Replace every occurrence of a literal value with a reference to a named constant. The constant declaration is generated in idiomatic per-language form (Go: const, Python: UPPER_CASE = ..., TS: const, Rust: const NAME: &str = ..., C++: constexpr auto) and inserted after the file's preamble (package/imports/includes). Idempotent: re-running with the same name+value detects an existing declaration and only rewrites occurrences."),
+			mcpgo.WithString("literal",
+				mcpgo.Required(),
+				mcpgo.Description(`Literal source text to replace, e.g. "\"foo\"" for a string, "42" for a number — match is exact`),
+			),
+			mcpgo.WithString("name",
+				mcpgo.Required(),
+				mcpgo.Description("Identifier for the new constant (e.g. DefaultTimeout, MAX_RETRIES)"),
+			),
+			mcpgo.WithString("path",
+				mcpgo.Description("Restrict to files matching this path substring"),
+			),
+			mcpgo.WithBoolean("format",
+				mcpgo.Description("Run the language formatter on changed files"),
 			),
 		),
 

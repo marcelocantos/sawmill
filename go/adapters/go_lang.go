@@ -81,6 +81,10 @@ func (a *GoAdapter) GenImport(path string) string {
 	return fmt.Sprintf("import \"%s\"\n", path)
 }
 
+func (a *GoAdapter) GenConstDeclaration(name, value string) string {
+	return fmt.Sprintf("const %s = %s\n", name, value)
+}
+
 // goModulePath reads the module path from go.mod in root (or an ancestor).
 func goModulePath(root string) string {
 	modPath := filepath.Join(root, "go.mod")

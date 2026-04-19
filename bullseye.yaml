@@ -629,6 +629,67 @@ targets:
     - git-workflow
     origin: design discussion — cross-representation transforms and git workflow automation
     discovered: 2026-04-10
+  T8.1:
+    name: promote_constant — magic literals become named constants in idiomatic per-language form
+    status: achieved
+    value: 0.0
+    cost: 0.0
+    observable: true
+    acceptance:
+    - promote_constant MCP tool accepts a literal value (string or number), a constant name, an optional file/path filter, and an optional package/module placement
+    - All occurrences of the literal in the targeted scope are replaced with a reference to the new constant
+    - 'A constant declaration is generated in the appropriate idiomatic location for the language (Go: package-level const block; Python: module-level UPPER_CASE assignment; TS: top-level const; C++: constexpr in the relevant header)'
+    - Produces a unified diff per file gated by the standard apply/undo flow
+    - 'Idempotent: running promote_constant again with the same name and value detects the existing constant and re-uses it rather than declaring a duplicate'
+    context: Standalone cross-representation transform — one of the most common refactorings (eliminate magic numbers/strings). Doesn't depend on the cross-representation identity work in 🎯T7; operates purely within one language's source tree. Builds on existing AST query + rewrite infrastructure.
+    depends_on:
+    - T16
+    tags:
+    - transform
+    - T8
+    origin: manual
+    discovered: 2026-04-19
+    achieved: 2026-04-19
+  T8.2:
+    name: extract_to_env — code literal becomes an environment variable read with .env.example scaffolding
+    status: identified
+    value: 0.0
+    cost: 0.0
+    observable: true
+    acceptance:
+    - extract_to_env MCP tool accepts a literal value, an env-var name, and an optional file filter
+    - 'Replaces all occurrences of the literal with an environment-variable read appropriate to the language (Go: os.Getenv; Python: os.environ.get; TS: process.env; C++: std::getenv)'
+    - Creates or updates a .env.example file at the project root with the key + literal value as documentation
+    - Adds .env to .gitignore if not already present
+    - Produces a per-file diff and respects the standard apply/undo flow
+    context: Standalone — doesn't require cross-representation identity tracking. Mechanically replaces a literal with a runtime env-var read and scaffolds the .env.example contract. Common refactoring for hard-coded URLs, ports, API keys.
+    depends_on:
+    - T16
+    tags:
+    - transform
+    - T8
+    origin: manual
+    discovered: 2026-04-19
+  T8.3:
+    name: migrate_pattern — generalised structural pattern rewriting across files with import management
+    status: identified
+    value: 0.0
+    cost: 0.0
+    observable: true
+    acceptance:
+    - migrate_pattern MCP tool accepts an old pattern, a new pattern (both using the $placeholder DSL), and an optional file filter
+    - Identifies every structural occurrence of the old pattern in the targeted scope and rewrites to the new pattern with captured placeholders bound
+    - 'Manages imports: if the new pattern references a symbol not currently imported, the import is added; conversely, if the old pattern''s import becomes unused, it is removed'
+    - Produces a per-file diff gated by the standard apply/undo flow
+    - Generalises 🎯T1.2 apply_equivalence with explicit add/drop import semantics rather than implicit symmetric rewriting
+    context: 'Builds on the equivalence pattern engine (🎯T1) by adding import-aware semantics. Common case: replacing a deprecated API call across the codebase, where the rewrite needs to add an import for the new symbol and drop the import of the old. Standalone from 🎯T7 cross-rep identity.'
+    depends_on:
+    - T1
+    tags:
+    - transform
+    - T8
+    origin: manual
+    discovered: 2026-04-19
   T9:
     name: Git objects are accessible from Go — sawmill can read commits, trees, and blobs from the git repo without shelling out
     status: achieved

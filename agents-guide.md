@@ -106,6 +106,7 @@ replaces any unapplied pending changes.
 | `add_field` | Add a field to a struct/class, propagate to constructors | `type_name`, `field_name`, `field_type`, `default_value` |
 | `clone_and_adapt` | Copy a symbol with string substitutions | `source`, `substitutions`, `target_file` |
 | `migrate_type` | Rewrite all usage sites of a type | `type_name`, `rules` |
+| `promote_constant` | Replace every occurrence of a literal with a named constant; declares it in idiomatic per-language form | `literal`, `name`, `path`, `format` |
 
 ### Teaching
 
