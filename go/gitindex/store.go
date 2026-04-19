@@ -37,6 +37,9 @@ func Open(path string) (*Store, error) {
 	if err != nil {
 		return nil, fmt.Errorf("opening gitindex store at %s: %w", path, err)
 	}
+	// Serialise through one connection so busy_timeout and other PRAGMAs
+	// set in init() apply to every query. SQLite is single-writer anyway.
+	db.SetMaxOpenConns(1)
 	s := &Store{
 		db:             db,
 		nodeTypeCache:  make(map[string]int64),
@@ -55,6 +58,7 @@ func OpenMemory() (*Store, error) {
 	if err != nil {
 		return nil, fmt.Errorf("opening in-memory gitindex store: %w", err)
 	}
+	db.SetMaxOpenConns(1)
 	s := &Store{
 		db:             db,
 		nodeTypeCache:  make(map[string]int64),
@@ -78,6 +82,7 @@ func (s *Store) init() error {
 		PRAGMA foreign_keys=ON;
 		PRAGMA cache_size=-16000;
 		PRAGMA mmap_size=268435456;
+		PRAGMA busy_timeout=5000;
 
 		CREATE TABLE IF NOT EXISTS node_types (
 			id   INTEGER PRIMARY KEY,
@@ -233,8 +238,19 @@ func (s *Store) IndexBlob(blobSHA, language string, tree *tree_sitter.Tree) erro
 	}
 	defer tx.Rollback() //nolint:errcheck
 
-	if _, err := tx.Exec("INSERT INTO blobs (sha, language) VALUES (?, ?)", blobSHA, language); err != nil {
+	// INSERT OR IGNORE — a concurrent indexer may have inserted this blob
+	// between our IsIndexed check above and now. If RowsAffected is 0, the
+	// blob already exists; skip walking nodes (the other indexer is doing it).
+	res, err := tx.Exec("INSERT OR IGNORE INTO blobs (sha, language) VALUES (?, ?)", blobSHA, language)
+	if err != nil {
 		return fmt.Errorf("inserting blob %s: %w", blobSHA, err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("checking insert for blob %s: %w", blobSHA, err)
+	}
+	if n == 0 {
+		return nil
 	}
 
 	if err := s.walkAndInsertNodes(tx, blobSHA, tree); err != nil {

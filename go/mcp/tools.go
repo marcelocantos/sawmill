@@ -3267,6 +3267,22 @@ func nullSafeStringSlice(s []string) []string {
 
 // ---- git_blame_symbol -------------------------------------------------------
 
+type blameCommit struct {
+	SHA     string `json:"sha"`
+	Author  string `json:"author"`
+	Date    string `json:"date"`
+	Message string `json:"message"`
+}
+
+type blameResult struct {
+	Symbol               string       `json:"symbol"`
+	Path                 string       `json:"path"`
+	Introduced           *blameCommit `json:"introduced,omitempty"`
+	LastModified         *blameCommit `json:"last_modified,omitempty"`
+	BodyLastModified     *blameCommit `json:"body_last_modified,omitempty"`
+	SignatureLastChanged *blameCommit `json:"signature_last_changed,omitempty"`
+}
+
 func (h *Handler) handleGitBlameSymbol(args map[string]any) (string, bool, error) {
 	filePath, err := requireString(args, "path")
 	if err != nil {
@@ -3300,24 +3316,25 @@ func (h *Handler) handleGitBlameSymbol(args map[string]any) (string, bool, error
 		return fmt.Sprintf("resolving ref %q: %v", ref, err), true, nil
 	}
 
-	type commitRef struct {
-		SHA     string `json:"sha"`
-		Author  string `json:"author"`
-		Date    string `json:"date"`
-		Message string `json:"message"`
+	makeRef := func(c *gitrepo.Commit) *blameCommit {
+		msg := c.Message
+		if i := strings.IndexByte(msg, '\n'); i >= 0 {
+			msg = msg[:i]
+		}
+		return &blameCommit{
+			SHA:     c.SHA,
+			Author:  c.Author,
+			Date:    c.When.UTC().Format("2006-01-02T15:04:05Z"),
+			Message: strings.TrimSpace(msg),
+		}
 	}
 
-	type blameResult struct {
-		Symbol       string     `json:"symbol"`
-		Path         string     `json:"path"`
-		LastModified *commitRef `json:"last_modified,omitempty"`
-		Introduced   *commitRef `json:"introduced,omitempty"`
-	}
-
-	var lastModified *commitRef
-	var introduced *commitRef
-	prevBlobSHA := ""
-	const maxDepth = 100
+	var introduced, lastModified, bodyLastModified, sigLastChanged *blameCommit
+	var newestDecl, newestBody, newestSig string
+	var lastModFound, bodyModFound, sigChangeFound bool
+	var prevWithSymbol *blameCommit
+	var prevBlobSHA string
+	var symbolKind string
 
 	walkErr := repo.WalkCommits(startSHA, func(c *gitrepo.Commit) error {
 		if err := m.GitIndex.EnsureCommitIndexed(c.SHA); err != nil {
@@ -3328,65 +3345,65 @@ func (h *Handler) handleGitBlameSymbol(args map[string]any) (string, bool, error
 		if err != nil {
 			return err
 		}
-
 		if !ok {
-			// File not in this commit; if we had it before, that means it was added
-			// in the previous (newer) commit — but we walk newest-first, so here
-			// it means the file didn't exist yet. Stop.
+			// File didn't exist at this commit — past the file's introduction.
 			return io.EOF
 		}
 
-		if blobSHA == prevBlobSHA {
-			return nil // file unchanged
+		// Same blob as the more-recent commit means same symbol content;
+		// just push introduced back.
+		if blobSHA == prevBlobSHA && prevWithSymbol != nil {
+			introduced = makeRef(c)
+			prevWithSymbol = introduced
+			return nil
 		}
 
-		// Blob changed (or this is the first commit we're seeing with this file).
-		syms, err := symbolsForBlob(store, repo, blobSHA)
+		source, err := repo.ReadBlob(blobSHA)
+		if err != nil {
+			return err
+		}
+		syms, err := store.SymbolNames(blobSHA, source)
 		if err != nil {
 			return err
 		}
 
-		hasSymbol := false
-		for _, s := range syms {
-			if s.Name == symbolName {
-				hasSymbol = true
+		var sym *gitindex.SymbolInfo
+		for i := range syms {
+			if syms[i].Name == symbolName {
+				sym = &syms[i]
 				break
 			}
 		}
-
-		msg := c.Message
-		if idx := strings.IndexByte(msg, '\n'); idx >= 0 {
-			msg = msg[:idx]
-		}
-		msg = strings.TrimSpace(msg)
-
-		ref := &commitRef{
-			SHA:     c.SHA,
-			Author:  c.Author,
-			Date:    c.When.UTC().Format("2006-01-02T15:04:05Z"),
-			Message: msg,
-		}
-
-		if hasSymbol {
-			if prevBlobSHA == "" {
-				// This is the HEAD commit (first seen); record as last_modified candidate.
-				// We track when the blob changes and the symbol was present.
-			}
-			// Symbol exists in this commit's version; record as candidate for introduced.
-			introduced = ref
-			if prevBlobSHA != "" && lastModified == nil {
-				// The blob changed and symbol still exists; this commit is where the
-				// change was introduced (walking newest-first, so the previous blob had it too).
-				lastModified = ref
-			}
-		} else {
-			// Symbol absent in this commit; the previous (newer) commit introduced it.
-			if lastModified == nil && introduced != nil {
-				lastModified = introduced
-			}
+		if sym == nil {
+			// Symbol absent in this commit — past the symbol's introduction.
 			return io.EOF
 		}
 
+		decl, body, sig := extractSymbolSnapshot(store, source, *sym)
+		cref := makeRef(c)
+
+		if prevWithSymbol == nil {
+			// First (newest) commit with the symbol — establish baseline.
+			newestDecl = decl
+			newestBody = body
+			newestSig = sig
+			symbolKind = sym.Kind
+		} else {
+			if !lastModFound && decl != newestDecl {
+				lastModified = prevWithSymbol
+				lastModFound = true
+			}
+			if !bodyModFound && body != newestBody {
+				bodyLastModified = prevWithSymbol
+				bodyModFound = true
+			}
+			if !sigChangeFound && sig != newestSig {
+				sigLastChanged = prevWithSymbol
+				sigChangeFound = true
+			}
+		}
+		introduced = cref
+		prevWithSymbol = cref
 		prevBlobSHA = blobSHA
 		return nil
 	})
@@ -3394,27 +3411,66 @@ func (h *Handler) handleGitBlameSymbol(args map[string]any) (string, bool, error
 	if walkErr != nil {
 		return fmt.Sprintf("walking commits: %v", walkErr), true, nil
 	}
-
-	// If we only found it in all commits (never disappeared going back), introduced
-	// is the oldest commit with the symbol.
-	if lastModified == nil && introduced != nil {
-		lastModified = introduced
-	}
-
 	if introduced == nil {
 		return fmt.Sprintf("symbol %q not found in %s at %s", symbolName, filePath, ref), true, nil
 	}
 
-	out, err := json.MarshalIndent(blameResult{
+	// If an aspect never changed during the walk, it was last set at introduction.
+	if !lastModFound {
+		lastModified = introduced
+	}
+
+	result := blameResult{
 		Symbol:       symbolName,
 		Path:         filePath,
-		LastModified: lastModified,
 		Introduced:   introduced,
-	}, "", "  ")
+		LastModified: lastModified,
+	}
+	if symbolKind == "function" {
+		if !bodyModFound {
+			bodyLastModified = introduced
+		}
+		if !sigChangeFound {
+			sigLastChanged = introduced
+		}
+		result.BodyLastModified = bodyLastModified
+		result.SignatureLastChanged = sigLastChanged
+	}
+
+	out, err := json.MarshalIndent(result, "", "  ")
 	if err != nil {
 		return fmt.Sprintf("marshalling result: %v", err), true, nil
 	}
 	return string(out), false, nil
+}
+
+// extractSymbolSnapshot returns the source text of (declaration, body,
+// signature) for a symbol. Body and sig are empty strings when sym is not a
+// function — those distinctions only make sense for callable symbols.
+func extractSymbolSnapshot(store *gitindex.Store, source []byte, sym gitindex.SymbolInfo) (decl, body, sig string) {
+	if sym.DeclStartByte >= 0 && sym.DeclEndByte <= len(source) {
+		decl = string(source[sym.DeclStartByte:sym.DeclEndByte])
+	}
+	if sym.Kind != "function" {
+		return decl, "", ""
+	}
+	children, err := store.QueryChildren(sym.NodeID)
+	if err != nil {
+		return decl, "", ""
+	}
+	for _, c := range children {
+		switch {
+		case c.NodeType == "parameter_list" || c.FieldName == "parameters":
+			if c.StartByte >= 0 && c.EndByte <= len(source) {
+				sig = string(source[c.StartByte:c.EndByte])
+			}
+		case c.FieldName == "body" || c.NodeType == "block" || c.NodeType == "compound_statement":
+			if c.StartByte >= 0 && c.EndByte <= len(source) {
+				body = string(source[c.StartByte:c.EndByte])
+			}
+		}
+	}
+	return decl, body, sig
 }
 
 // ---- git_index ----------------------------------------------------------------

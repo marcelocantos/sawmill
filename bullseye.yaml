@@ -312,7 +312,7 @@ targets:
     discovered: 2026-04-10
   T6:
     name: Git history is semantically indexed — commits are parsed with Tree-sitter and symbol changes are queryable via MCP tools
-    status: identified
+    status: achieved
     value: 20.0
     cost: 20.0
     observable: true
@@ -339,6 +339,7 @@ targets:
     - foundation
     origin: design discussion — git indexing in sawmill
     discovered: 2026-04-10
+    achieved: 2026-04-19
   T7:
     name: Sawmill understands semantic identity across representations — the same value in code, config, schema, and embedded DSLs is recognised as one entity
     status: identified

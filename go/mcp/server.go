@@ -772,7 +772,7 @@ func Definitions() []mcpgo.Tool {
 
 		// git_blame_symbol
 		mcpgo.NewTool("git_blame_symbol",
-			mcpgo.WithDescription("Find which commit last modified or introduced a symbol."),
+			mcpgo.WithDescription("Trace a symbol's history. Returns the commit that introduced it, the commit that last modified its declaration, and (for functions) separate commits for body_last_modified and signature_last_changed — distinguishing whose interface changed vs. whose implementation changed."),
 			mcpgo.WithString("path",
 				mcpgo.Required(),
 				mcpgo.Description("File path containing the symbol"),
