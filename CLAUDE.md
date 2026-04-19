@@ -21,7 +21,7 @@ Requires Go 1.26+.
 ```
 go/
   cmd/sawmill/main.go — CLI entry point (serve, version)
-  mcp/              — MCP server (35 tools)
+  mcp/              — MCP server (36 tools)
     server.go       — Per-session Handler + tool registration with mcp-go
     tools.go        — All tool handler implementations
     helpers.go      — Batch transform helpers, parameter editing
@@ -37,6 +37,7 @@ go/
   jsengine/         — QuickJS-based per-node JS transforms
   exemplar/         — Teach-by-example template extraction
   semdiff/          — Structural AST diffing (moves, renames, signatures, data formats)
+  bisect/           — Semantic git bisect (binary search on structural predicates)
   index/            — Symbol extraction from Tree-sitter trees
   watcher/          — File system watcher with debouncing (fsnotify)
 homebrew/

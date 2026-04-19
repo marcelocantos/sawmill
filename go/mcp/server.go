@@ -187,6 +187,8 @@ func (h *Handler) Call(name string, args map[string]any) (string, bool, error) {
 		return h.handleSemanticDiff(args)
 	case "api_changelog":
 		return h.handleAPIChangelog(args)
+	case "git_semantic_bisect":
+		return h.handleGitSemanticBisect(args)
 	default:
 		return "", false, fmt.Errorf("unknown tool: %s", name)
 	}
@@ -808,6 +810,30 @@ func Definitions() []mcpgo.Tool {
 			),
 			mcpgo.WithString("head",
 				mcpgo.Description("Head ref. Default: HEAD"),
+			),
+		),
+
+		// git_semantic_bisect
+		mcpgo.NewTool("git_semantic_bisect",
+			mcpgo.WithDescription(`Find the commit where a structural predicate over the AST flipped, without running the code. Binary-searches the first-parent chain between good and bad refs, indexing commits lazily, and returns the flip commit plus the specific structural change that caused it.
+
+The predicate is a JSON object. Supported kinds:
+  {"kind":"symbol_exists","name":"Foo"}
+  {"kind":"function_has_param","function":"Foo","param":"ctx"}
+  {"kind":"type_has_field","type":"Config","field":"Verbose"}
+
+All predicates accept an optional "file" key to restrict evaluation to one path.`),
+			mcpgo.WithString("predicate",
+				mcpgo.Required(),
+				mcpgo.Description("JSON-encoded structural predicate (see tool description)"),
+			),
+			mcpgo.WithString("good",
+				mcpgo.Required(),
+				mcpgo.Description("Good ref — commit where the predicate has its expected value"),
+			),
+			mcpgo.WithString("bad",
+				mcpgo.Required(),
+				mcpgo.Description("Bad ref — commit where the predicate has its unexpected value (must be a descendant of good)"),
 			),
 		),
 	}

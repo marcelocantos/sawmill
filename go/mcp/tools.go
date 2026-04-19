@@ -26,6 +26,7 @@ import (
 	"github.com/marcelocantos/sawmill/jsengine"
 	"github.com/marcelocantos/sawmill/lspclient"
 	"github.com/marcelocantos/sawmill/model"
+	"github.com/marcelocantos/sawmill/bisect"
 	"github.com/marcelocantos/sawmill/rewrite"
 	"github.com/marcelocantos/sawmill/semdiff"
 	"github.com/marcelocantos/sawmill/transform"
@@ -3566,4 +3567,60 @@ func (h *Handler) handleAPIChangelog(args map[string]any) (string, bool, error) 
 	}
 
 	return semdiff.Changelog(result), false, nil
+}
+
+// ---- git_semantic_bisect ------------------------------------------------------
+
+func (h *Handler) handleGitSemanticBisect(args map[string]any) (string, bool, error) {
+	predicateStr, err := requireString(args, "predicate")
+	if err != nil {
+		return err.Error(), true, nil
+	}
+	good, err := requireString(args, "good")
+	if err != nil {
+		return err.Error(), true, nil
+	}
+	bad, err := requireString(args, "bad")
+	if err != nil {
+		return err.Error(), true, nil
+	}
+
+	pred, err := bisect.ParsePredicate(predicateStr)
+	if err != nil {
+		return err.Error(), true, nil
+	}
+
+	h.mu.Lock()
+	m, merr := h.requireModel()
+	h.mu.Unlock()
+	if merr != nil {
+		return merr.Error(), true, nil
+	}
+
+	if m.GitIndex == nil {
+		return "git index is not available (project root is not inside a git repository)", true, nil
+	}
+
+	repo := m.GitIndex.Repo()
+	store := m.GitIndex.Store()
+
+	goodSHA, err := repo.Resolve(good)
+	if err != nil {
+		return fmt.Sprintf("resolving good ref %q: %v", good, err), true, nil
+	}
+	badSHA, err := repo.Resolve(bad)
+	if err != nil {
+		return fmt.Sprintf("resolving bad ref %q: %v", bad, err), true, nil
+	}
+
+	result, err := bisect.Bisect(m.GitIndex, store, repo, pred, goodSHA, badSHA)
+	if err != nil {
+		return fmt.Sprintf("bisecting: %v", err), true, nil
+	}
+
+	out, err := json.MarshalIndent(result, "", "  ")
+	if err != nil {
+		return fmt.Sprintf("marshalling result: %v", err), true, nil
+	}
+	return string(out), false, nil
 }

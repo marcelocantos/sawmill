@@ -147,6 +147,7 @@ replaces any unapplied pending changes.
 | `git_index` | Index commit history for structural queries | `ref`, `limit` |
 | `semantic_diff` | Structural AST diff — detects moves, renames, signature changes, key-level data format changes | `base`, `head`, `path` |
 | `api_changelog` | Markdown API surface changelog between two refs | `base`, `head` |
+| `git_semantic_bisect` | Find the commit where a structural predicate flipped (binary search, no code execution) | `predicate` (JSON), `good`, `bad` |
 
 ### Application
 

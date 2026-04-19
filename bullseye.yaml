@@ -112,7 +112,7 @@ targets:
     achieved: 2026-04-13
   T14:
     name: Semantic bisect finds the commit where a structural predicate changed — without running the code
-    status: identified
+    status: achieved
     value: 8.0
     cost: 5.0
     acceptance:
@@ -130,6 +130,7 @@ targets:
     - T6
     origin: decomposition of 🎯T6
     discovered: 2026-04-11
+    achieved: 2026-04-19
   T15:
     name: Early milestones — phases 2–6, rich ctx API, teach by example, convention invariants, LSP on ctx, structural pre-flight checks, agent prompt generation
     status: achieved
