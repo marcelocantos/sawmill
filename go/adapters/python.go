@@ -86,6 +86,10 @@ func (a *PythonAdapter) GenConstDeclaration(name, value string) string {
 	return fmt.Sprintf("%s = %s\n", name, value)
 }
 
+func (a *PythonAdapter) GenEnvRead(varName string) string {
+	return fmt.Sprintf("os.environ.get(%q)", varName)
+}
+
 // ResolveImportPath resolves a Python import like "foo.bar" to
 // "foo/bar.py" or "foo/bar/__init__.py" relative to root.
 func (a *PythonAdapter) ResolveImportPath(importText, _, root string) string {

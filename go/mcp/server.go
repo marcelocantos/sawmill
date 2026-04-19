@@ -213,6 +213,8 @@ func (h *Handler) Call(name string, args map[string]any) (string, bool, error) {
 		return h.handleLearnFromObservation(args)
 	case "promote_constant":
 		return h.handlePromoteConstant(args)
+	case "extract_to_env":
+		return h.handleExtractToEnv(args)
 	default:
 		return "", false, fmt.Errorf("unknown tool: %s", name)
 	}
@@ -947,6 +949,25 @@ func Definitions() []mcpgo.Tool {
 			mcpgo.WithString("name",
 				mcpgo.Required(),
 				mcpgo.Description("Fix name to delete"),
+			),
+		),
+
+		// extract_to_env
+		mcpgo.NewTool("extract_to_env",
+			mcpgo.WithDescription("Replace every occurrence of a literal value with an environment-variable read appropriate to the language (Go: os.Getenv, Python: os.environ.get, TS: process.env[VAR], Rust: std::env::var(...).unwrap_or_default(), C++: std::getenv). Also creates or updates .env.example with the key + literal value as documentation, and ensures .env is in .gitignore. Note: ensure the target file imports the relevant module for the env read."),
+			mcpgo.WithString("literal",
+				mcpgo.Required(),
+				mcpgo.Description(`Literal source text to replace, e.g. "\"http://example.com/api\"" — match is exact`),
+			),
+			mcpgo.WithString("var_name",
+				mcpgo.Required(),
+				mcpgo.Description("Environment variable name (POSIX-ish: uppercase/digits/underscores, not starting with digit)"),
+			),
+			mcpgo.WithString("path",
+				mcpgo.Description("Restrict to files matching this path substring"),
+			),
+			mcpgo.WithBoolean("format",
+				mcpgo.Description("Run the language formatter on changed files"),
 			),
 		),
 

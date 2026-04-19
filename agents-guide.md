@@ -107,6 +107,7 @@ replaces any unapplied pending changes.
 | `clone_and_adapt` | Copy a symbol with string substitutions | `source`, `substitutions`, `target_file` |
 | `migrate_type` | Rewrite all usage sites of a type | `type_name`, `rules` |
 | `promote_constant` | Replace every occurrence of a literal with a named constant; declares it in idiomatic per-language form | `literal`, `name`, `path`, `format` |
+| `extract_to_env` | Replace a literal with an env-var read (os.Getenv / os.environ.get / process.env / std::getenv); scaffold .env.example + .gitignore | `literal`, `var_name`, `path`, `format` |
 
 ### Teaching
 

@@ -92,6 +92,10 @@ func (a *RustAdapter) GenConstDeclaration(name, value string) string {
 	return fmt.Sprintf("const %s: &str = %s;\n", name, value)
 }
 
+func (a *RustAdapter) GenEnvRead(varName string) string {
+	return fmt.Sprintf("std::env::var(%q).unwrap_or_default()", varName)
+}
+
 // ResolveImportPath resolves Rust `mod foo;` declarations to filesystem paths.
 // Returns "" for `use` statements (intra-module, not file references).
 func (a *RustAdapter) ResolveImportPath(importText, importingFile, _ string) string {
