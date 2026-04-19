@@ -219,6 +219,13 @@ func (h *Handler) handleQuery(args map[string]any) (string, bool, error) {
 	rawQuery := optString(args, "raw_query")
 	capture := optString(args, "capture")
 	pathFilter := optString(args, "path")
+	format := optString(args, "format")
+	if format == "" {
+		format = "text"
+	}
+	if format != "text" && format != "json" {
+		return fmt.Sprintf("invalid format %q (want \"text\" or \"json\")", format), true, nil
+	}
 
 	h.mu.Lock()
 	defer h.mu.Unlock()
@@ -254,6 +261,25 @@ func (h *Handler) handleQuery(args map[string]any) (string, bool, error) {
 		if err != nil {
 			return fmt.Sprintf("querying %s: %v", acc.Path(), err), true, nil
 		}
+	}
+
+	if format == "json" {
+		matches := make([]QueryMatch, 0, len(results))
+		for _, r := range results {
+			matches = append(matches, QueryMatch{
+				File:    r.Path,
+				Line:    int(r.StartLine),
+				Column:  int(r.StartCol),
+				Kind:    r.Kind,
+				Name:    r.Name,
+				Snippet: r.Text,
+			})
+		}
+		out, err := json.MarshalIndent(matches, "", "  ")
+		if err != nil {
+			return fmt.Sprintf("marshalling: %v", err), true, nil
+		}
+		return string(out), false, nil
 	}
 
 	if len(results) == 0 {
@@ -1027,6 +1053,13 @@ func (h *Handler) handleTeachConvention(args map[string]any) (string, bool, erro
 
 func (h *Handler) handleCheckConventions(args map[string]any) (string, bool, error) {
 	pathFilter := optString(args, "path")
+	format := optString(args, "format")
+	if format == "" {
+		format = "text"
+	}
+	if format != "text" && format != "json" {
+		return fmt.Sprintf("invalid format %q (want \"text\" or \"json\")", format), true, nil
+	}
 
 	h.mu.Lock()
 	defer h.mu.Unlock()
@@ -1042,6 +1075,9 @@ func (h *Handler) handleCheckConventions(args map[string]any) (string, bool, err
 	}
 
 	if len(conventions) == 0 {
+		if format == "json" {
+			return "[]", false, nil
+		}
 		return "No conventions defined.", false, nil
 	}
 
@@ -1057,23 +1093,66 @@ func (h *Handler) handleCheckConventions(args map[string]any) (string, bool, err
 		f = &forest.Forest{Files: filtered}
 	}
 
-	var sb strings.Builder
-	totalViolations := 0
+	type convResult struct {
+		name        string
+		err         error
+		structured  []Violation
+		legacyTexts []string // populated only for plain-string violations to preserve prose output
+	}
+	results := make([]convResult, 0, len(conventions))
 
 	for _, conv := range conventions {
 		violations, err := codegen.RunConventionCheck(f, conv.CheckProgram)
 		if err != nil {
-			fmt.Fprintf(&sb, "Convention %q: error: %v\n", conv.Name, err)
+			results = append(results, convResult{name: conv.Name, err: err})
 			continue
 		}
-		if len(violations) == 0 {
-			fmt.Fprintf(&sb, "Convention %q: OK\n", conv.Name)
-		} else {
-			fmt.Fprintf(&sb, "Convention %q: %d violation(s):\n", conv.Name, len(violations))
-			for _, v := range violations {
-				fmt.Fprintf(&sb, "  %s\n", v)
-				totalViolations++
+		var structured []Violation
+		var legacy []string
+		for _, v := range violations {
+			structured = append(structured, conventionViolationToStructured(conv.Name, v))
+			if isPlainStringViolation(v) {
+				legacy = append(legacy, v.Message)
 			}
+		}
+		results = append(results, convResult{name: conv.Name, structured: structured, legacyTexts: legacy})
+	}
+
+	if format == "json" {
+		var allViolations []Violation
+		for _, r := range results {
+			allViolations = append(allViolations, r.structured...)
+		}
+		out, err := json.MarshalIndent(allViolations, "", "  ")
+		if err != nil {
+			return fmt.Sprintf("marshalling: %v", err), true, nil
+		}
+		return string(out), false, nil
+	}
+
+	var sb strings.Builder
+	totalViolations := 0
+	for _, r := range results {
+		if r.err != nil {
+			fmt.Fprintf(&sb, "Convention %q: error: %v\n", r.name, r.err)
+			continue
+		}
+		if len(r.structured) == 0 {
+			fmt.Fprintf(&sb, "Convention %q: OK\n", r.name)
+			continue
+		}
+		fmt.Fprintf(&sb, "Convention %q: %d violation(s):\n", r.name, len(r.structured))
+		// Preserve legacy prose for plain-string returns; render structured
+		// returns as `file:line: message`.
+		legacyIdx := 0
+		for _, v := range r.structured {
+			if v.File == "" && v.Line == 0 && legacyIdx < len(r.legacyTexts) {
+				fmt.Fprintf(&sb, "  %s\n", r.legacyTexts[legacyIdx])
+				legacyIdx++
+			} else {
+				fmt.Fprintf(&sb, "  %s\n", formatViolationLine(v))
+			}
+			totalViolations++
 		}
 	}
 
@@ -1084,6 +1163,54 @@ func (h *Handler) handleCheckConventions(args map[string]any) (string, bool, err
 	}
 
 	return sb.String(), false, nil
+}
+
+// conventionViolationToStructured maps a codegen.ConventionViolation
+// (returned by the JS check program) into the canonical mcp.Violation shape.
+// Plain-string returns become Violations with only Message populated.
+func conventionViolationToStructured(convName string, v codegen.ConventionViolation) Violation {
+	severity := v.Severity
+	if severity == "" {
+		severity = "error"
+	}
+	rule := v.Rule
+	if rule == "" {
+		rule = convName
+	}
+	return Violation{
+		Source:       "convention:" + convName,
+		File:         v.File,
+		Line:         v.Line,
+		Column:       v.Column,
+		Severity:     severity,
+		Rule:         rule,
+		Message:      v.Message,
+		Snippet:      v.Snippet,
+		SuggestedFix: v.SuggestedFix,
+	}
+}
+
+// isPlainStringViolation reports whether the JS program returned just a
+// string for this violation (vs. a structured object). Used to keep the
+// existing prose-only output bytewise unchanged for the legacy case.
+func isPlainStringViolation(v codegen.ConventionViolation) bool {
+	return v.File == "" && v.Line == 0 && v.Column == 0 && v.Severity == "" && v.Rule == "" &&
+		v.Snippet == "" && v.SuggestedFix == "" && v.Message != ""
+}
+
+// formatViolationLine renders a structured violation as
+// "file:line:col: message" (omitting empty parts).
+func formatViolationLine(v Violation) string {
+	switch {
+	case v.File != "" && v.Line > 0 && v.Column > 0:
+		return fmt.Sprintf("%s:%d:%d: %s", v.File, v.Line, v.Column, v.Message)
+	case v.File != "" && v.Line > 0:
+		return fmt.Sprintf("%s:%d: %s", v.File, v.Line, v.Message)
+	case v.File != "":
+		return fmt.Sprintf("%s: %s", v.File, v.Message)
+	default:
+		return v.Message
+	}
 }
 
 // ---- list_conventions -----------------------------------------------------
@@ -2814,6 +2941,13 @@ func (h *Handler) handleTeachInvariant(args map[string]any) (string, bool, error
 
 func (h *Handler) handleCheckInvariants(args map[string]any) (string, bool, error) {
 	pathFilter := optString(args, "path")
+	format := optString(args, "format")
+	if format == "" {
+		format = "text"
+	}
+	if format != "text" && format != "json" {
+		return fmt.Sprintf("invalid format %q (want \"text\" or \"json\")", format), true, nil
+	}
 
 	h.mu.Lock()
 	defer h.mu.Unlock()
@@ -2829,6 +2963,9 @@ func (h *Handler) handleCheckInvariants(args map[string]any) (string, bool, erro
 	}
 
 	if len(invariants) == 0 {
+		if format == "json" {
+			return "[]", false, nil
+		}
 		return "No invariants defined.", false, nil
 	}
 
@@ -2844,29 +2981,54 @@ func (h *Handler) handleCheckInvariants(args map[string]any) (string, bool, erro
 		f = &forest.Forest{Files: filtered}
 	}
 
-	var sb strings.Builder
-	totalViolations := 0
+	type invResult struct {
+		name       string
+		err        error
+		structured []Violation
+	}
+	results := make([]invResult, 0, len(invariants))
 
 	for _, inv := range invariants {
-		rule, err := ParseInvariantRule(inv.RuleJSON)
-		if err != nil {
-			fmt.Fprintf(&sb, "Invariant %q: parse error: %v\n", inv.Name, err)
+		rule, perr := ParseInvariantRule(inv.RuleJSON)
+		if perr != nil {
+			results = append(results, invResult{name: inv.Name, err: fmt.Errorf("parse error: %w", perr)})
 			continue
 		}
+		violations, cerr := CheckInvariant(f, inv.Name, rule)
+		if cerr != nil {
+			results = append(results, invResult{name: inv.Name, err: cerr})
+			continue
+		}
+		results = append(results, invResult{name: inv.Name, structured: violations})
+	}
 
-		violations, err := CheckInvariant(f, inv.Name, rule)
+	if format == "json" {
+		var allViolations []Violation
+		for _, r := range results {
+			allViolations = append(allViolations, r.structured...)
+		}
+		out, err := json.MarshalIndent(allViolations, "", "  ")
 		if err != nil {
-			fmt.Fprintf(&sb, "Invariant %q: error: %v\n", inv.Name, err)
+			return fmt.Sprintf("marshalling: %v", err), true, nil
+		}
+		return string(out), false, nil
+	}
+
+	var sb strings.Builder
+	totalViolations := 0
+	for _, r := range results {
+		if r.err != nil {
+			fmt.Fprintf(&sb, "Invariant %q: %v\n", r.name, r.err)
 			continue
 		}
-		if len(violations) == 0 {
-			fmt.Fprintf(&sb, "Invariant %q: OK\n", inv.Name)
-		} else {
-			fmt.Fprintf(&sb, "Invariant %q: %d violation(s):\n", inv.Name, len(violations))
-			for _, v := range violations {
-				fmt.Fprintf(&sb, "  %s\n", v)
-				totalViolations++
-			}
+		if len(r.structured) == 0 {
+			fmt.Fprintf(&sb, "Invariant %q: OK\n", r.name)
+			continue
+		}
+		fmt.Fprintf(&sb, "Invariant %q: %d violation(s):\n", r.name, len(r.structured))
+		for _, v := range r.structured {
+			fmt.Fprintf(&sb, "  %s\n", FormatInvariantViolation(v))
+			totalViolations++
 		}
 	}
 

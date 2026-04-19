@@ -493,9 +493,30 @@ func adapterForFile(file string) adapters.LanguageAdapter {
 	return adapters.ForExtension(ext)
 }
 
+// ConventionViolation is a structured convention violation as returned by a
+// convention check program. The program may return either an array of plain
+// strings (legacy contract) or an array of these objects (new contract);
+// RunConventionCheck normalises both into ConventionViolation.
+//
+// Field names mirror sawmill's mcp.Violation shape one-for-one. Kept in the
+// codegen package to avoid an import cycle with mcp.
+type ConventionViolation struct {
+	File         string `json:"file,omitempty"`
+	Line         int    `json:"line,omitempty"`
+	Column       int    `json:"column,omitempty"`
+	Severity     string `json:"severity,omitempty"`
+	Rule         string `json:"rule,omitempty"`
+	Message      string `json:"message,omitempty"`
+	Snippet      string `json:"snippet,omitempty"`
+	SuggestedFix string `json:"suggested_fix,omitempty"`
+}
+
 // RunConventionCheck executes a convention check program against the forest.
-// The program should return an array of violation strings, or an empty array.
-func RunConventionCheck(f *forest.Forest, checkProgram string) ([]string, error) {
+// The program should return an array of violations. Each element may be
+// either a plain string (treated as Message in the resulting struct) or an
+// object with file/line/column/severity/rule/message/snippet/suggested_fix
+// fields. An empty array means "no violations".
+func RunConventionCheck(f *forest.Forest, checkProgram string) ([]ConventionViolation, error) {
 	vm, err := quickjs.NewVM()
 	if err != nil {
 		return nil, fmt.Errorf("creating QuickJS VM: %w", err)
@@ -539,19 +560,38 @@ func RunConventionCheck(f *forest.Forest, checkProgram string) ([]string, error)
 		return nil, nil
 	}
 
-	// Try parsing as array of strings.
-	var violations []string
-	if err := json.Unmarshal([]byte(resultStr), &violations); err == nil {
-		return violations, nil
+	// Try parsing as array of structured ConventionViolation objects first.
+	// Strings still parse as ConventionViolation with all fields zero, which
+	// we then disambiguate from the string fallback.
+	var rawArr []json.RawMessage
+	if err := json.Unmarshal([]byte(resultStr), &rawArr); err == nil {
+		out := make([]ConventionViolation, 0, len(rawArr))
+		for _, item := range rawArr {
+			out = append(out, parseConventionViolation(item))
+		}
+		return out, nil
 	}
 
 	// Try as a single string.
 	var single string
 	if err := json.Unmarshal([]byte(resultStr), &single); err == nil && single != "" {
-		return []string{single}, nil
+		return []ConventionViolation{{Message: single}}, nil
 	}
 
 	return nil, nil
+}
+
+// parseConventionViolation handles either a JSON string or a JSON object,
+// returning a ConventionViolation. Strings populate Message; objects map
+// field-for-field.
+func parseConventionViolation(raw json.RawMessage) ConventionViolation {
+	var s string
+	if err := json.Unmarshal(raw, &s); err == nil {
+		return ConventionViolation{Message: s}
+	}
+	var v ConventionViolation
+	_ = json.Unmarshal(raw, &v)
+	return v
 }
 
 // ValidateChanges re-parses modified files and checks for parse errors.

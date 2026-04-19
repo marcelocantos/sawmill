@@ -285,7 +285,7 @@ func Definitions() []mcpgo.Tool {
 
 		// query
 		mcpgo.NewTool("query",
-			mcpgo.WithDescription("Find AST nodes matching a kind/name pattern or a raw Tree-sitter query. Returns matches without modifying files."),
+			mcpgo.WithDescription("Find AST nodes matching a kind/name pattern or a raw Tree-sitter query. Returns matches without modifying files. Set format=\"json\" for a structured array of {file, line, column, kind, name, snippet} objects suitable for programmatic consumption."),
 			mcpgo.WithString("kind",
 				mcpgo.Description("Abstract kind: function, call, class/struct/type, import"),
 			),
@@ -303,6 +303,9 @@ func Definitions() []mcpgo.Tool {
 			),
 			mcpgo.WithString("path",
 				mcpgo.Description("Restrict to a specific file or directory"),
+			),
+			mcpgo.WithString("format",
+				mcpgo.Description("Output format: \"text\" (default, human-readable) or \"json\" (array of QueryMatch objects)"),
 			),
 		),
 
@@ -475,9 +478,12 @@ func Definitions() []mcpgo.Tool {
 
 		// check_conventions
 		mcpgo.NewTool("check_conventions",
-			mcpgo.WithDescription("Run all saved convention checks against the codebase and report violations."),
+			mcpgo.WithDescription("Run all saved convention checks against the codebase and report violations. Convention check programs may return either an array of strings (legacy) or an array of {file, line, column, severity, rule, message, snippet, suggested_fix} objects. Set format=\"json\" to receive a structured array of Violation objects suitable for programmatic consumption."),
 			mcpgo.WithString("path",
 				mcpgo.Description("Restrict to a specific file or directory"),
+			),
+			mcpgo.WithString("format",
+				mcpgo.Description("Output format: \"text\" (default, human-readable) or \"json\" (Violation array)"),
 			),
 		),
 
@@ -689,9 +695,12 @@ func Definitions() []mcpgo.Tool {
 
 		// check_invariants
 		mcpgo.NewTool("check_invariants",
-			mcpgo.WithDescription("Run all saved structural invariants against the codebase and report violations."),
+			mcpgo.WithDescription("Run all saved structural invariants against the codebase and report violations. Set format=\"json\" to receive a structured array of {source, file, line, column, severity, rule, message} Violation objects suitable for programmatic consumption."),
 			mcpgo.WithString("path",
 				mcpgo.Description("Restrict to a specific file or directory"),
+			),
+			mcpgo.WithString("format",
+				mcpgo.Description("Output format: \"text\" (default, human-readable) or \"json\" (Violation array)"),
 			),
 		),
 

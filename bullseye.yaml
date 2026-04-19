@@ -346,7 +346,7 @@ targets:
     achieved: 2026-04-06
   T24:
     name: Sawmill's verification tools emit structured failure payloads that downstream orchestrators can consume programmatically
-    status: identified
+    status: achieved
     value: 0.0
     cost: 0.0
     observable: true
@@ -386,6 +386,7 @@ targets:
     - foundation
     origin: forked-from bullseye 🎯T1.5 triage 2026-04-18 — surfaced as the upstream prerequisite that makes T1.5 actionable
     discovered: 2026-04-19
+    achieved: 2026-04-19
   T3:
     name: Diagnostic-driven automatic fixes
     status: identified

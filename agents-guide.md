@@ -328,6 +328,78 @@ conventions and persist across sessions.
 - `require`: list of assertions — `has_field` (with optional `type`)
   or `has_method` (with optional `returns`)
 
+## Structured Output for Programmatic Consumers
+
+`check_conventions`, `check_invariants`, and `query` all support a
+`format` parameter. The default `"text"` returns the human-readable
+prose unchanged. Setting `format: "json"` returns a structured array
+suitable for orchestrators that need machine-readable diagnostics.
+
+**Violation schema** (returned by check_conventions and check_invariants):
+
+```jsonc
+{
+  "source":   "convention:no-bare-except"  | "invariant:config-needs-name",
+  "file":     "src/foo.go",
+  "line":     42,                  // 1-based; omitted if zero
+  "column":   10,                  // 1-based; omitted if zero
+  "severity": "error" | "warning", // defaults to "error"
+  "rule":     "no-bare-except",    // short stable identifier
+  "message":  "use specific exception",
+  "snippet":      "except:",       // optional source excerpt
+  "suggested_fix": "except Exception:"  // optional rewrite
+}
+```
+
+**QueryMatch schema** (returned by query):
+
+```jsonc
+{
+  "file":    "src/foo.go",
+  "line":    7,
+  "column":  3,
+  "kind":    "function_definition",  // raw tree-sitter node type
+  "name":    "Foo",                  // identifier if applicable
+  "snippet": "def Foo(): ..."
+}
+```
+
+**Convention check programs** can return either an array of plain
+strings (legacy contract — strings become `Violation.Message`) or an
+array of structured objects matching the Violation schema above.
+Sawmill normalises both into the same JSON output:
+
+```javascript
+// Legacy: just messages.
+return ["unused import in main.py", "TODO: cleanup"];
+
+// New: full structured violations.
+return [{
+  file: "src/foo.go",
+  line: 42, column: 10,
+  severity: "warning",
+  rule: "no-bare-except",
+  message: "use specific exception",
+  suggested_fix: "except Exception:"
+}];
+```
+
+**Worked example — orchestrator consuming the JSON output:**
+
+```python
+import json, subprocess
+out = subprocess.check_output([
+    "claude", "mcp", "call", "sawmill", "check_invariants",
+    "--arg", "format=json",
+])
+violations = json.loads(out)
+for v in violations:
+    print(f"{v['source']}: {v['file']}:{v['line']}: {v['message']}")
+    if v.get("suggested_fix"):
+        # Hand off to an automated fix flow.
+        ...
+```
+
 ## Tips and Gotchas
 
 - **Always `parse` first.** Every other tool requires the codebase
