@@ -117,6 +117,7 @@ replaces any unapplied pending changes.
 | `teach_convention` | Define an enforceable project rule | `name`, `check_program` |
 | `check_conventions` | Scan for convention violations | `path` |
 | `teach_fix` | Save a diagnostic-pattern → fix-action mapping (regex with named captures + recipe or transform; auto/suggest confidence) | `name`, `diagnostic_regex`, `action`, `confidence` |
+| `auto_fix` | Convergence loop: pull diagnostics → match the catalogue → apply auto fixes / report suggestions / detect cycles. Returns structured per-iteration JSON | `file`, `max_iterations`, `dry_run` |
 | `list_fixes` | List all saved fix entries | -- |
 | `delete_fix` | Delete a saved fix entry by name | `name` |
 | `teach_equivalence` | Save a bidirectional code-pattern pair (e.g. `errors.Is(err, X) ↔ err == X`) | `name`, `left_pattern`, `right_pattern`, `preferred_direction` |

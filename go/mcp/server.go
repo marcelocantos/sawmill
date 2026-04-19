@@ -205,6 +205,8 @@ func (h *Handler) Call(name string, args map[string]any) (string, bool, error) {
 		return h.handleListFixes(args)
 	case "delete_fix":
 		return h.handleDeleteFix(args)
+	case "auto_fix":
+		return h.handleAutoFix(args)
 	default:
 		return "", false, fmt.Errorf("unknown tool: %s", name)
 	}
@@ -939,6 +941,21 @@ func Definitions() []mcpgo.Tool {
 			mcpgo.WithString("name",
 				mcpgo.Required(),
 				mcpgo.Description("Fix name to delete"),
+			),
+		),
+
+		// auto_fix
+		mcpgo.NewTool("auto_fix",
+			mcpgo.WithDescription(`Convergence loop driving diagnostic-driven fixes. Each iteration: pulls diagnostics for the file, matches each against the saved fix catalogue (taught via teach_fix), applies entries marked confidence="auto", and reports entries marked confidence="suggest". Terminates clean (no diagnostics), stuck (no fixes applied this iteration), or at the iteration limit. Cycle detection: a diagnostic that reappears verbatim after its fix was applied flags the fix as broken. Returns a structured JSON result with per-iteration outcomes, suggestions, and cycle warnings.`),
+			mcpgo.WithString("file",
+				mcpgo.Required(),
+				mcpgo.Description("Absolute file path to drive diagnostics for"),
+			),
+			mcpgo.WithNumber("max_iterations",
+				mcpgo.Description("Stop after this many iterations even if diagnostics remain. Default: 10"),
+			),
+			mcpgo.WithBoolean("dry_run",
+				mcpgo.Description("If true, report what would be applied without modifying any files. Default: false"),
 			),
 		),
 

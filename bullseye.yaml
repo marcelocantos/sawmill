@@ -436,7 +436,7 @@ targets:
     achieved: 2026-04-19
   T3.2:
     name: auto_fix loop runs diagnostics, applies safe fixes, and terminates cleanly with cycle detection
-    status: identified
+    status: achieved
     value: 0.0
     cost: 0.0
     observable: true
@@ -456,6 +456,7 @@ targets:
     - T3
     origin: manual
     discovered: 2026-04-19
+    achieved: 2026-04-19
   T3.3:
     name: Diagnostics MCP tool emits structured normalised diagnostics for at least Go and TypeScript
     status: achieved
