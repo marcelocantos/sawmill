@@ -458,7 +458,7 @@ targets:
     discovered: 2026-04-19
   T3.3:
     name: Diagnostics MCP tool emits structured normalised diagnostics for at least Go and TypeScript
-    status: identified
+    status: achieved
     value: 0.0
     cost: 0.0
     observable: true
@@ -476,6 +476,7 @@ targets:
     - T3
     origin: manual
     discovered: 2026-04-19
+    achieved: 2026-04-19
   T3.4:
     name: A starter fix catalogue covers common Go and TypeScript errors out of the box
     status: identified

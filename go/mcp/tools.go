@@ -2193,6 +2193,13 @@ func (h *Handler) handleDiagnostics(args map[string]any) (string, bool, error) {
 	if err != nil {
 		return err.Error(), true, nil
 	}
+	format := optString(args, "format")
+	if format == "" {
+		format = "text"
+	}
+	if format != "text" && format != "json" {
+		return fmt.Sprintf("invalid format %q (want \"text\" or \"json\")", format), true, nil
+	}
 
 	h.mu.Lock()
 	defer h.mu.Unlock()
@@ -2204,6 +2211,9 @@ func (h *Handler) handleDiagnostics(args map[string]any) (string, bool, error) {
 
 	client, msg := h.getLSPClient(m, file)
 	if client == nil {
+		if format == "json" {
+			return "[]", false, nil
+		}
 		return msg, false, nil
 	}
 
@@ -2211,6 +2221,19 @@ func (h *Handler) handleDiagnostics(args map[string]any) (string, bool, error) {
 	if err != nil {
 		return fmt.Sprintf("diagnostics: %v", err), true, nil
 	}
+
+	if format == "json" {
+		// Always return a non-nil slice so consumers see "[]" rather than "null".
+		if diags == nil {
+			diags = []lspclient.Diagnostic{}
+		}
+		out, err := json.MarshalIndent(diags, "", "  ")
+		if err != nil {
+			return fmt.Sprintf("marshalling diagnostics: %v", err), true, nil
+		}
+		return string(out), false, nil
+	}
+
 	if len(diags) == 0 {
 		return "No diagnostics", false, nil
 	}
@@ -2226,11 +2249,26 @@ func formatLocations(locs []lspclient.Location) string {
 	return sb.String()
 }
 
-// formatDiagnostics formats a slice of Diagnostics as "file:line:col [severity] message".
+// formatDiagnostics formats a slice of Diagnostics as
+// "file:line:col [severity] [source code] message", omitting empty parts.
 func formatDiagnostics(diags []lspclient.Diagnostic) string {
 	var sb strings.Builder
 	for _, d := range diags {
-		fmt.Fprintf(&sb, "%s:%d:%d [%s] %s\n", d.File, d.Line, d.Column, d.Severity, d.Message)
+		fmt.Fprintf(&sb, "%s:%d:%d [%s]", d.File, d.Line, d.Column, d.Severity)
+		if d.Source != "" || d.Code != "" {
+			sb.WriteString(" [")
+			if d.Source != "" {
+				sb.WriteString(d.Source)
+				if d.Code != "" {
+					sb.WriteByte(' ')
+				}
+			}
+			if d.Code != "" {
+				sb.WriteString(d.Code)
+			}
+			sb.WriteByte(']')
+		}
+		fmt.Fprintf(&sb, " %s\n", d.Message)
 	}
 	return sb.String()
 }

@@ -143,7 +143,7 @@ replaces any unapplied pending changes.
 | `hover` | Type info at a position | `file`, `line`, `column` (1-based) |
 | `definition` | Go to definition | `file`, `line`, `column` |
 | `lsp_references` | Find all references via LSP | `file`, `line`, `column` |
-| `diagnostics` | Get compile errors/warnings | `file`, `content` (optional) |
+| `diagnostics` | Get compile errors/warnings (set `format=json` for structured `{file, line, column, severity, code, source, message}` array) | `file`, `format` |
 
 ### Git History
 

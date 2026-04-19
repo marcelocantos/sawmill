@@ -676,10 +676,13 @@ func Definitions() []mcpgo.Tool {
 
 		// diagnostics
 		mcpgo.NewTool("diagnostics",
-			mcpgo.WithDescription("Query the language server for diagnostics (errors, warnings) in a file."),
+			mcpgo.WithDescription("Query the language server for diagnostics (errors, warnings) in a file. Set format=\"json\" for a structured array of {file, line, column, severity, code, source, message} objects suitable for programmatic consumption (e.g. driving auto_fix)."),
 			mcpgo.WithString("file",
 				mcpgo.Required(),
 				mcpgo.Description("Absolute file path"),
+			),
+			mcpgo.WithString("format",
+				mcpgo.Description("Output format: \"text\" (default, human-readable) or \"json\" (Diagnostic array)"),
 			),
 		),
 
