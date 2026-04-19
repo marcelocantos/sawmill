@@ -199,6 +199,12 @@ func (h *Handler) Call(name string, args map[string]any) (string, bool, error) {
 		return h.handleApplyEquivalence(args)
 	case "check_equivalences":
 		return h.handleCheckEquivalences(args)
+	case "teach_fix":
+		return h.handleTeachFix(args)
+	case "list_fixes":
+		return h.handleListFixes(args)
+	case "delete_fix":
+		return h.handleDeleteFix(args)
 	default:
 		return "", false, fmt.Errorf("unknown tool: %s", name)
 	}
@@ -893,6 +899,43 @@ func Definitions() []mcpgo.Tool {
 			mcpgo.WithDescription("Scan the codebase for matches of any equivalence's non-preferred side. Reports each as a violation with file, location, the matched text, and the suggested rewrite. Equivalences with no preferred direction are skipped."),
 			mcpgo.WithString("path",
 				mcpgo.Description("Restrict to files matching this path substring"),
+			),
+		),
+
+		// teach_fix
+		mcpgo.NewTool("teach_fix",
+			mcpgo.WithDescription(`Save a diagnostic-pattern → fix-action mapping. The diagnostic regex matches against an LSP diagnostic message; named captures (e.g. (?P<pkg>\w+)) are bound and may be referenced in the action via ${pkg}. The action is JSON: either {"recipe": "name", "params": {...}} for a recipe reference, or {"transform": {...}} for an inline transform spec. Confidence "auto" means auto_fix applies the fix automatically; "suggest" means it's reported but not applied.`),
+			mcpgo.WithString("name",
+				mcpgo.Required(),
+				mcpgo.Description("Fix entry name (used for delete_fix and as the catalogue key)"),
+			),
+			mcpgo.WithString("diagnostic_regex",
+				mcpgo.Required(),
+				mcpgo.Description(`Regex matched against the diagnostic message. Use Go regexp syntax with named captures, e.g. "imported and not used: \"(?P<pkg>[^\"]+)\""`),
+			),
+			mcpgo.WithString("action",
+				mcpgo.Required(),
+				mcpgo.Description(`JSON action spec. Examples: {"recipe":"remove-import","params":{"name":"${pkg}"}} or {"transform":{"kind":"import","name":"${pkg}","action":"remove"}}`),
+			),
+			mcpgo.WithString("confidence",
+				mcpgo.Description(`"auto" (apply automatically) or "suggest" (report only). Default: "suggest"`),
+			),
+			mcpgo.WithString("description",
+				mcpgo.Description("Human-readable description of what the fix does"),
+			),
+		),
+
+		// list_fixes
+		mcpgo.NewTool("list_fixes",
+			mcpgo.WithDescription("List all saved diagnostic-fix entries with their regex, confidence, and action."),
+		),
+
+		// delete_fix
+		mcpgo.NewTool("delete_fix",
+			mcpgo.WithDescription("Delete a saved fix entry by name."),
+			mcpgo.WithString("name",
+				mcpgo.Required(),
+				mcpgo.Description("Fix name to delete"),
 			),
 		),
 

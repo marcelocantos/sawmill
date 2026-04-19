@@ -173,6 +173,14 @@ func (s *Store) init() error {
 			right_pattern TEXT NOT NULL,
 			preferred_direction TEXT NOT NULL DEFAULT ''
 		);
+
+		CREATE TABLE IF NOT EXISTS fixes (
+			name TEXT PRIMARY KEY,
+			description TEXT NOT NULL DEFAULT '',
+			diagnostic_regex TEXT NOT NULL,
+			action_json TEXT NOT NULL,
+			confidence TEXT NOT NULL DEFAULT 'suggest'
+		);
 	`)
 	if err != nil {
 		return fmt.Errorf("initialising store schema: %w", err)
@@ -737,6 +745,101 @@ func (s *Store) DeleteEquivalence(name string) (bool, error) {
 	result, err := s.db.Exec("DELETE FROM equivalences WHERE name = ?", name)
 	if err != nil {
 		return false, fmt.Errorf("deleting equivalence %q: %w", name, err)
+	}
+	n, _ := result.RowsAffected()
+	return n > 0, nil
+}
+
+// --- Fixes ---
+
+// FixConfidence values control whether auto_fix applies a matched fix
+// automatically or only suggests it.
+const (
+	FixConfidenceAuto    = "auto"
+	FixConfidenceSuggest = "suggest"
+)
+
+// Fix is a saved diagnostic-pattern → fix-action mapping. The diagnostic
+// regex matches against an LSP diagnostic message; named captures from the
+// regex are bound and made available to the action (a recipe reference with
+// parameter bindings or an inline transform spec, encoded as JSON).
+type Fix struct {
+	Name            string
+	Description     string
+	DiagnosticRegex string
+	ActionJSON      string
+	Confidence      string // "auto" or "suggest"
+}
+
+// SaveFix saves or updates a fix entry. Returns an error if confidence is
+// not one of the legal values.
+func (s *Store) SaveFix(name, description, diagnosticRegex, actionJSON, confidence string) error {
+	switch confidence {
+	case FixConfidenceAuto, FixConfidenceSuggest:
+	case "":
+		confidence = FixConfidenceSuggest
+	default:
+		return fmt.Errorf("invalid confidence %q (want %q or %q)",
+			confidence, FixConfidenceAuto, FixConfidenceSuggest)
+	}
+	_, err := s.db.Exec(
+		`INSERT INTO fixes (name, description, diagnostic_regex, action_json, confidence)
+		 VALUES (?, ?, ?, ?, ?)
+		 ON CONFLICT(name) DO UPDATE SET
+			description = excluded.description,
+			diagnostic_regex = excluded.diagnostic_regex,
+			action_json = excluded.action_json,
+			confidence = excluded.confidence`,
+		name, description, diagnosticRegex, actionJSON, confidence,
+	)
+	if err != nil {
+		return fmt.Errorf("saving fix %q: %w", name, err)
+	}
+	return nil
+}
+
+// ListFixes returns all fix entries, ordered by name.
+func (s *Store) ListFixes() ([]Fix, error) {
+	rows, err := s.db.Query(
+		"SELECT name, description, diagnostic_regex, action_json, confidence FROM fixes ORDER BY name",
+	)
+	if err != nil {
+		return nil, fmt.Errorf("listing fixes: %w", err)
+	}
+	defer rows.Close()
+
+	var fixes []Fix
+	for rows.Next() {
+		var f Fix
+		if err := rows.Scan(&f.Name, &f.Description, &f.DiagnosticRegex, &f.ActionJSON, &f.Confidence); err != nil {
+			return nil, fmt.Errorf("reading fix row: %w", err)
+		}
+		fixes = append(fixes, f)
+	}
+	return fixes, rows.Err()
+}
+
+// LoadFix loads a fix by name. Returns nil if not found.
+func (s *Store) LoadFix(name string) (*Fix, error) {
+	var f Fix
+	err := s.db.QueryRow(
+		"SELECT name, description, diagnostic_regex, action_json, confidence FROM fixes WHERE name = ?",
+		name,
+	).Scan(&f.Name, &f.Description, &f.DiagnosticRegex, &f.ActionJSON, &f.Confidence)
+	if err == sql.ErrNoRows {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("loading fix %q: %w", name, err)
+	}
+	return &f, nil
+}
+
+// DeleteFix deletes a fix. Returns true if one was deleted.
+func (s *Store) DeleteFix(name string) (bool, error) {
+	result, err := s.db.Exec("DELETE FROM fixes WHERE name = ?", name)
+	if err != nil {
+		return false, fmt.Errorf("deleting fix %q: %w", name, err)
 	}
 	n, _ := result.RowsAffected()
 	return n > 0, nil

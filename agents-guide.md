@@ -116,6 +116,9 @@ replaces any unapplied pending changes.
 | `instantiate` | Create code from a taught recipe | `recipe`, `params` |
 | `teach_convention` | Define an enforceable project rule | `name`, `check_program` |
 | `check_conventions` | Scan for convention violations | `path` |
+| `teach_fix` | Save a diagnostic-pattern → fix-action mapping (regex with named captures + recipe or transform; auto/suggest confidence) | `name`, `diagnostic_regex`, `action`, `confidence` |
+| `list_fixes` | List all saved fix entries | -- |
+| `delete_fix` | Delete a saved fix entry by name | `name` |
 | `teach_equivalence` | Save a bidirectional code-pattern pair (e.g. `errors.Is(err, X) ↔ err == X`) | `name`, `left_pattern`, `right_pattern`, `preferred_direction` |
 | `apply_equivalence` | Rewrite all matches of an equivalence in the chosen direction (`left_to_right` or `right_to_left`); produces a diff preview | `name`, `direction`, `path`, `format` |
 | `check_equivalences` | Scan the codebase for matches of any equivalence's non-preferred side; reports as violations | `path` |

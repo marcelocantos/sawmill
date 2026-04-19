@@ -21,7 +21,7 @@ Requires Go 1.26+.
 ```
 go/
   cmd/sawmill/main.go — CLI entry point (serve, version)
-  mcp/              — MCP server (41 tools)
+  mcp/              — MCP server (44 tools)
     server.go       — Per-session Handler + tool registration with mcp-go
     tools.go        — All tool handler implementations
     helpers.go      — Batch transform helpers, parameter editing

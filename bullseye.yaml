@@ -401,11 +401,122 @@ targets:
     - Each fix entry has a confidence annotation (auto-apply vs. suggest)
     - 'Cycle detection: if a diagnostic reappears after its fix was applied, skip it and flag the fix as broken'
     context: 'Two bootstrapping paths: pre-populated entries from compiler error catalogues for common cases, and learn-from-observation for project-specific patterns. The agent already fixes errors manually — sawmill just needs to watch and remember.'
+    depends_on:
+    - T3.1
+    - T3.2
+    - T3.3
+    - T3.4
+    - T3.5
     tags:
     - diagnostics
     - automation
     origin: manual
     discovered: 2026-04-07
+  T3.1:
+    name: Fix entries are stored — teach_fix MCP tool persists diagnostic-pattern → fix-action mappings in SQLite
+    status: achieved
+    value: 0.0
+    cost: 0.0
+    observable: true
+    acceptance:
+    - teach_fix accepts a name, a diagnostic regex (with named captures available to the fix action), a fix action (recipe reference with parameter bindings or an inline transform spec), a confidence annotation ("auto" or "suggest"), and an optional description
+    - Fix entries are persisted in a new fixes SQLite table alongside recipes/conventions/invariants/equivalences
+    - list_fixes returns all stored fix entries (name, regex, confidence, action summary)
+    - delete_fix removes one by name
+    - Match capture names referenced by the fix action must exist in the regex; teach_fix rejects mismatches at save time
+    context: Foundation for 🎯T3 (diagnostic-driven automatic fixes). Mirrors the storage pattern used by recipes/conventions/invariants/equivalences. Once stored, the auto_fix loop (🎯T3.2) iterates diagnostics and matches them against this catalogue. Confidence determines whether a match is auto-applied or suggested.
+    depends_on:
+    - T16
+    tags:
+    - diagnostics
+    - automation
+    - T3
+    origin: manual
+    discovered: 2026-04-19
+    achieved: 2026-04-19
+  T3.2:
+    name: auto_fix loop runs diagnostics, applies safe fixes, and terminates cleanly with cycle detection
+    status: identified
+    value: 0.0
+    cost: 0.0
+    observable: true
+    acceptance:
+    - auto_fix MCP tool accepts a file (or path filter) and an optional iteration limit (default 10)
+    - 'On each iteration: pull diagnostics, match each against the fix catalogue (regex → captures → fix action), apply entries with confidence=auto, return entries with confidence=suggest as recommendations'
+    - 'Termination: clean (no diagnostics), stuck (no fixes applied this iteration), or iteration-limit reached'
+    - 'Cycle detection: if a diagnostic message reappears verbatim after its fix was applied, flag the fix as broken (don''t loop forever) and report it in the output'
+    - Each loop iteration's outcome (diagnostics seen, fixes applied, suggestions, cycle warnings) is included in the structured response so an orchestrator can drive multi-pass workflows
+    context: The convergence loop. Builds on stored fix entries (🎯T3.1) and on the structured diagnostic shape (🎯T3.3) so matching is robust across LSPs. Cycle detection is the subtle correctness bit — without it the loop can oscillate.
+    depends_on:
+    - T3.1
+    - T3.3
+    tags:
+    - diagnostics
+    - automation
+    - T3
+    origin: manual
+    discovered: 2026-04-19
+  T3.3:
+    name: Diagnostics MCP tool emits structured normalised diagnostics for at least Go and TypeScript
+    status: identified
+    value: 0.0
+    cost: 0.0
+    observable: true
+    acceptance:
+    - lspclient.Diagnostic gains a Code field (LSP diagnostic code, e.g. gopls's UnusedImport or TS's TS2304) and a Source field (gopls/tsserver/...)
+    - diagnostics MCP tool accepts format="text"|"json" mirroring 🎯T24's check tools
+    - JSON output is an array of {file, line, column, severity, code, source, message} objects
+    - 'Verified against gopls and the TypeScript language server: code and source fields populate consistently for at least three common error categories per language'
+    context: The input shape that auto_fix consumes. Today the diagnostics tool emits prose; orchestrators have to parse it. Adds JSON output and the missing code/source fields, mirroring the structured-payload work in 🎯T24. Code is what fix-pattern catalogues key off of.
+    depends_on:
+    - T16
+    tags:
+    - diagnostics
+    - lsp
+    - T3
+    origin: manual
+    discovered: 2026-04-19
+  T3.4:
+    name: A starter fix catalogue covers common Go and TypeScript errors out of the box
+    status: identified
+    value: 0.0
+    cost: 0.0
+    observable: true
+    acceptance:
+    - seed_fixes MCP tool installs a curated set of fix entries for common Go errors (unused import, missing field on struct literal, type mismatch in return) and TS errors (TS2304 'cannot find name', TS6133 'declared but never used', TS2532 'object is possibly undefined')
+    - Each seed entry has confidence=auto for unambiguous fixes (e.g. add missing import) and confidence=suggest for ambiguous ones (e.g. fix possibly-undefined)
+    - seed_fixes is idempotent — running it twice doesn't create duplicates
+    context: Bootstraps a useful catalogue so a fresh project gets value from auto_fix immediately, without having to teach every entry first. Each entry references either a built-in transform or a recipe; the recipes for the seed fixes ship as JSON literals embedded in the binary.
+    depends_on:
+    - T3.1
+    - T3.3
+    tags:
+    - diagnostics
+    - automation
+    - T3
+    origin: manual
+    discovered: 2026-04-19
+  T3.5:
+    name: Observation-based learning — sawmill offers to save fix pairings inferred from agent edits that resolve diagnostics
+    status: identified
+    value: 0.0
+    cost: 0.0
+    observable: true
+    acceptance:
+    - learn_from_observation MCP tool accepts a pre-state diagnostic snapshot (from diagnostics format=json) and a post-state diff (a recently-applied changeset)
+    - Diagnostics that disappear in the post-state are paired with the changeset edits that overlap their location; sawmill returns candidate fix entries (regex over the diagnostic message, action = recipe ref or inline edit)
+    - Returned candidates have confidence=suggest by default; user can teach_fix them to make them permanent
+    context: 'Lets the agent''s existing manual fix work bootstrap the catalogue. Each time the agent fixes a diagnostic, learn_from_observation can propose a permanent rule. Closes the loop: T24 produces structured diagnostics → T3.2 applies known fixes → T3.5 learns new ones from human/agent edits.'
+    depends_on:
+    - T3.1
+    - T3.2
+    tags:
+    - diagnostics
+    - automation
+    - learning
+    - T3
+    origin: manual
+    discovered: 2026-04-19
   T4:
     name: CST node tree is stored in SQLite — in-memory CSTs are transient parse artifacts only
     status: achieved

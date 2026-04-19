@@ -508,6 +508,18 @@ func (m *CodebaseModel) LoadEquivalence(name string) (*store.Equivalence, error)
 func (m *CodebaseModel) DeleteEquivalence(name string) (bool, error) {
 	return m.Store.DeleteEquivalence(name)
 }
+func (m *CodebaseModel) SaveFix(name, description, diagnosticRegex, actionJSON, confidence string) error {
+	return m.Store.SaveFix(name, description, diagnosticRegex, actionJSON, confidence)
+}
+func (m *CodebaseModel) ListFixes() ([]store.Fix, error) {
+	return m.Store.ListFixes()
+}
+func (m *CodebaseModel) LoadFix(name string) (*store.Fix, error) {
+	return m.Store.LoadFix(name)
+}
+func (m *CodebaseModel) DeleteFix(name string) (bool, error) {
+	return m.Store.DeleteFix(name)
+}
 
 // MtimeForPath returns the modification time for the given path.
 func MtimeForPath(path string) time.Time {
