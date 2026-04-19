@@ -2,7 +2,7 @@ schema_version: 1
 targets:
   T1:
     name: Intra-language pattern equivalences
-    status: identified
+    status: achieved
     value: 21.0
     cost: 21.0
     acceptance:
@@ -21,6 +21,7 @@ targets:
     - pattern-matching
     origin: manual
     discovered: 2026-04-07
+    achieved: 2026-04-19
   T1.1:
     name: Equivalence pairs are stored — teach_equivalence MCP tool persists bidirectional pattern pairs in SQLite
     status: achieved
@@ -85,7 +86,7 @@ targets:
     achieved: 2026-04-19
   T1.4:
     name: Transitive chains produce derived equivalences — A↔B and B↔C imply A↔C
-    status: identified
+    status: achieved
     value: 0.0
     cost: 0.0
     observable: true
@@ -103,6 +104,7 @@ targets:
     - T1
     origin: manual
     discovered: 2026-04-19
+    achieved: 2026-04-19
   T10:
     name: ASTs are stored relationally in SQLite — normalised node tables with integer FK node types, field names, and blob-SHA dedup across commits
     status: achieved

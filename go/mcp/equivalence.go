@@ -4,11 +4,136 @@
 package mcp
 
 import (
+	"sort"
+
 	tree_sitter "github.com/tree-sitter/go-tree-sitter"
 
 	"github.com/marcelocantos/sawmill/forest"
 	"github.com/marcelocantos/sawmill/rewrite"
+	"github.com/marcelocantos/sawmill/store"
 )
+
+// equivalenceGraph is the transitive closure of taught equivalence pairs.
+// Patterns connected (directly or transitively) form an equivalence class.
+// Each class may carry a single "preferred" pattern, derived from the
+// preferred_direction annotations of the taught pairs that compose it —
+// only assigned when every preference in the class agrees on one pattern.
+type equivalenceGraph struct {
+	// class index → list of patterns in that class
+	classes [][]string
+	// pattern → class index
+	classOf map[string]int
+	// class index → preferred pattern, "" if none/conflicting
+	preferred []string
+	// (left, right) → true if this pair is directly taught (vs. derived)
+	taught map[[2]string]bool
+}
+
+// buildEquivalenceGraph computes the transitive closure over equivs using
+// union-find. Patterns are nodes; each taught equivalence is a bidirectional
+// edge. Each class's preferred pattern is the unanimous winner (if any) of
+// preferred_direction votes from the taught pairs in that class.
+func buildEquivalenceGraph(equivs []store.Equivalence) *equivalenceGraph {
+	parent := map[string]string{}
+	addNode := func(p string) {
+		if _, ok := parent[p]; !ok {
+			parent[p] = p
+		}
+	}
+	var find func(x string) string
+	find = func(x string) string {
+		if parent[x] != x {
+			parent[x] = find(parent[x])
+		}
+		return parent[x]
+	}
+	union := func(a, b string) {
+		ra, rb := find(a), find(b)
+		if ra != rb {
+			parent[ra] = rb
+		}
+	}
+
+	for _, e := range equivs {
+		addNode(e.LeftPattern)
+		addNode(e.RightPattern)
+		union(e.LeftPattern, e.RightPattern)
+	}
+
+	// Group patterns by their root.
+	groups := map[string][]string{}
+	for p := range parent {
+		groups[find(p)] = append(groups[find(p)], p)
+	}
+
+	classes := make([][]string, 0, len(groups))
+	classOf := map[string]int{}
+	for _, members := range groups {
+		sort.Strings(members)
+		idx := len(classes)
+		classes = append(classes, members)
+		for _, m := range members {
+			classOf[m] = idx
+		}
+	}
+
+	// Tally preferred-pattern votes per class.
+	votes := make([]map[string]int, len(classes))
+	for i := range votes {
+		votes[i] = map[string]int{}
+	}
+	for _, e := range equivs {
+		idx := classOf[e.LeftPattern]
+		switch e.PreferredDirection {
+		case store.EquivalenceDirectionLeft:
+			votes[idx][e.LeftPattern]++
+		case store.EquivalenceDirectionRight:
+			votes[idx][e.RightPattern]++
+		}
+	}
+	preferred := make([]string, len(classes))
+	for i, v := range votes {
+		// Unanimous: exactly one pattern in this class has votes.
+		if len(v) == 1 {
+			for p := range v {
+				preferred[i] = p
+			}
+		}
+	}
+
+	// Mark every taught (unordered) pair so list_equivalences and the
+	// derived-pair generator can distinguish taught vs derived.
+	taught := map[[2]string]bool{}
+	for _, e := range equivs {
+		taught[unorderedPair(e.LeftPattern, e.RightPattern)] = true
+	}
+
+	return &equivalenceGraph{classes: classes, classOf: classOf, preferred: preferred, taught: taught}
+}
+
+func unorderedPair(a, b string) [2]string {
+	if a < b {
+		return [2]string{a, b}
+	}
+	return [2]string{b, a}
+}
+
+// nonPreferredPatternsIn returns the patterns in the same class as `pattern`
+// that are not `pattern` itself. Used by apply_equivalence to expand the set
+// of source patterns when the class has more than two members.
+func (g *equivalenceGraph) nonPreferredPatternsIn(pattern string) []string {
+	idx, ok := g.classOf[pattern]
+	if !ok {
+		return nil
+	}
+	var others []string
+	for _, p := range g.classes[idx] {
+		if p != pattern {
+			others = append(others, p)
+		}
+	}
+	return others
+}
 
 // equivalenceMatch is one location where a pattern matched a file's source.
 type equivalenceMatch struct {

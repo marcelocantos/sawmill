@@ -3670,7 +3670,30 @@ func (h *Handler) handleApplyEquivalence(args map[string]any) (string, bool, err
 	} else {
 		srcPatStr, dstPatStr = equiv.RightPattern, equiv.LeftPattern
 	}
-	srcPat := ParsePattern(srcPatStr)
+
+	// Expand the source-pattern set via the transitive closure: any other
+	// pattern in dstPatStr's equivalence class is also a valid source for
+	// this rewrite. The destination is fixed by the chosen direction.
+	allEquivs, err := m.ListEquivalences()
+	if err != nil {
+		return fmt.Sprintf("listing equivalences: %v", err), true, nil
+	}
+	graph := buildEquivalenceGraph(allEquivs)
+	sources := []string{srcPatStr}
+	for _, p := range graph.nonPreferredPatternsIn(dstPatStr) {
+		if p != srcPatStr {
+			sources = append(sources, p)
+		}
+	}
+
+	type compiled struct {
+		src    *Pattern
+		srcStr string
+	}
+	patterns := make([]compiled, 0, len(sources))
+	for _, s := range sources {
+		patterns = append(patterns, compiled{src: ParsePattern(s), srcStr: s})
+	}
 
 	accessors, err := m.FileAccessors(pathFilter)
 	if err != nil {
@@ -3689,11 +3712,27 @@ func (h *Handler) handleApplyEquivalence(args map[string]any) (string, bool, err
 				Tree:           tree,
 				Adapter:        acc.Adapter(),
 			}
-			matches := findEquivalenceMatches(pf, srcPat, dstPatStr)
-			if len(matches) == 0 {
+			var fileMatches []equivalenceMatch
+			for _, p := range patterns {
+				fileMatches = append(fileMatches, findEquivalenceMatches(pf, p.src, dstPatStr)...)
+			}
+			if len(fileMatches) == 0 {
 				return nil
 			}
-			edits := equivalenceEdits(matches)
+			// Sort by start byte; drop overlaps (keep the first encountered).
+			sort.Slice(fileMatches, func(i, j int) bool {
+				return fileMatches[i].StartByte < fileMatches[j].StartByte
+			})
+			deduped := fileMatches[:0]
+			var lastEnd uint
+			for _, m := range fileMatches {
+				if m.StartByte < lastEnd {
+					continue
+				}
+				deduped = append(deduped, m)
+				lastEnd = m.EndByte
+			}
+			edits := equivalenceEdits(deduped)
 			newSource := rewrite.ApplyEdits(source, edits)
 			if string(newSource) == string(source) {
 				return nil
@@ -3708,7 +3747,7 @@ func (h *Handler) handleApplyEquivalence(args map[string]any) (string, bool, err
 				Original:  source,
 				NewSource: newSource,
 			})
-			totalMatches += len(matches)
+			totalMatches += len(deduped)
 			return nil
 		})
 		if err != nil {
@@ -3723,8 +3762,12 @@ func (h *Handler) handleApplyEquivalence(args map[string]any) (string, bool, err
 	h.pending = &PendingChanges{Changes: changes, Diffs: diffs}
 
 	var sb strings.Builder
-	fmt.Fprintf(&sb, "Applied equivalence %q (%s): %d match(es) in %d file(s). Call apply to write.\n\n",
-		name, direction, totalMatches, len(changes))
+	derivedNote := ""
+	if len(sources) > 1 {
+		derivedNote = fmt.Sprintf(" (including %d derived source pattern(s))", len(sources)-1)
+	}
+	fmt.Fprintf(&sb, "Applied equivalence %q (%s)%s: %d match(es) in %d file(s). Call apply to write.\n\n",
+		name, direction, derivedNote, totalMatches, len(changes))
 	for _, d := range diffs {
 		sb.WriteString(d)
 		sb.WriteString("\n")
@@ -3749,15 +3792,32 @@ func (h *Handler) handleCheckEquivalences(args map[string]any) (string, bool, er
 	if err != nil {
 		return fmt.Sprintf("listing equivalences: %v", err), true, nil
 	}
+	graph := buildEquivalenceGraph(equivs)
 
-	// Filter to those with a preferred direction.
-	var actionable []store.Equivalence
-	for _, e := range equivs {
-		if e.PreferredDirection == store.EquivalenceDirectionLeft || e.PreferredDirection == store.EquivalenceDirectionRight {
-			actionable = append(actionable, e)
+	// Build the actionable scan list: for each class with a unanimous
+	// preferred pattern, every other pattern in the class is "non-preferred"
+	// and counts as a violation. This naturally honours derived equivalences
+	// — patterns that share a class only via a transitive chain still appear.
+	type scanPattern struct {
+		nonPreferred string
+		preferred    string
+		classIdx     int
+	}
+	var scans []scanPattern
+	classesWithPref := 0
+	for idx, pref := range graph.preferred {
+		if pref == "" {
+			continue
+		}
+		classesWithPref++
+		for _, p := range graph.classes[idx] {
+			if p == pref {
+				continue
+			}
+			scans = append(scans, scanPattern{nonPreferred: p, preferred: pref, classIdx: idx})
 		}
 	}
-	if len(actionable) == 0 {
+	if classesWithPref == 0 {
 		return "No equivalences with a preferred direction defined.", false, nil
 	}
 
@@ -3767,21 +3827,17 @@ func (h *Handler) handleCheckEquivalences(args map[string]any) (string, bool, er
 	}
 
 	type violation struct {
-		equiv string
-		path  string
-		match equivalenceMatch
+		source string // e.g. "equivalence:left↔right" or "equivalence:taught-name"
+		path   string
+		match  equivalenceMatch
 	}
 	var violations []violation
 
-	for _, e := range actionable {
-		// The non-preferred side is what we look for; the preferred side is the suggested rewrite.
-		var srcPatStr, dstPatStr string
-		if e.PreferredDirection == store.EquivalenceDirectionLeft {
-			srcPatStr, dstPatStr = e.RightPattern, e.LeftPattern
-		} else {
-			srcPatStr, dstPatStr = e.LeftPattern, e.RightPattern
-		}
-		srcPat := ParsePattern(srcPatStr)
+	for _, sp := range scans {
+		srcPat := ParsePattern(sp.nonPreferred)
+		// Try to find a taught equivalence connecting these two patterns to
+		// give the violation a meaningful source label; fall back to "derived".
+		label := equivalenceLabel(equivs, sp.nonPreferred, sp.preferred)
 
 		for _, acc := range accessors {
 			err := acc.WithTree(func(source []byte, tree *tree_sitter.Tree) error {
@@ -3791,12 +3847,12 @@ func (h *Handler) handleCheckEquivalences(args map[string]any) (string, bool, er
 					Tree:           tree,
 					Adapter:        acc.Adapter(),
 				}
-				matches := findEquivalenceMatches(pf, srcPat, dstPatStr)
+				matches := findEquivalenceMatches(pf, srcPat, sp.preferred)
 				for _, m := range matches {
 					violations = append(violations, violation{
-						equiv: e.Name,
-						path:  acc.Path(),
-						match: m,
+						source: label,
+						path:   acc.Path(),
+						match:  m,
 					})
 				}
 				return nil
@@ -3808,16 +3864,28 @@ func (h *Handler) handleCheckEquivalences(args map[string]any) (string, bool, er
 	}
 
 	if len(violations) == 0 {
-		return fmt.Sprintf("All %d equivalence(s) with preferred direction are satisfied.", len(actionable)), false, nil
+		return fmt.Sprintf("All %d equivalence class(es) with preferred direction are satisfied.", classesWithPref), false, nil
 	}
 
 	var sb strings.Builder
-	fmt.Fprintf(&sb, "%d violation(s) across %d equivalence(s):\n\n", len(violations), len(actionable))
+	fmt.Fprintf(&sb, "%d violation(s) across %d equivalence class(es):\n\n", len(violations), classesWithPref)
 	for _, v := range violations {
 		fmt.Fprintf(&sb, "  %s:%d:%d [%s]\n    %s\n    → %s\n\n",
-			v.path, v.match.Line, v.match.Column, v.equiv, v.match.Original, v.match.Rewrite)
+			v.path, v.match.Line, v.match.Column, v.source, v.match.Original, v.match.Rewrite)
 	}
 	return sb.String(), false, nil
+}
+
+// equivalenceLabel returns the name of a taught equivalence directly
+// connecting `from` and `to` (in either order), or "derived" if no such
+// pair was directly taught.
+func equivalenceLabel(equivs []store.Equivalence, from, to string) string {
+	for _, e := range equivs {
+		if (e.LeftPattern == from && e.RightPattern == to) || (e.LeftPattern == to && e.RightPattern == from) {
+			return e.Name
+		}
+	}
+	return "derived"
 }
 
 // ---- teach_equivalence / list_equivalences / delete_equivalence -------------
@@ -3875,8 +3943,10 @@ func (h *Handler) handleListEquivalences(_ map[string]any) (string, bool, error)
 		return "No equivalences saved.", false, nil
 	}
 
+	graph := buildEquivalenceGraph(equivs)
+
 	var sb strings.Builder
-	fmt.Fprintf(&sb, "%d equivalence(s):\n", len(equivs))
+	fmt.Fprintf(&sb, "%d equivalence(s) [taught]:\n", len(equivs))
 	for _, e := range equivs {
 		fmt.Fprintf(&sb, "  %s: %s ↔ %s", e.Name, e.LeftPattern, e.RightPattern)
 		if e.PreferredDirection != "" {
@@ -3887,6 +3957,47 @@ func (h *Handler) handleListEquivalences(_ map[string]any) (string, bool, error)
 		}
 		sb.WriteString("\n")
 	}
+
+	// Derived pairs: every (a, b) within a class that wasn't taught directly.
+	type derivedPair struct {
+		left, right, preferred string
+		classIdx               int
+	}
+	var derived []derivedPair
+	for idx, members := range graph.classes {
+		if len(members) < 3 {
+			continue // a class of 1 has no pairs; a class of 2 has only the taught pair
+		}
+		for i := 0; i < len(members); i++ {
+			for j := i + 1; j < len(members); j++ {
+				pair := unorderedPair(members[i], members[j])
+				if graph.taught[pair] {
+					continue
+				}
+				derived = append(derived, derivedPair{
+					left:      members[i],
+					right:     members[j],
+					preferred: graph.preferred[idx],
+					classIdx:  idx,
+				})
+			}
+		}
+	}
+	if len(derived) > 0 {
+		fmt.Fprintf(&sb, "\n%d equivalence(s) [derived via transitive closure]:\n", len(derived))
+		for _, d := range derived {
+			fmt.Fprintf(&sb, "  %s ↔ %s", d.left, d.right)
+			if d.preferred != "" {
+				if d.preferred == d.left {
+					sb.WriteString(" [prefers left]")
+				} else if d.preferred == d.right {
+					sb.WriteString(" [prefers right]")
+				}
+			}
+			sb.WriteString("\n")
+		}
+	}
+
 	return sb.String(), false, nil
 }
 
