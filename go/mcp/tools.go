@@ -29,6 +29,7 @@ import (
 	"github.com/marcelocantos/sawmill/bisect"
 	"github.com/marcelocantos/sawmill/rewrite"
 	"github.com/marcelocantos/sawmill/semdiff"
+	"github.com/marcelocantos/sawmill/store"
 	"github.com/marcelocantos/sawmill/transform"
 )
 
@@ -3623,6 +3624,200 @@ func (h *Handler) handleAPIChangelog(args map[string]any) (string, bool, error) 
 	}
 
 	return semdiff.Changelog(result), false, nil
+}
+
+// ---- apply_equivalence -----------------------------------------------------
+
+func (h *Handler) handleApplyEquivalence(args map[string]any) (string, bool, error) {
+	name, err := requireString(args, "name")
+	if err != nil {
+		return err.Error(), true, nil
+	}
+	direction, err := requireString(args, "direction")
+	if err != nil {
+		return err.Error(), true, nil
+	}
+	pathFilter := optString(args, "path")
+	format := optBool(args, "format")
+
+	var srcPatStr, dstPatStr string
+	switch direction {
+	case "left_to_right":
+		// patterns set after we look up the equivalence
+	case "right_to_left":
+	default:
+		return fmt.Sprintf("invalid direction %q (want left_to_right or right_to_left)", direction), true, nil
+	}
+
+	h.mu.Lock()
+	defer h.mu.Unlock()
+
+	m, err := h.requireModel()
+	if err != nil {
+		return err.Error(), true, nil
+	}
+
+	equiv, err := m.LoadEquivalence(name)
+	if err != nil {
+		return fmt.Sprintf("loading equivalence: %v", err), true, nil
+	}
+	if equiv == nil {
+		return fmt.Sprintf("no equivalence named %q", name), true, nil
+	}
+
+	if direction == "left_to_right" {
+		srcPatStr, dstPatStr = equiv.LeftPattern, equiv.RightPattern
+	} else {
+		srcPatStr, dstPatStr = equiv.RightPattern, equiv.LeftPattern
+	}
+	srcPat := ParsePattern(srcPatStr)
+
+	accessors, err := m.FileAccessors(pathFilter)
+	if err != nil {
+		return fmt.Sprintf("listing files: %v", err), true, nil
+	}
+
+	var changes []forest.FileChange
+	var diffs []string
+	totalMatches := 0
+
+	for _, acc := range accessors {
+		err := acc.WithTree(func(source []byte, tree *tree_sitter.Tree) error {
+			pf := &forest.ParsedFile{
+				Path:           acc.Path(),
+				OriginalSource: source,
+				Tree:           tree,
+				Adapter:        acc.Adapter(),
+			}
+			matches := findEquivalenceMatches(pf, srcPat, dstPatStr)
+			if len(matches) == 0 {
+				return nil
+			}
+			edits := equivalenceEdits(matches)
+			newSource := rewrite.ApplyEdits(source, edits)
+			if string(newSource) == string(source) {
+				return nil
+			}
+			if format {
+				newSource, _ = rewrite.FormatSource(acc.Adapter(), newSource)
+			}
+			diff := rewrite.UnifiedDiff(acc.Path(), source, newSource)
+			diffs = append(diffs, diff)
+			changes = append(changes, forest.FileChange{
+				Path:      acc.Path(),
+				Original:  source,
+				NewSource: newSource,
+			})
+			totalMatches += len(matches)
+			return nil
+		})
+		if err != nil {
+			return fmt.Sprintf("applying equivalence in %s: %v", acc.Path(), err), true, nil
+		}
+	}
+
+	if len(changes) == 0 {
+		return fmt.Sprintf("Equivalence %q (%s) had no matches.", name, direction), false, nil
+	}
+
+	h.pending = &PendingChanges{Changes: changes, Diffs: diffs}
+
+	var sb strings.Builder
+	fmt.Fprintf(&sb, "Applied equivalence %q (%s): %d match(es) in %d file(s). Call apply to write.\n\n",
+		name, direction, totalMatches, len(changes))
+	for _, d := range diffs {
+		sb.WriteString(d)
+		sb.WriteString("\n")
+	}
+	return sb.String(), false, nil
+}
+
+// ---- check_equivalences ----------------------------------------------------
+
+func (h *Handler) handleCheckEquivalences(args map[string]any) (string, bool, error) {
+	pathFilter := optString(args, "path")
+
+	h.mu.Lock()
+	defer h.mu.Unlock()
+
+	m, err := h.requireModel()
+	if err != nil {
+		return err.Error(), true, nil
+	}
+
+	equivs, err := m.ListEquivalences()
+	if err != nil {
+		return fmt.Sprintf("listing equivalences: %v", err), true, nil
+	}
+
+	// Filter to those with a preferred direction.
+	var actionable []store.Equivalence
+	for _, e := range equivs {
+		if e.PreferredDirection == store.EquivalenceDirectionLeft || e.PreferredDirection == store.EquivalenceDirectionRight {
+			actionable = append(actionable, e)
+		}
+	}
+	if len(actionable) == 0 {
+		return "No equivalences with a preferred direction defined.", false, nil
+	}
+
+	accessors, err := m.FileAccessors(pathFilter)
+	if err != nil {
+		return fmt.Sprintf("listing files: %v", err), true, nil
+	}
+
+	type violation struct {
+		equiv string
+		path  string
+		match equivalenceMatch
+	}
+	var violations []violation
+
+	for _, e := range actionable {
+		// The non-preferred side is what we look for; the preferred side is the suggested rewrite.
+		var srcPatStr, dstPatStr string
+		if e.PreferredDirection == store.EquivalenceDirectionLeft {
+			srcPatStr, dstPatStr = e.RightPattern, e.LeftPattern
+		} else {
+			srcPatStr, dstPatStr = e.LeftPattern, e.RightPattern
+		}
+		srcPat := ParsePattern(srcPatStr)
+
+		for _, acc := range accessors {
+			err := acc.WithTree(func(source []byte, tree *tree_sitter.Tree) error {
+				pf := &forest.ParsedFile{
+					Path:           acc.Path(),
+					OriginalSource: source,
+					Tree:           tree,
+					Adapter:        acc.Adapter(),
+				}
+				matches := findEquivalenceMatches(pf, srcPat, dstPatStr)
+				for _, m := range matches {
+					violations = append(violations, violation{
+						equiv: e.Name,
+						path:  acc.Path(),
+						match: m,
+					})
+				}
+				return nil
+			})
+			if err != nil {
+				return fmt.Sprintf("checking equivalences in %s: %v", acc.Path(), err), true, nil
+			}
+		}
+	}
+
+	if len(violations) == 0 {
+		return fmt.Sprintf("All %d equivalence(s) with preferred direction are satisfied.", len(actionable)), false, nil
+	}
+
+	var sb strings.Builder
+	fmt.Fprintf(&sb, "%d violation(s) across %d equivalence(s):\n\n", len(violations), len(actionable))
+	for _, v := range violations {
+		fmt.Fprintf(&sb, "  %s:%d:%d [%s]\n    %s\n    → %s\n\n",
+			v.path, v.match.Line, v.match.Column, v.equiv, v.match.Original, v.match.Rewrite)
+	}
+	return sb.String(), false, nil
 }
 
 // ---- teach_equivalence / list_equivalences / delete_equivalence -------------

@@ -44,7 +44,7 @@ targets:
     achieved: 2026-04-19
   T1.2:
     name: apply_equivalence rewrites code in either direction with diff preview and apply/undo support
-    status: identified
+    status: achieved
     value: 0.0
     cost: 0.0
     observable: true
@@ -62,9 +62,10 @@ targets:
     - T1
     origin: manual
     discovered: 2026-04-19
+    achieved: 2026-04-19
   T1.3:
     name: check_equivalences flags non-preferred forms as convention violations
-    status: identified
+    status: achieved
     value: 0.0
     cost: 0.0
     observable: true
@@ -81,6 +82,7 @@ targets:
     - T1
     origin: manual
     discovered: 2026-04-19
+    achieved: 2026-04-19
   T1.4:
     name: Transitive chains produce derived equivalences — A↔B and B↔C imply A↔C
     status: identified

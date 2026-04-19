@@ -117,6 +117,8 @@ replaces any unapplied pending changes.
 | `teach_convention` | Define an enforceable project rule | `name`, `check_program` |
 | `check_conventions` | Scan for convention violations | `path` |
 | `teach_equivalence` | Save a bidirectional code-pattern pair (e.g. `errors.Is(err, X) ↔ err == X`) | `name`, `left_pattern`, `right_pattern`, `preferred_direction` |
+| `apply_equivalence` | Rewrite all matches of an equivalence in the chosen direction (`left_to_right` or `right_to_left`); produces a diff preview | `name`, `direction`, `path`, `format` |
+| `check_equivalences` | Scan the codebase for matches of any equivalence's non-preferred side; reports as violations | `path` |
 | `list_equivalences` | List all saved equivalence pairs | -- |
 | `delete_equivalence` | Delete a saved equivalence by name | `name` |
 | `list_recipes` | List all taught recipes | -- |

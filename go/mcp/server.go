@@ -195,6 +195,10 @@ func (h *Handler) Call(name string, args map[string]any) (string, bool, error) {
 		return h.handleListEquivalences(args)
 	case "delete_equivalence":
 		return h.handleDeleteEquivalence(args)
+	case "apply_equivalence":
+		return h.handleApplyEquivalence(args)
+	case "check_equivalences":
+		return h.handleCheckEquivalences(args)
 	default:
 		return "", false, fmt.Errorf("unknown tool: %s", name)
 	}
@@ -853,6 +857,33 @@ func Definitions() []mcpgo.Tool {
 			mcpgo.WithString("name",
 				mcpgo.Required(),
 				mcpgo.Description("Equivalence name to delete"),
+			),
+		),
+
+		// apply_equivalence
+		mcpgo.NewTool("apply_equivalence",
+			mcpgo.WithDescription("Rewrite all matches of an equivalence pair in the chosen direction. Produces a unified diff per file gated by the standard apply/undo flow."),
+			mcpgo.WithString("name",
+				mcpgo.Required(),
+				mcpgo.Description("Name of the saved equivalence to apply"),
+			),
+			mcpgo.WithString("direction",
+				mcpgo.Required(),
+				mcpgo.Description("\"left_to_right\" rewrites left-pattern matches to the right pattern; \"right_to_left\" rewrites the other way"),
+			),
+			mcpgo.WithString("path",
+				mcpgo.Description("Restrict to files matching this path substring"),
+			),
+			mcpgo.WithBoolean("format",
+				mcpgo.Description("Run the language formatter on changed files"),
+			),
+		),
+
+		// check_equivalences
+		mcpgo.NewTool("check_equivalences",
+			mcpgo.WithDescription("Scan the codebase for matches of any equivalence's non-preferred side. Reports each as a violation with file, location, the matched text, and the suggested rewrite. Equivalences with no preferred direction are skipped."),
+			mcpgo.WithString("path",
+				mcpgo.Description("Restrict to files matching this path substring"),
 			),
 		),
 
