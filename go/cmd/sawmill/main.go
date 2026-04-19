@@ -1,28 +1,21 @@
 // Copyright 2026 Marcelo Cantos
 // SPDX-License-Identifier: Apache-2.0
 
-// sawmill is an MCP server for AST-level multi-language code transformations.
+// sawmill is an HTTP MCP server for AST-level multi-language code
+// transformations.
 //
 // Usage:
 //
-//	sawmill                          MCP stdio proxy (for MCP clients)
-//	sawmill serve                    start the global background daemon
-//	sawmill version                  print version and exit
+//	sawmill serve [--addr HOST:PORT]   start the HTTP MCP server
+//	sawmill version                    print version and exit
+//
+// MCP clients connect via the streamable HTTP transport at /mcp.
 package main
 
 import (
-	"context"
 	"flag"
 	"fmt"
-	"net"
 	"os"
-	"os/exec"
-	"path/filepath"
-	"strings"
-	"syscall"
-	"time"
-
-	"github.com/marcelocantos/mcpbridge"
 
 	"github.com/marcelocantos/sawmill/daemon"
 	"github.com/marcelocantos/sawmill/paths"
@@ -33,17 +26,15 @@ var version = "dev"
 
 func main() {
 	flag.Usage = func() {
-		fmt.Fprintf(os.Stderr, "Usage: sawmill [command] [options]\n\n")
+		fmt.Fprintf(os.Stderr, "Usage: sawmill <command> [options]\n\n")
 		fmt.Fprintf(os.Stderr, "Commands:\n")
-		fmt.Fprintf(os.Stderr, "  (none)    MCP stdio proxy — auto-starts daemon if needed\n")
-		fmt.Fprintf(os.Stderr, "  serve     Start the global background daemon\n")
+		fmt.Fprintf(os.Stderr, "  serve     Start the HTTP MCP server\n")
 		fmt.Fprintf(os.Stderr, "  version   Print version and exit\n")
 	}
 
-	// No args → MCP stdio mode.
 	if len(os.Args) < 2 {
-		runMCP(nil)
-		return
+		flag.Usage()
+		os.Exit(2)
 	}
 
 	cmd := os.Args[1]
@@ -59,128 +50,46 @@ func main() {
 	case "--help-agent", "-help-agent":
 		printAgentHelp()
 	default:
-		// Anything else (including unknown flags) → MCP stdio mode.
-		if strings.HasPrefix(cmd, "-") {
-			runMCP(os.Args[1:])
-			return
-		}
 		fmt.Fprintf(os.Stderr, "unknown command %q\n", cmd)
 		flag.Usage()
 		os.Exit(1)
 	}
 }
 
-// resolveRoot resolves the project root from the flag or cwd.
-func resolveRoot(rootFlag string) string {
-	if rootFlag != "" {
-		abs, err := filepath.Abs(rootFlag)
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "resolving root: %v\n", err)
-			os.Exit(1)
-		}
-		return abs
-	}
-	root, err := os.Getwd()
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "resolving working directory: %v\n", err)
-		os.Exit(1)
-	}
-	return root
-}
-
-// daemonRunning returns true if a daemon is listening on socketPath.
-func daemonRunning(socketPath string) bool {
-	conn, err := net.Dial("unix", socketPath)
-	if err != nil {
-		return false
-	}
-	conn.Close()
-	return true
-}
-
-// ensureDaemon starts the global daemon if it isn't already running.
-func ensureDaemon() {
-	sockPath := paths.GlobalSocketPath()
-	if daemonRunning(sockPath) {
-		return
-	}
-
-	exe, err := os.Executable()
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "cannot find own executable: %v\n", err)
-		os.Exit(1)
-	}
-	cmd := exec.Command(exe, "serve")
-	cmd.Stdout = nil
-	cmd.Stderr = nil
-	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
-	if err := cmd.Start(); err != nil {
-		fmt.Fprintf(os.Stderr, "failed to start daemon: %v\n", err)
-		os.Exit(1)
-	}
-	_ = cmd.Process.Release()
-
-	for range 30 {
-		time.Sleep(100 * time.Millisecond)
-		if daemonRunning(sockPath) {
-			return
-		}
-	}
-	fmt.Fprintf(os.Stderr, "daemon did not start within 3 seconds\n")
-	os.Exit(1)
-}
-
-// runMCP is the default mode: MCP stdio proxy that connects to the global daemon.
-func runMCP(args []string) {
-	fs := flag.NewFlagSet("sawmill", flag.ExitOnError)
-	rootPath := fs.String("root", "", "Project root (default: current directory)")
+// runServe starts the HTTP MCP server.
+func runServe(args []string) {
+	fs := flag.NewFlagSet("serve", flag.ExitOnError)
+	addr := fs.String("addr", paths.DefaultListenAddr, "HTTP listen address")
 	fs.Parse(args) //nolint:errcheck
 
-	root := resolveRoot(*rootPath)
-
-	ensureDaemon()
-
-	if err := mcpbridge.RunProxy(context.Background(), mcpbridge.ProxyConfig{
-		SocketPath: paths.GlobalSocketPath(),
-		ServerName: "sawmill",
-		Version:    version,
-		Root:       root,
-	}); err != nil {
-		fmt.Fprintf(os.Stderr, "error: %v\n", err)
-		fmt.Fprintf(os.Stderr, "hint: the daemon may have stopped — it will auto-start on next invocation\n")
-		os.Exit(1)
-	}
-}
-
-// runServe starts the global background daemon.
-func runServe(_ []string) {
-	sockPath := paths.GlobalSocketPath()
-	if err := daemon.Start(sockPath); err != nil {
+	srv := daemon.New(version)
+	if err := srv.Start(*addr); err != nil {
 		fmt.Fprintf(os.Stderr, "serve error: %v\n", err)
 		os.Exit(1)
 	}
 }
 
 func printAgentHelp() {
-	fmt.Printf(`sawmill %s — MCP server for AST-level multi-language code transformations
+	fmt.Printf(`sawmill %s — HTTP MCP server for AST-level multi-language code transformations
 
 USAGE
-  sawmill                   MCP stdio proxy. Reads JSON-RPC on stdin,
-                            writes responses on stdout. Auto-starts the
-                            global background daemon if needed.
-
-  sawmill serve             Start the global background daemon. Listens
-                            on a single Unix socket at ~/.sawmill/sawmill.sock.
-                            Each connection announces its project root;
-                            the daemon lazily loads and shares a model per
-                            project.
+  sawmill serve [--addr HOST:PORT]
+                            Start the HTTP MCP server. Default address is
+                            %s. The streamable HTTP MCP transport is
+                            served at /mcp.
 
   sawmill version           Print version and exit.
 
-FLAGS
-  --root PATH               Project root (default: current directory)
+CLIENT INTEGRATION
+  Sawmill speaks the MCP streamable HTTP transport. Stdio-based MCP clients
+  (Claude Code, etc.) connect through a transparent gateway such as mcpbridge,
+  which translates stdio → HTTP without altering the protocol.
+
+  Each MCP session must call parse(path=...) once to bind the session to a
+  project root. Subsequent tool calls re-use the loaded model. The server
+  amortises parsing across sessions targeting the same root.
 
 AGENT GUIDE
   See agents-guide.md (embedded, also served via get_agent_prompt tool).
-`, version)
+`, version, paths.DefaultListenAddr)
 }

@@ -1,16 +1,18 @@
 // Copyright 2026 Marcelo Cantos
 // SPDX-License-Identifier: Apache-2.0
 
-// Package mcp implements the Sawmill MCP tool handler using mcpbridge. It
-// exposes all sawmill tools via the ToolHandler interface and provides tool
-// definitions for the daemon to serve.
+// Package mcp implements the Sawmill MCP tool handler. Each MCP session gets
+// its own *Handler instance via the SessionPool, which holds the per-session
+// CodebaseModel, pending changes, and backups.
 package mcp
 
 import (
+	"context"
 	"fmt"
 	"sync"
 
 	mcpgo "github.com/mark3labs/mcp-go/mcp"
+	"github.com/mark3labs/mcp-go/server"
 
 	"github.com/marcelocantos/sawmill/forest"
 	"github.com/marcelocantos/sawmill/model"
@@ -36,8 +38,25 @@ type LastBackups struct {
 	Paths []string
 }
 
-// Handler implements mcpbridge.ToolHandler for Sawmill. It holds session
-// state (the active codebase model, pending changes, and backups).
+// ModelLoader resolves a project root to a CodebaseModel and a release
+// callback. Implementations can ref-count shared models (see modelpool.Pool)
+// or return one-shot models that the release callback closes directly.
+//
+// Returning (nil, nil, err) signals a load failure.
+type ModelLoader func(root string) (*model.CodebaseModel, func(), error)
+
+// directLoader loads a fresh model and closes it on release. Used when no
+// shared pool is configured (notably for in-memory tests).
+func directLoader(root string) (*model.CodebaseModel, func(), error) {
+	m, err := model.Load(root)
+	if err != nil {
+		return nil, nil, err
+	}
+	return m, func() { _ = m.Close() }, nil
+}
+
+// Handler holds the per-session state for a single MCP client: the active
+// codebase model, pending changes, and backups.
 //
 // All exported methods are safe for concurrent use — the mu field serialises
 // access to model, pending, and lastBackups.
@@ -46,20 +65,43 @@ type Handler struct {
 	model       *model.CodebaseModel
 	pending     *PendingChanges
 	lastBackups *LastBackups
+
+	loader  ModelLoader
+	release func() // set when a model is loaded, cleared on Close
 }
 
-// NewHandler creates a new Handler. The model is nil until the first
-// successful parse call.
+// NewHandler creates a new Handler with the default direct loader. The model
+// is nil until the first successful parse call.
 func NewHandler() *Handler {
-	return &Handler{}
+	return &Handler{loader: directLoader}
+}
+
+// NewHandlerWithLoader creates a new Handler whose parse calls use the given
+// loader. Use this when sharing models across sessions via a pool.
+func NewHandlerWithLoader(loader ModelLoader) *Handler {
+	if loader == nil {
+		loader = directLoader
+	}
+	return &Handler{loader: loader}
 }
 
 // NewHandlerWithModel creates a Handler pre-loaded with an existing
-// CodebaseModel. Use this when the daemon has already resolved the project
-// root and loaded the model; the MCP parse tool will still work but the
-// handler can also operate on the pre-loaded state immediately.
-func NewHandlerWithModel(m *model.CodebaseModel) *Handler {
-	return &Handler{model: m}
+// CodebaseModel. The release callback (if non-nil) is invoked on Close.
+// Subsequent parse calls fall back to a direct loader.
+func NewHandlerWithModel(m *model.CodebaseModel, release func()) *Handler {
+	return &Handler{model: m, loader: directLoader, release: release}
+}
+
+// Close releases any resources held by the handler. Safe to call multiple
+// times.
+func (h *Handler) Close() {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if h.release != nil {
+		h.release()
+		h.release = nil
+	}
+	h.model = nil
 }
 
 // Call dispatches an MCP tool call by name.
@@ -150,15 +192,47 @@ func (h *Handler) Call(name string, args map[string]any) (string, bool, error) {
 	}
 }
 
+// HandlerResolver returns the Handler bound to the calling MCP session,
+// creating one on first use. A nil ctx returns a transient handler.
+type HandlerResolver func(ctx context.Context) *Handler
+
+// RegisterTools registers every Sawmill tool with the given mcp-go server.
+// Each tool's handler resolves the per-session *Handler via resolve() and
+// dispatches by tool name through Handler.Call.
+func RegisterTools(srv *server.MCPServer, resolve HandlerResolver) {
+	for _, def := range Definitions() {
+		name := def.Name
+		srv.AddTool(def, makeToolHandler(resolve, name))
+	}
+}
+
+func makeToolHandler(resolve HandlerResolver, name string) server.ToolHandlerFunc {
+	return func(ctx context.Context, req mcpgo.CallToolRequest) (*mcpgo.CallToolResult, error) {
+		h := resolve(ctx)
+		if h == nil {
+			return mcpgo.NewToolResultError("no handler available for session"), nil
+		}
+		text, isError, err := h.Call(name, req.GetArguments())
+		if err != nil {
+			return mcpgo.NewToolResultErrorFromErr("internal error", err), nil
+		}
+		if isError {
+			return mcpgo.NewToolResultError(text), nil
+		}
+		return mcpgo.NewToolResultText(text), nil
+	}
+}
+
 // Definitions returns the MCP tool definitions for all Sawmill tools.
-// These are served to the proxy via the ListTools RPC method.
+// They are registered automatically by RegisterTools; exposed here for
+// introspection and testing.
 func Definitions() []mcpgo.Tool {
 	return []mcpgo.Tool{
 		// parse
 		mcpgo.NewTool("parse",
-			mcpgo.WithDescription("Parse a source tree. When connected via the daemon, the working directory is used automatically and path can be omitted. Returns a summary of the parsed codebase."),
+			mcpgo.WithDescription("Parse a source tree. The first call in an MCP session must specify path; subsequent calls re-use the loaded model. Returns a summary of the parsed codebase."),
 			mcpgo.WithString("path",
-				mcpgo.Description("Root directory or single file to parse (default: daemon working directory)"),
+				mcpgo.Description("Root directory or single file to parse (required on first call in a session)"),
 			),
 		),
 

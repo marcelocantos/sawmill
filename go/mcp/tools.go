@@ -80,24 +80,32 @@ func (h *Handler) handleParse(args map[string]any) (string, bool, error) {
 	defer h.mu.Unlock()
 
 	if path == "" && h.model != nil {
-		// No path and model already loaded (e.g. by daemon handshake) —
-		// the manager goroutine keeps it up to date, just return the summary.
+		// No path and model already loaded — re-use it, the watcher keeps
+		// the underlying state in sync.
 	} else {
-		// Load a new model (or re-load if path changed).
 		if path == "" {
 			return "path is required when no model is pre-loaded", true, nil
 		}
-		if h.model != nil {
-			_ = h.model.Close()
+		// Switch (or first-time) load. Release any previously-borrowed model
+		// before acquiring the new one.
+		if h.release != nil {
+			h.release()
+			h.release = nil
 		}
+		h.model = nil
 		h.pending = nil
 		h.lastBackups = nil
 
-		m, err := model.Load(path)
+		loader := h.loader
+		if loader == nil {
+			loader = directLoader
+		}
+		m, release, err := loader(path)
 		if err != nil {
 			return fmt.Sprintf("parsing %q: %v", path, err), true, nil
 		}
 		h.model = m
+		h.release = release
 	}
 
 	// Build summary from the store (avoids ForestSnapshot).

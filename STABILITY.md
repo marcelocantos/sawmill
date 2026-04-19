@@ -15,12 +15,11 @@ Snapshot as of v0.9.0. 153 public surface items.
 
 | Item | Type | Stability |
 |---|---|---|
-| `sawmill` (default) | MCP stdio proxy (auto-starts daemon) | **Stable** |
-| `sawmill serve` | Background daemon | **Stable** |
+| `sawmill serve` | HTTP MCP server | **Stable** |
 | `sawmill version` | Print version | **Stable** |
 | `sawmill --help` | Usage | **Stable** |
 | `sawmill --help-agent` | Agent guide | **Stable** |
-| `--root` (both modes) | string, default cwd | **Stable** |
+| `--addr HOST:PORT` (serve) | string, default `127.0.0.1:8765` | **Stable** |
 
 ### MCP tools (33 tools, 99 parameters)
 
@@ -64,7 +63,8 @@ Snapshot as of v0.9.0. 153 public surface items.
 
 | Item | Value | Stability |
 |---|---|---|
-| Global socket | `~/.sawmill/sawmill.sock` | **Stable** |
+| Default listen address | `127.0.0.1:8765` (HTTP) | **Stable** |
+| MCP endpoint path | `/mcp` (streamable HTTP) | **Stable** |
 | Store path | `~/.sawmill/stores/<hash>/store.db` | **Stable** |
 | Backup dir | `~/.sawmill/backups/<hash>/` | **Stable** |
 | Backup suffix | `.bak` | **Stable** |
@@ -76,10 +76,9 @@ Snapshot as of v0.9.0. 153 public surface items.
 
 | Item | Value | Stability |
 |---|---|---|
-| Proxy ↔ daemon | mcpbridge RPC over Unix domain socket | **Stable** |
 | MCP protocol | JSON-RPC 2.0 (via mcp-go) | **Stable** (standard) |
-| Transport (stdio) | stdin/stdout (mcpbridge proxy) | **Stable** |
-| Transport (daemon) | Single global Unix domain socket | **Stable** |
+| Transport | Streamable HTTP (mcp-go `NewStreamableHTTPServer`) | **Stable** |
+| Stdio compatibility | Via external transparent gateway (e.g. mcpbridge) | **Stable** |
 
 ## Gaps and prerequisites for 1.0
 
@@ -98,7 +97,7 @@ Snapshot as of v0.9.0. 153 public surface items.
   all common migration patterns.
 - **Delete recipe tool**: No `delete_recipe` MCP tool exists (only
   `delete_convention`). Add for symmetry.
-- **Error recovery**: No test coverage for daemon crashes, socket
+- **Error recovery**: No test coverage for server crashes, transport
   disconnections, or store corruption.
 
 ## Out of scope for 1.0

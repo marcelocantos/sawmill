@@ -1,175 +1,186 @@
 // Copyright 2026 Marcelo Cantos
 // SPDX-License-Identifier: Apache-2.0
 
-// Package daemon implements the sawmill daemon — a single global process that
-// manages per-project CodebaseModels and serves MCP tool calls over a Unix
-// domain socket. Each connection announces its project root in the handshake;
-// the daemon lazily loads and shares a CodebaseModel per unique root. Models
-// are evicted after an idle period when no connections reference them.
+// Package daemon implements the sawmill HTTP MCP server. A single long-running
+// process listens on an HTTP address and serves the streamable HTTP MCP
+// transport. Each MCP session gets its own *mcp.Handler with per-session
+// pending changes/backups; project roots passed to parse are resolved through
+// a shared modelpool.Pool so multiple sessions targeting the same root share
+// one CodebaseModel.
 package daemon
 
 import (
+	"context"
 	"fmt"
 	"log"
 	"os"
 	"os/signal"
-	"path/filepath"
 	"sync"
 	"syscall"
 	"time"
 
-	"github.com/marcelocantos/mcpbridge"
+	mcpgo "github.com/mark3labs/mcp-go/mcp"
+	mcpsrv "github.com/mark3labs/mcp-go/server"
 
 	"github.com/marcelocantos/sawmill/mcp"
 	"github.com/marcelocantos/sawmill/model"
+	"github.com/marcelocantos/sawmill/modelpool"
 )
 
-const idleEvictionTimeout = 5 * time.Minute
+const serverName = "sawmill"
 
-// poolEntry tracks a model, its reference count, and an idle eviction timer.
-type poolEntry struct {
-	model *model.CodebaseModel
-	refs  int
-	timer *time.Timer
+// Server bundles the mcp-go MCPServer, its HTTP transport, the model pool,
+// and the per-session handler registry.
+type Server struct {
+	mcp      *mcpsrv.MCPServer
+	http     *mcpsrv.StreamableHTTPServer
+	pool     *modelpool.Pool
+	sessions *sessionRegistry
 }
 
-// ModelPool manages a shared pool of CodebaseModels keyed by project root.
-// Multiple connections to the same root share one model (amortised parsing).
-// Models are evicted after idleEvictionTimeout with no active connections.
-type ModelPool struct {
-	mu      sync.Mutex
-	entries map[string]*poolEntry
+// sessionRegistry maps mcp-go session IDs to their per-session *mcp.Handler.
+// Handlers are created lazily on first tool call from a session, and closed
+// (releasing any borrowed model) when the session unregisters.
+type sessionRegistry struct {
+	mu       sync.Mutex
+	handlers map[string]*mcp.Handler
 }
 
-// NewModelPool creates an empty model pool.
-func NewModelPool() *ModelPool {
-	return &ModelPool{entries: make(map[string]*poolEntry)}
+func newSessionRegistry() *sessionRegistry {
+	return &sessionRegistry{handlers: make(map[string]*mcp.Handler)}
 }
 
-// Get returns the model for root, loading it lazily on first access.
-// Increments the reference count. Callers must call Release when done.
-func (p *ModelPool) Get(root string) (*model.CodebaseModel, error) {
-	p.mu.Lock()
-	defer p.mu.Unlock()
-
-	if e, ok := p.entries[root]; ok {
-		e.refs++
-		if e.timer != nil {
-			e.timer.Stop()
-			e.timer = nil
-		}
-		return e.model, nil
+// get returns the handler for sessionID, creating one with the given loader
+// on first access.
+func (r *sessionRegistry) get(sessionID string, loader mcp.ModelLoader) *mcp.Handler {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if h, ok := r.handlers[sessionID]; ok {
+		return h
 	}
-
-	m, err := model.Load(root)
-	if err != nil {
-		return nil, err
-	}
-	p.entries[root] = &poolEntry{model: m, refs: 1}
-	return m, nil
+	h := mcp.NewHandlerWithLoader(loader)
+	r.handlers[sessionID] = h
+	return h
 }
 
-// Release decrements the reference count for root. When it reaches zero, an
-// idle timer starts. If no new connection arrives before it fires, the model
-// is closed and removed from the pool.
-func (p *ModelPool) Release(root string) {
-	p.mu.Lock()
-	defer p.mu.Unlock()
-
-	e, ok := p.entries[root]
-	if !ok {
-		return
+// remove closes and unregisters the handler for sessionID.
+func (r *sessionRegistry) remove(sessionID string) {
+	r.mu.Lock()
+	h, ok := r.handlers[sessionID]
+	if ok {
+		delete(r.handlers, sessionID)
 	}
-	e.refs--
-	if e.refs <= 0 {
-		e.timer = time.AfterFunc(idleEvictionTimeout, func() {
-			p.mu.Lock()
-			defer p.mu.Unlock()
-			if e, ok := p.entries[root]; ok && e.refs <= 0 {
-				log.Printf("evicting idle model for %s", root)
-				e.model.Close()
-				delete(p.entries, root)
-			}
-		})
+	r.mu.Unlock()
+	if h != nil {
+		h.Close()
 	}
 }
 
-// CloseAll closes all models in the pool immediately.
-func (p *ModelPool) CloseAll() {
-	p.mu.Lock()
-	defer p.mu.Unlock()
-	for _, e := range p.entries {
-		if e.timer != nil {
-			e.timer.Stop()
-		}
-		e.model.Close()
+// closeAll closes every handler in the registry.
+func (r *sessionRegistry) closeAll() {
+	r.mu.Lock()
+	handlers := r.handlers
+	r.handlers = make(map[string]*mcp.Handler)
+	r.mu.Unlock()
+	for _, h := range handlers {
+		h.Close()
 	}
-	p.entries = nil
 }
 
-// Daemon manages a pool of CodebaseModels and an mcpbridge.Server.
-type Daemon struct {
-	pool   *ModelPool
-	server *mcpbridge.Server
-}
+// New constructs a Server with all sawmill tools registered. Call Start to
+// listen on an HTTP address.
+func New(version string) *Server {
+	pool := modelpool.New()
+	sessions := newSessionRegistry()
 
-// Start starts the global daemon, listening on socketPath. Each connection
-// announces its project root in the handshake; the daemon lazily loads a
-// shared CodebaseModel per root. Models are evicted when idle. Blocks until
-// SIGINT or SIGTERM.
-func Start(socketPath string) error {
-	if err := os.MkdirAll(filepath.Dir(socketPath), 0o700); err != nil {
-		return fmt.Errorf("creating socket directory: %w", err)
-	}
+	loader := poolLoader(pool)
 
-	pool := NewModelPool()
-
-	srv, err := mcpbridge.NewServer(mcpbridge.DaemonConfig{
-		SocketPath: socketPath,
-		Tools:      mcp.Definitions(),
-		HandlerFactory: func(root string) (mcpbridge.ToolHandler, func()) {
-			if root == "" {
-				return mcp.NewHandler(), nil
-			}
-			m, err := pool.Get(root)
-			if err != nil {
-				log.Printf("warning: failed to load model for %q: %v", root, err)
-				return mcp.NewHandler(), nil
-			}
-			cleanup := func() { pool.Release(root) }
-			return mcp.NewHandlerWithModel(m), cleanup
-		},
+	hooks := &mcpsrv.Hooks{}
+	hooks.AddOnUnregisterSession(func(_ context.Context, session mcpsrv.ClientSession) {
+		sessions.remove(session.SessionID())
 	})
-	if err != nil {
-		pool.CloseAll()
-		return fmt.Errorf("creating server: %w", err)
+
+	srv := mcpsrv.NewMCPServer(
+		serverName,
+		version,
+		mcpsrv.WithToolCapabilities(false),
+		mcpsrv.WithHooks(hooks),
+	)
+
+	resolve := func(ctx context.Context) *mcp.Handler {
+		session := mcpsrv.ClientSessionFromContext(ctx)
+		if session == nil {
+			// Tool called outside any session — should not happen via HTTP,
+			// but fall back to a transient handler.
+			return mcp.NewHandlerWithLoader(loader)
+		}
+		return sessions.get(session.SessionID(), loader)
 	}
 
-	d := &Daemon{pool: pool, server: srv}
+	mcp.RegisterTools(srv, resolve)
 
-	log.Printf("sawmill daemon listening on %s", socketPath)
+	httpSrv := mcpsrv.NewStreamableHTTPServer(srv)
+
+	return &Server{
+		mcp:      srv,
+		http:     httpSrv,
+		pool:     pool,
+		sessions: sessions,
+	}
+}
+
+// poolLoader adapts a modelpool.Pool to the mcp.ModelLoader function type.
+func poolLoader(pool *modelpool.Pool) mcp.ModelLoader {
+	return func(root string) (*model.CodebaseModel, func(), error) {
+		m, err := pool.Get(root)
+		if err != nil {
+			return nil, nil, err
+		}
+		return m, func() { pool.Release(root) }, nil
+	}
+}
+
+// Start runs the HTTP server on addr (e.g. "127.0.0.1:8765"). Blocks until
+// SIGINT or SIGTERM.
+func (s *Server) Start(addr string) error {
+	log.Printf("sawmill HTTP MCP server listening on http://%s/mcp", addr)
+
+	errCh := make(chan error, 1)
+	go func() {
+		errCh <- s.http.Start(addr)
+	}()
 
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
 
-	go func() {
-		<-sigCh
+	select {
+	case <-sigCh:
 		log.Printf("shutting down")
-		d.Shutdown()
-	}()
-
-	if err := srv.Serve(); err != nil {
+		return s.Shutdown()
+	case err := <-errCh:
 		return err
+	}
+}
+
+// Shutdown stops the HTTP server and closes every session/model.
+func (s *Server) Shutdown() error {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	httpErr := s.http.Shutdown(ctx)
+	s.sessions.closeAll()
+	s.pool.CloseAll()
+	if httpErr != nil {
+		return fmt.Errorf("shutting down HTTP server: %w", httpErr)
 	}
 	return nil
 }
 
-// Shutdown closes the server and all models.
-func (d *Daemon) Shutdown() {
-	if d.server != nil {
-		d.server.Close()
-	}
-	if d.pool != nil {
-		d.pool.CloseAll()
-	}
-}
+// MCPServer exposes the underlying mcp-go server for testing (e.g. building
+// an in-process client).
+func (s *Server) MCPServer() *mcpsrv.MCPServer { return s.mcp }
+
+// Pool exposes the underlying model pool for testing.
+func (s *Server) Pool() *modelpool.Pool { return s.pool }
+
+// Definitions returns the tool definitions for introspection.
+func Definitions() []mcpgo.Tool { return mcp.Definitions() }

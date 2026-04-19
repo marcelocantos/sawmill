@@ -13,7 +13,7 @@ class Sawmill < Formula
   end
 
   service do
-    run [opt_bin/"sawmill", "serve"]
+    run [opt_bin/"sawmill", "serve", "--addr", "127.0.0.1:8765"]
     keep_alive true
     log_path var/"log/sawmill/sawmill.log"
     error_log_path var/"log/sawmill/sawmill.log"

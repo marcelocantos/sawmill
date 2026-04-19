@@ -24,36 +24,29 @@ steps succeed — installing the binary alone is not enough.
 brew install marcelocantos/tap/sawmill
 ```
 
-**Step 2 — Start the background service:**
+**Step 2 — Start the background HTTP server:**
 
 ```bash
 brew services start sawmill
 ```
 
-This starts the sawmill daemon which manages parsed codebases and
-persists state across sessions. The daemon starts automatically on
-login.
+This launches `sawmill serve --addr 127.0.0.1:8765`, an HTTP MCP server
+on port 8765 that manages parsed codebases and persists state across
+sessions. The server starts automatically on login.
 
 **Step 3 — Register as an MCP server:**
 
-For Claude Code (global install — available in all projects):
+Sawmill speaks the MCP streamable HTTP transport at `http://127.0.0.1:8765/mcp`.
+Stdio-based MCP clients connect through a transparent gateway such as
+[mcpbridge](https://github.com/marcelocantos/mcpbridge), which translates
+stdio ↔ HTTP without altering the protocol:
 
 ```bash
-claude mcp add --scope user sawmill -- sawmill
+claude mcp add --scope user sawmill -- mcpbridge http://127.0.0.1:8765/mcp
 ```
 
-For other MCP clients, add to the client's MCP configuration
-(e.g. `.mcp.json` for project scope):
-
-```json
-{
-  "mcpServers": {
-    "sawmill": {
-      "command": "sawmill"
-    }
-  }
-}
-```
+For MCP clients that natively support HTTP transport, point them
+directly at `http://127.0.0.1:8765/mcp`.
 
 **Step 4 — Restart the agent session.** MCP servers are loaded at
 session start — sawmill won't be available until the next session.
@@ -64,8 +57,11 @@ is complete.
 
 ## Recommended Workflow
 
-1. **Parse first.** Call `parse` with the project root. This loads and
-   indexes all source files. Subsequent `parse` calls are incremental.
+1. **Parse first.** Call `parse` with the project root path on the first
+   call in each MCP session — this binds the session to a project root
+   and loads/indexes all source files. Subsequent `parse` calls re-use
+   the loaded model. Sessions targeting the same root share one model
+   internally (amortised parsing).
 2. **Query/find.** Use `query`, `find_symbol`, or `find_references` to
    locate the code you need to change.
 3. **Transform.** Use `rename`, `transform`, `codegen`,

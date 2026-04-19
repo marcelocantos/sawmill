@@ -4,17 +4,19 @@
 package daemon_test
 
 import (
-	"fmt"
+	"context"
+	"net"
+	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
-	"github.com/marcelocantos/mcpbridge"
+	mcpclient "github.com/mark3labs/mcp-go/client"
+	mcpgo "github.com/mark3labs/mcp-go/mcp"
 
 	"github.com/marcelocantos/sawmill/daemon"
-	"github.com/marcelocantos/sawmill/mcp"
 )
 
 // writeTempGoFile creates a minimal Go source file in dir so the model has
@@ -27,280 +29,184 @@ func writeTempGoFile(t *testing.T, dir string) {
 	}
 }
 
-// tempSocket returns a short-lived socket path under /tmp (stays under the
-// ~104-byte Unix socket path limit).
-func tempSocket(t *testing.T) string {
+// freePort returns a port number that was free at the moment of the call.
+// Best-effort — there's an inherent race between releasing it and binding it.
+func freePort(t *testing.T) string {
 	t.Helper()
-	h := fmt.Sprintf("%x", time.Now().UnixNano())
-	socketPath := fmt.Sprintf("/tmp/sm-test-%s.sock", h[:12])
-	os.Remove(socketPath)
-	t.Cleanup(func() { os.Remove(socketPath) })
-	return socketPath
+	l, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	addr := l.Addr().String()
+	l.Close()
+	return addr
 }
 
-// startFactoryDaemon starts a daemon using HandlerFactory with a ref-counted
-// pool. Returns the socket path and pool.
-func startFactoryDaemon(t *testing.T) (string, *daemon.ModelPool) {
+// startServer launches a sawmill HTTP MCP server on a free port and returns
+// its base URL plus a teardown func.
+func startServer(t *testing.T) string {
 	t.Helper()
 
-	socketPath := tempSocket(t)
-	pool := daemon.NewModelPool()
-	t.Cleanup(func() { pool.CloseAll() })
+	addr := freePort(t)
+	srv := daemon.New("test")
 
-	srv, err := mcpbridge.NewServer(mcpbridge.DaemonConfig{
-		SocketPath: socketPath,
-		Tools:      mcp.Definitions(),
-		HandlerFactory: func(root string) (mcpbridge.ToolHandler, func()) {
-			if root == "" {
-				return mcp.NewHandler(), nil
-			}
-			m, loadErr := pool.Get(root)
-			if loadErr != nil {
-				return mcp.NewHandler(), nil
-			}
-			return mcp.NewHandlerWithModel(m), func() { pool.Release(root) }
-		},
-	})
-	if err != nil {
-		t.Fatalf("creating server: %v", err)
-	}
-	t.Cleanup(func() { srv.Close() })
+	go func() {
+		_ = srv.Start(addr)
+	}()
 
-	go srv.Serve()
+	t.Cleanup(func() { _ = srv.Shutdown() })
 
+	baseURL := "http://" + addr + "/mcp"
 	deadline := time.Now().Add(2 * time.Second)
 	for time.Now().Before(deadline) {
-		client, err := mcpbridge.Dial(socketPath)
+		resp, err := http.Get(baseURL)
 		if err == nil {
-			client.Close()
-			return socketPath, pool
+			resp.Body.Close()
+			return baseURL
 		}
-		time.Sleep(10 * time.Millisecond)
+		time.Sleep(20 * time.Millisecond)
 	}
-	t.Fatal("daemon did not start in time")
-	return "", nil
+	t.Fatal("server did not start in time")
+	return ""
 }
 
-// TestDaemonStartAndConnect verifies that the global daemon accepts a
-// connection with a project root, lazily loads the model, and responds
-// to ListTools and CallTool.
-func TestDaemonStartAndConnect(t *testing.T) {
+// dialClient connects an in-process streamable HTTP MCP client to baseURL
+// and completes the initialize handshake.
+func dialClient(t *testing.T, baseURL string) *mcpclient.Client {
+	t.Helper()
+	c, err := mcpclient.NewStreamableHttpClient(baseURL)
+	if err != nil {
+		t.Fatalf("NewStreamableHttpClient: %v", err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	if err := c.Start(ctx); err != nil {
+		t.Fatalf("client Start: %v", err)
+	}
+
+	initReq := mcpgo.InitializeRequest{}
+	initReq.Params.ProtocolVersion = mcpgo.LATEST_PROTOCOL_VERSION
+	initReq.Params.ClientInfo = mcpgo.Implementation{Name: "test", Version: "0"}
+	if _, err := c.Initialize(ctx, initReq); err != nil {
+		t.Fatalf("Initialize: %v", err)
+	}
+	t.Cleanup(func() { _ = c.Close() })
+	return c
+}
+
+// callTool invokes a tool and returns the textual result.
+func callTool(t *testing.T, c *mcpclient.Client, name string, args map[string]any) (string, bool) {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	req := mcpgo.CallToolRequest{}
+	req.Params.Name = name
+	req.Params.Arguments = args
+	res, err := c.CallTool(ctx, req)
+	if err != nil {
+		t.Fatalf("CallTool %s: %v", name, err)
+	}
+	var sb strings.Builder
+	for _, c := range res.Content {
+		if tc, ok := c.(mcpgo.TextContent); ok {
+			sb.WriteString(tc.Text)
+		}
+	}
+	return sb.String(), res.IsError
+}
+
+// TestServerListAndCall verifies basic round-trip: list tools and call parse.
+func TestServerListAndCall(t *testing.T) {
 	projectDir := t.TempDir()
 	writeTempGoFile(t, projectDir)
 
-	socketPath, _ := startFactoryDaemon(t)
+	baseURL := startServer(t)
+	c := dialClient(t, baseURL)
 
-	client, err := mcpbridge.Dial(socketPath, projectDir)
-	if err != nil {
-		t.Fatalf("dial: %v", err)
-	}
-	defer client.Close()
-
-	proxy := mcpbridge.NewToolProxy(client)
-
-	tools, err := proxy.ListTools()
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	tools, err := c.ListTools(ctx, mcpgo.ListToolsRequest{})
 	if err != nil {
 		t.Fatalf("ListTools: %v", err)
 	}
-	if len(tools) == 0 {
-		t.Error("expected at least one tool definition")
+	if len(tools.Tools) == 0 {
+		t.Error("expected at least one tool")
 	}
 
-	result, err := proxy.CallTool("parse", map[string]any{})
-	if err != nil {
-		t.Fatalf("CallTool parse: %v", err)
-	}
-	if result.IsError {
-		t.Errorf("parse returned error: %s", result.Text)
+	text, isErr := callTool(t, c, "parse", map[string]any{"path": projectDir})
+	if isErr {
+		t.Errorf("parse returned error: %s", text)
 	}
 }
 
-// TestDaemonMultipleRootsShareModel verifies that two connections to the same
-// root share a model (amortised parsing).
-func TestDaemonMultipleRootsShareModel(t *testing.T) {
+// TestSessionsShareModel verifies that two MCP sessions calling parse on the
+// same project share the same underlying CodebaseModel via the pool.
+func TestSessionsShareModel(t *testing.T) {
 	projectDir := t.TempDir()
 	writeTempGoFile(t, projectDir)
 
-	socketPath, _ := startFactoryDaemon(t)
+	baseURL := startServer(t)
 
-	c1, err := mcpbridge.Dial(socketPath, projectDir)
-	if err != nil {
-		t.Fatalf("dial 1: %v", err)
-	}
-	defer c1.Close()
-
-	p1 := mcpbridge.NewToolProxy(c1)
-	result, err := p1.CallTool("parse", map[string]any{})
-	if err != nil {
-		t.Fatalf("parse 1: %v", err)
-	}
-	if result.IsError {
-		t.Fatalf("parse 1 error: %s", result.Text)
+	c1 := dialClient(t, baseURL)
+	t1, isErr := callTool(t, c1, "parse", map[string]any{"path": projectDir})
+	if isErr {
+		t.Fatalf("parse 1: %s", t1)
 	}
 
-	c2, err := mcpbridge.Dial(socketPath, projectDir)
-	if err != nil {
-		t.Fatalf("dial 2: %v", err)
-	}
-	defer c2.Close()
-
-	p2 := mcpbridge.NewToolProxy(c2)
-	result2, err := p2.CallTool("parse", map[string]any{})
-	if err != nil {
-		t.Fatalf("parse 2: %v", err)
-	}
-	if result2.IsError {
-		t.Fatalf("parse 2 error: %s", result2.Text)
+	c2 := dialClient(t, baseURL)
+	t2, isErr := callTool(t, c2, "parse", map[string]any{"path": projectDir})
+	if isErr {
+		t.Fatalf("parse 2: %s", t2)
 	}
 
-	if result.Text != result2.Text {
-		t.Errorf("expected same parse result, got:\n  1: %s\n  2: %s", result.Text, result2.Text)
+	if t1 != t2 {
+		t.Errorf("expected identical parse summaries:\n  1: %s\n  2: %s", t1, t2)
 	}
 }
 
-// TestDaemonMultipleRoots verifies that connections to different project roots
-// get independent models.
-func TestDaemonMultipleRoots(t *testing.T) {
+// TestSessionsIndependentRoots verifies sessions on different roots don't see
+// each other's symbols.
+func TestSessionsIndependentRoots(t *testing.T) {
 	projectA := t.TempDir()
-	if err := os.WriteFile(
-		filepath.Join(projectA, "a.go"),
-		[]byte("package a\n\nfunc alpha() {}\n"),
-		0o644,
-	); err != nil {
+	if err := os.WriteFile(filepath.Join(projectA, "a.go"), []byte("package a\n\nfunc alpha() {}\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-
 	projectB := t.TempDir()
-	if err := os.WriteFile(
-		filepath.Join(projectB, "b.go"),
-		[]byte("package b\n\nfunc beta() {}\n"),
-		0o644,
-	); err != nil {
+	if err := os.WriteFile(filepath.Join(projectB, "b.go"), []byte("package b\n\nfunc beta() {}\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 
-	socketPath, _ := startFactoryDaemon(t)
+	baseURL := startServer(t)
 
-	cA, err := mcpbridge.Dial(socketPath, projectA)
-	if err != nil {
-		t.Fatalf("dial A: %v", err)
+	cA := dialClient(t, baseURL)
+	if text, isErr := callTool(t, cA, "parse", map[string]any{"path": projectA}); isErr {
+		t.Fatalf("parse A: %s", text)
 	}
-	defer cA.Close()
-	pA := mcpbridge.NewToolProxy(cA)
-
-	resultA, err := pA.CallTool("parse", map[string]any{})
-	if err != nil || resultA.IsError {
-		t.Fatalf("parse A: err=%v text=%s", err, resultA.Text)
+	cB := dialClient(t, baseURL)
+	if text, isErr := callTool(t, cB, "parse", map[string]any{"path": projectB}); isErr {
+		t.Fatalf("parse B: %s", text)
 	}
 
-	cB, err := mcpbridge.Dial(socketPath, projectB)
-	if err != nil {
-		t.Fatalf("dial B: %v", err)
+	findA, _ := callTool(t, cA, "find_symbol", map[string]any{"symbol": "alpha"})
+	if !strings.Contains(findA, "alpha") {
+		t.Errorf("expected alpha in project A, got: %s", findA)
 	}
-	defer cB.Close()
-	pB := mcpbridge.NewToolProxy(cB)
-
-	resultB, err := pB.CallTool("parse", map[string]any{})
-	if err != nil || resultB.IsError {
-		t.Fatalf("parse B: err=%v text=%s", err, resultB.Text)
-	}
-
-	findA, err := pA.CallTool("find_symbol", map[string]any{"symbol": "alpha"})
-	if err != nil {
-		t.Fatalf("find_symbol A: %v", err)
-	}
-	if findA.IsError || !strings.Contains(findA.Text, "alpha") {
-		t.Errorf("expected alpha in project A, got: %s", findA.Text)
-	}
-
-	findB, err := pB.CallTool("find_symbol", map[string]any{"symbol": "alpha"})
-	if err != nil {
-		t.Fatalf("find_symbol B: %v", err)
-	}
-	if !strings.Contains(findB.Text, "not found") {
-		t.Errorf("expected alpha not found in project B, got: %s", findB.Text)
-	}
-
-	findBeta, err := pB.CallTool("find_symbol", map[string]any{"symbol": "beta"})
-	if err != nil {
-		t.Fatalf("find_symbol B beta: %v", err)
-	}
-	if findBeta.IsError || !strings.Contains(findBeta.Text, "beta") {
-		t.Errorf("expected beta in project B, got: %s", findBeta.Text)
-	}
-
-	findBetaA, err := pA.CallTool("find_symbol", map[string]any{"symbol": "beta"})
-	if err != nil {
-		t.Fatalf("find_symbol A beta: %v", err)
-	}
-	if !strings.Contains(findBetaA.Text, "not found") {
-		t.Errorf("expected beta not found in project A, got: %s", findBetaA.Text)
+	findB, _ := callTool(t, cB, "find_symbol", map[string]any{"symbol": "alpha"})
+	if !strings.Contains(findB, "not found") {
+		t.Errorf("expected alpha not found in project B, got: %s", findB)
 	}
 }
 
-// TestDaemonShutdown verifies that closing the server stops accepting connections.
-func TestDaemonShutdown(t *testing.T) {
-	socketPath := tempSocket(t)
+// TestParseRequiresPath verifies that parse without a path errors when no
+// model is loaded yet.
+func TestParseRequiresPath(t *testing.T) {
+	baseURL := startServer(t)
+	c := dialClient(t, baseURL)
 
-	srv, err := mcpbridge.NewServer(mcpbridge.DaemonConfig{
-		SocketPath: socketPath,
-		Tools:      mcp.Definitions(),
-		HandlerFactory: func(root string) (mcpbridge.ToolHandler, func()) {
-			return mcp.NewHandler(), nil
-		},
-	})
-	if err != nil {
-		t.Fatalf("creating server: %v", err)
-	}
-
-	go srv.Serve()
-
-	deadline := time.Now().Add(2 * time.Second)
-	for time.Now().Before(deadline) {
-		if _, err := os.Stat(socketPath); err == nil {
-			break
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
-
-	srv.Close()
-	time.Sleep(50 * time.Millisecond)
-
-	_, err = mcpbridge.Dial(socketPath)
-	if err == nil {
-		t.Error("expected dial to fail after shutdown")
-	}
-}
-
-// TestDaemonNoRoot verifies that connecting without a root still works —
-// the handler starts with no model and requires parse with an explicit path.
-func TestDaemonNoRoot(t *testing.T) {
-	projectDir := t.TempDir()
-	writeTempGoFile(t, projectDir)
-
-	socketPath, _ := startFactoryDaemon(t)
-
-	client, err := mcpbridge.Dial(socketPath)
-	if err != nil {
-		t.Fatalf("dial: %v", err)
-	}
-	defer client.Close()
-
-	proxy := mcpbridge.NewToolProxy(client)
-
-	result, err := proxy.CallTool("parse", map[string]any{})
-	if err != nil {
-		t.Fatalf("CallTool: %v", err)
-	}
-	if !result.IsError {
-		t.Error("expected error when parsing without root or path")
-	}
-
-	result, err = proxy.CallTool("parse", map[string]any{"path": projectDir})
-	if err != nil {
-		t.Fatalf("CallTool: %v", err)
-	}
-	if result.IsError {
-		t.Errorf("parse with path returned error: %s", result.Text)
+	text, isErr := callTool(t, c, "parse", map[string]any{})
+	if !isErr {
+		t.Errorf("expected error when parsing without a path, got: %s", text)
 	}
 }
