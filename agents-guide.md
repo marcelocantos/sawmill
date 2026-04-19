@@ -116,6 +116,9 @@ replaces any unapplied pending changes.
 | `instantiate` | Create code from a taught recipe | `recipe`, `params` |
 | `teach_convention` | Define an enforceable project rule | `name`, `check_program` |
 | `check_conventions` | Scan for convention violations | `path` |
+| `teach_equivalence` | Save a bidirectional code-pattern pair (e.g. `errors.Is(err, X) ↔ err == X`) | `name`, `left_pattern`, `right_pattern`, `preferred_direction` |
+| `list_equivalences` | List all saved equivalence pairs | -- |
+| `delete_equivalence` | Delete a saved equivalence by name | `name` |
 | `list_recipes` | List all taught recipes | -- |
 | `list_conventions` | List all taught conventions | -- |
 

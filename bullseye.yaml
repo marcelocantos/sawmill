@@ -11,11 +11,96 @@ targets:
     - check_equivalences flags non-preferred forms as violations
     - Transitive chains produce derived equivalences
     context: Originates from arr.ai work on cross-language transpilation as set relations. The intra-language case avoids type-bridge and grammar-extension problems. T16's pattern engine provides the foundation.
+    depends_on:
+    - T1.1
+    - T1.2
+    - T1.3
+    - T1.4
     tags:
     - research
     - pattern-matching
     origin: manual
     discovered: 2026-04-07
+  T1.1:
+    name: Equivalence pairs are stored — teach_equivalence MCP tool persists bidirectional pattern pairs in SQLite
+    status: achieved
+    value: 0.0
+    cost: 0.0
+    observable: true
+    acceptance:
+    - teach_equivalence MCP tool accepts a name, two pattern strings (left/right), an optional description, and an optional preferred direction (left, right, or none)
+    - Equivalences are persisted in a new SQLite table alongside recipes/conventions/invariants
+    - list_equivalences MCP tool returns all stored pairs
+    - delete_equivalence removes one by name
+    - Pattern strings use the same $placeholder DSL as migrate_type/teach_by_example so existing pattern infrastructure is reused
+    context: Foundation for 🎯T1. The storage layer must exist before apply/check tools can operate. Reuses sawmill's existing recipe/convention storage pattern in store/store.go and the $placeholder pattern syntax from 🎯T20 (migrate_type). Observable via the list_equivalences tool.
+    depends_on:
+    - T16
+    tags:
+    - pattern-matching
+    - T1
+    origin: manual
+    discovered: 2026-04-19
+    achieved: 2026-04-19
+  T1.2:
+    name: apply_equivalence rewrites code in either direction with diff preview and apply/undo support
+    status: identified
+    value: 0.0
+    cost: 0.0
+    observable: true
+    acceptance:
+    - apply_equivalence MCP tool accepts an equivalence name and a direction (left_to_right or right_to_left)
+    - All matches across the codebase are rewritten in the chosen direction
+    - Output is a unified diff per file, gated by the standard apply/undo flow
+    - Path filter is supported, consistent with other transforms
+    - 'Round-trip safety: applying left_to_right then right_to_left produces source byte-identical to the original (when the patterns are truly equivalent)'
+    context: 'The execution side of 🎯T1: take a stored bidirectional pair and rewrite source. Builds on the existing transform/match engine and the rewrite/ ApplyEdits infrastructure. Round-trip safety is the canonical correctness check.'
+    depends_on:
+    - T1.1
+    tags:
+    - pattern-matching
+    - T1
+    origin: manual
+    discovered: 2026-04-19
+  T1.3:
+    name: check_equivalences flags non-preferred forms as convention violations
+    status: identified
+    value: 0.0
+    cost: 0.0
+    observable: true
+    acceptance:
+    - check_equivalences MCP tool scans the codebase for matches of any equivalence's non-preferred side
+    - Each violation reports file, location (line/column), the matched pattern, and the suggested rewrite
+    - Equivalences with no preferred direction are skipped
+    - Path filter is supported
+    context: The static-check side of 🎯T1, parallel to check_conventions and check_invariants. Lets a project enforce a preferred form (e.g. `errors.Is(err, X)` over `err == X`). Independent of T1.2 — uses the same matching logic but doesn't modify files.
+    depends_on:
+    - T1.1
+    tags:
+    - pattern-matching
+    - T1
+    origin: manual
+    discovered: 2026-04-19
+  T1.4:
+    name: Transitive chains produce derived equivalences — A↔B and B↔C imply A↔C
+    status: identified
+    value: 0.0
+    cost: 0.0
+    observable: true
+    acceptance:
+    - Equivalence storage tracks pairs as a graph of patterns, computing the transitive closure on demand
+    - apply_equivalence and check_equivalences honour derived equivalences (not only the directly-taught pairs)
+    - 'Cycle detection: equivalences that close a loop are stored once, not repeated'
+    - list_equivalences distinguishes taught vs derived
+    context: The composability extension. Captures the algebraic property that motivates 🎯T1 in the first place — equivalence is transitive. Implementation is graph-walk over the equivalence pairs to compute closure. Closing cycles correctly is the subtle bit.
+    depends_on:
+    - T1.2
+    - T1.3
+    tags:
+    - pattern-matching
+    - T1
+    origin: manual
+    discovered: 2026-04-19
   T10:
     name: ASTs are stored relationally in SQLite — normalised node tables with integer FK node types, field names, and blob-SHA dedup across commits
     status: achieved

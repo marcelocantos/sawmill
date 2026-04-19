@@ -3625,6 +3625,100 @@ func (h *Handler) handleAPIChangelog(args map[string]any) (string, bool, error) 
 	return semdiff.Changelog(result), false, nil
 }
 
+// ---- teach_equivalence / list_equivalences / delete_equivalence -------------
+
+func (h *Handler) handleTeachEquivalence(args map[string]any) (string, bool, error) {
+	name, err := requireString(args, "name")
+	if err != nil {
+		return err.Error(), true, nil
+	}
+	leftPattern, err := requireString(args, "left_pattern")
+	if err != nil {
+		return err.Error(), true, nil
+	}
+	rightPattern, err := requireString(args, "right_pattern")
+	if err != nil {
+		return err.Error(), true, nil
+	}
+	description := optString(args, "description")
+	direction := optString(args, "preferred_direction")
+
+	if leftPattern == rightPattern {
+		return "left_pattern and right_pattern must differ", true, nil
+	}
+
+	h.mu.Lock()
+	defer h.mu.Unlock()
+
+	m, err := h.requireModel()
+	if err != nil {
+		return err.Error(), true, nil
+	}
+
+	if err := m.SaveEquivalence(name, description, leftPattern, rightPattern, direction); err != nil {
+		return fmt.Sprintf("saving equivalence: %v", err), true, nil
+	}
+
+	return fmt.Sprintf("Equivalence %q saved.", name), false, nil
+}
+
+func (h *Handler) handleListEquivalences(_ map[string]any) (string, bool, error) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+
+	m, err := h.requireModel()
+	if err != nil {
+		return err.Error(), true, nil
+	}
+
+	equivs, err := m.ListEquivalences()
+	if err != nil {
+		return fmt.Sprintf("listing equivalences: %v", err), true, nil
+	}
+
+	if len(equivs) == 0 {
+		return "No equivalences saved.", false, nil
+	}
+
+	var sb strings.Builder
+	fmt.Fprintf(&sb, "%d equivalence(s):\n", len(equivs))
+	for _, e := range equivs {
+		fmt.Fprintf(&sb, "  %s: %s ↔ %s", e.Name, e.LeftPattern, e.RightPattern)
+		if e.PreferredDirection != "" {
+			fmt.Fprintf(&sb, " [prefers %s]", e.PreferredDirection)
+		}
+		if e.Description != "" {
+			fmt.Fprintf(&sb, " — %s", e.Description)
+		}
+		sb.WriteString("\n")
+	}
+	return sb.String(), false, nil
+}
+
+func (h *Handler) handleDeleteEquivalence(args map[string]any) (string, bool, error) {
+	name, err := requireString(args, "name")
+	if err != nil {
+		return err.Error(), true, nil
+	}
+
+	h.mu.Lock()
+	defer h.mu.Unlock()
+
+	m, err := h.requireModel()
+	if err != nil {
+		return err.Error(), true, nil
+	}
+
+	deleted, err := m.DeleteEquivalence(name)
+	if err != nil {
+		return fmt.Sprintf("deleting equivalence: %v", err), true, nil
+	}
+	if !deleted {
+		return fmt.Sprintf("No equivalence named %q.", name), false, nil
+	}
+	return fmt.Sprintf("Equivalence %q deleted.", name), false, nil
+}
+
 // ---- git_semantic_bisect ------------------------------------------------------
 
 func (h *Handler) handleGitSemanticBisect(args map[string]any) (string, bool, error) {

@@ -496,6 +496,18 @@ func (m *CodebaseModel) ListInvariants() ([]store.Invariant, error) {
 func (m *CodebaseModel) DeleteInvariant(name string) (bool, error) {
 	return m.Store.DeleteInvariant(name)
 }
+func (m *CodebaseModel) SaveEquivalence(name, description, leftPattern, rightPattern, preferredDirection string) error {
+	return m.Store.SaveEquivalence(name, description, leftPattern, rightPattern, preferredDirection)
+}
+func (m *CodebaseModel) ListEquivalences() ([]store.Equivalence, error) {
+	return m.Store.ListEquivalences()
+}
+func (m *CodebaseModel) LoadEquivalence(name string) (*store.Equivalence, error) {
+	return m.Store.LoadEquivalence(name)
+}
+func (m *CodebaseModel) DeleteEquivalence(name string) (bool, error) {
+	return m.Store.DeleteEquivalence(name)
+}
 
 // MtimeForPath returns the modification time for the given path.
 func MtimeForPath(path string) time.Time {

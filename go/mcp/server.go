@@ -189,6 +189,12 @@ func (h *Handler) Call(name string, args map[string]any) (string, bool, error) {
 		return h.handleAPIChangelog(args)
 	case "git_semantic_bisect":
 		return h.handleGitSemanticBisect(args)
+	case "teach_equivalence":
+		return h.handleTeachEquivalence(args)
+	case "list_equivalences":
+		return h.handleListEquivalences(args)
+	case "delete_equivalence":
+		return h.handleDeleteEquivalence(args)
 	default:
 		return "", false, fmt.Errorf("unknown tool: %s", name)
 	}
@@ -810,6 +816,43 @@ func Definitions() []mcpgo.Tool {
 			),
 			mcpgo.WithString("head",
 				mcpgo.Description("Head ref. Default: HEAD"),
+			),
+		),
+
+		// teach_equivalence
+		mcpgo.NewTool("teach_equivalence",
+			mcpgo.WithDescription(`Save a named bidirectional code-pattern pair (e.g. errors.Is(err, X) ↔ err == X). Patterns use the same $placeholder DSL as migrate_type and teach_by_example. Captures bound on the matched side are reused when rewriting to the other side. The optional preferred_direction lets check_equivalences flag the non-preferred form as a violation.`),
+			mcpgo.WithString("name",
+				mcpgo.Required(),
+				mcpgo.Description("Equivalence name (used for apply_equivalence and delete_equivalence)"),
+			),
+			mcpgo.WithString("left_pattern",
+				mcpgo.Required(),
+				mcpgo.Description("Left-hand pattern (e.g. \"errors.Is($err, $target)\")"),
+			),
+			mcpgo.WithString("right_pattern",
+				mcpgo.Required(),
+				mcpgo.Description("Right-hand pattern (e.g. \"$err == $target\")"),
+			),
+			mcpgo.WithString("description",
+				mcpgo.Description("Human-readable description of what the equivalence captures"),
+			),
+			mcpgo.WithString("preferred_direction",
+				mcpgo.Description("Which side to prefer: \"left\" or \"right\". Omit for no preference."),
+			),
+		),
+
+		// list_equivalences
+		mcpgo.NewTool("list_equivalences",
+			mcpgo.WithDescription("List all saved equivalence pairs."),
+		),
+
+		// delete_equivalence
+		mcpgo.NewTool("delete_equivalence",
+			mcpgo.WithDescription("Delete a saved equivalence by name."),
+			mcpgo.WithString("name",
+				mcpgo.Required(),
+				mcpgo.Description("Equivalence name to delete"),
 			),
 		),
 
