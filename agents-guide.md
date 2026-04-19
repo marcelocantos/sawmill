@@ -108,6 +108,7 @@ replaces any unapplied pending changes.
 | `migrate_type` | Rewrite all usage sites of a type | `type_name`, `rules` |
 | `promote_constant` | Replace every occurrence of a literal with a named constant; declares it in idiomatic per-language form | `literal`, `name`, `path`, `format` |
 | `extract_to_env` | Replace a literal with an env-var read (os.Getenv / os.environ.get / process.env / std::getenv); scaffold .env.example + .gitignore | `literal`, `var_name`, `path`, `format` |
+| `migrate_pattern` | Generalised pattern rewriting with import management (add the new symbol's import; drop the old one if unused) | `old_pattern`, `new_pattern`, `add_import`, `drop_import`, `path`, `format` |
 
 ### Teaching
 

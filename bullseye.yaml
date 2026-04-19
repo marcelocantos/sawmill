@@ -673,7 +673,7 @@ targets:
     achieved: 2026-04-19
   T8.3:
     name: migrate_pattern — generalised structural pattern rewriting across files with import management
-    status: identified
+    status: achieved
     value: 0.0
     cost: 0.0
     observable: true
@@ -691,6 +691,7 @@ targets:
     - T8
     origin: manual
     discovered: 2026-04-19
+    achieved: 2026-04-19
   T9:
     name: Git objects are accessible from Go — sawmill can read commits, trees, and blobs from the git repo without shelling out
     status: achieved

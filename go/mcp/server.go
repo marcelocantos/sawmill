@@ -215,6 +215,8 @@ func (h *Handler) Call(name string, args map[string]any) (string, bool, error) {
 		return h.handlePromoteConstant(args)
 	case "extract_to_env":
 		return h.handleExtractToEnv(args)
+	case "migrate_pattern":
+		return h.handleMigratePattern(args)
 	default:
 		return "", false, fmt.Errorf("unknown tool: %s", name)
 	}
@@ -949,6 +951,31 @@ func Definitions() []mcpgo.Tool {
 			mcpgo.WithString("name",
 				mcpgo.Required(),
 				mcpgo.Description("Fix name to delete"),
+			),
+		),
+
+		// migrate_pattern
+		mcpgo.NewTool("migrate_pattern",
+			mcpgo.WithDescription(`Generalised structural pattern rewriting with import management. Accepts an old_pattern and new_pattern (both using the $placeholder DSL). Captured placeholders bind through. Optional add_import is added to every rewritten file; optional drop_import is removed from each rewritten file iff its symbol is no longer referenced. Differs from apply_equivalence by being one-shot (no taught pair) and by managing imports explicitly.`),
+			mcpgo.WithString("old_pattern",
+				mcpgo.Required(),
+				mcpgo.Description(`Pattern to match, e.g. "fmt.Sprintf($fmt, $args)"`),
+			),
+			mcpgo.WithString("new_pattern",
+				mcpgo.Required(),
+				mcpgo.Description(`Replacement pattern, e.g. "newpkg.Format($fmt, $args)"`),
+			),
+			mcpgo.WithString("add_import",
+				mcpgo.Description("Optional import path to add to every rewritten file (e.g. \"newpkg\" for Go, \"newpkg/index\" for TS, \"std::env\" for Rust)"),
+			),
+			mcpgo.WithString("drop_import",
+				mcpgo.Description("Optional import path to drop from each rewritten file iff its symbol is no longer referenced"),
+			),
+			mcpgo.WithString("path",
+				mcpgo.Description("Restrict to files matching this path substring"),
+			),
+			mcpgo.WithBoolean("format",
+				mcpgo.Description("Run the language formatter on changed files"),
 			),
 		),
 
