@@ -4,13 +4,70 @@
 package gitindex_test
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
+
+	"github.com/go-git/go-billy/v5/memfs"
+	"github.com/go-git/go-git/v5"
+	"github.com/go-git/go-git/v5/plumbing/object"
+	"github.com/go-git/go-git/v5/storage/memory"
 
 	"github.com/marcelocantos/sawmill/gitindex"
 	"github.com/marcelocantos/sawmill/gitrepo"
 )
+
+// buildIndexRangeFixture creates an in-memory git repo with the given
+// number of tiny commits (each writes a unique go file). Returns the
+// indexer and the HEAD commit SHA.
+func buildIndexRangeFixture(t *testing.T, commits int) (*gitindex.Indexer, string) {
+	t.Helper()
+
+	fs := memfs.New()
+	storer := memory.NewStorage()
+	r, err := git.Init(storer, fs)
+	if err != nil {
+		t.Fatalf("git init: %v", err)
+	}
+	wt, err := r.Worktree()
+	if err != nil {
+		t.Fatalf("worktree: %v", err)
+	}
+	sig := &object.Signature{Name: "T", Email: "t@example.com", When: time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)}
+
+	var head string
+	for i := 0; i < commits; i++ {
+		path := fmt.Sprintf("f%d.go", i)
+		content := fmt.Sprintf("package x\n\nvar V%d = %d\n", i, i)
+		f, err := fs.Create(path)
+		if err != nil {
+			t.Fatalf("create: %v", err)
+		}
+		if _, err := f.Write([]byte(content)); err != nil {
+			t.Fatalf("write: %v", err)
+		}
+		f.Close()
+		if _, err := wt.Add(path); err != nil {
+			t.Fatalf("add: %v", err)
+		}
+		sig.When = sig.When.Add(time.Hour)
+		h, err := wt.Commit(fmt.Sprintf("commit %d", i), &git.CommitOptions{Author: sig})
+		if err != nil {
+			t.Fatalf("commit: %v", err)
+		}
+		head = h.String()
+	}
+
+	repo := gitrepo.NewFromRepository(r)
+	store, err := gitindex.OpenMemory()
+	if err != nil {
+		t.Fatalf("OpenMemory: %v", err)
+	}
+	t.Cleanup(func() { store.Close() })
+	return gitindex.NewIndexer(store, repo), head
+}
 
 // repoRoot returns the sawmill repo root for integration tests, or calls
 // t.Skip if we are not inside a git repository.
@@ -98,12 +155,14 @@ func TestIndexHeadIdempotent(t *testing.T) {
 }
 
 // TestIndexRange verifies that IndexRange stops after the requested limit.
+// Uses an in-memory 5-commit fixture so the test is bounded and fast — the
+// earlier incarnation walked the real sawmill repo and took minutes under
+// -race in CI.
 func TestIndexRange(t *testing.T) {
-	root := repoRoot(t)
-	ix := openIndexer(t, root)
+	ix, head := buildIndexRangeFixture(t, 5)
 
 	const limit = 3
-	n, err := ix.IndexRange("HEAD", limit)
+	n, err := ix.IndexRange(head, limit)
 	if err != nil {
 		t.Fatalf("IndexRange: %v", err)
 	}
@@ -115,14 +174,13 @@ func TestIndexRange(t *testing.T) {
 // TestIndexRangeIdempotent verifies that running IndexRange twice with the
 // same limit succeeds (idempotent).
 func TestIndexRangeIdempotent(t *testing.T) {
-	root := repoRoot(t)
-	ix := openIndexer(t, root)
+	ix, head := buildIndexRangeFixture(t, 4)
 
 	const limit = 2
-	if _, err := ix.IndexRange("HEAD", limit); err != nil {
+	if _, err := ix.IndexRange(head, limit); err != nil {
 		t.Fatalf("IndexRange (first): %v", err)
 	}
-	if _, err := ix.IndexRange("HEAD", limit); err != nil {
+	if _, err := ix.IndexRange(head, limit); err != nil {
 		t.Fatalf("IndexRange (second): %v", err)
 	}
 }
