@@ -1,0 +1,712 @@
+schema_version: 1
+targets:
+  T1:
+    name: Intra-language pattern equivalences
+    status: achieved
+    value: 21.0
+    cost: 21.0
+    acceptance:
+    - teach_equivalence tool stores bidirectional pattern pairs
+    - apply_equivalence rewrites matches in either direction
+    - check_equivalences flags non-preferred forms as violations
+    - Transitive chains produce derived equivalences
+    context: Originates from arr.ai work on cross-language transpilation as set relations. The intra-language case avoids type-bridge and grammar-extension problems. T16's pattern engine provides the foundation.
+    depends_on:
+    - T1.1
+    - T1.2
+    - T1.3
+    - T1.4
+    tags:
+    - research
+    - pattern-matching
+    origin: manual
+    discovered: 2026-04-07
+    achieved: 2026-04-19
+  T1.1:
+    name: Equivalence pairs are stored — teach_equivalence MCP tool persists bidirectional pattern pairs in SQLite
+    status: achieved
+    value: 0.0
+    cost: 0.0
+    observable: true
+    acceptance:
+    - teach_equivalence MCP tool accepts a name, two pattern strings (left/right), an optional description, and an optional preferred direction (left, right, or none)
+    - Equivalences are persisted in a new SQLite table alongside recipes/conventions/invariants
+    - list_equivalences MCP tool returns all stored pairs
+    - delete_equivalence removes one by name
+    - Pattern strings use the same $placeholder DSL as migrate_type/teach_by_example so existing pattern infrastructure is reused
+    context: Foundation for 🎯T1. The storage layer must exist before apply/check tools can operate. Reuses sawmill's existing recipe/convention storage pattern in store/store.go and the $placeholder pattern syntax from 🎯T20 (migrate_type). Observable via the list_equivalences tool.
+    depends_on:
+    - T16
+    tags:
+    - pattern-matching
+    - T1
+    origin: manual
+    discovered: 2026-04-19
+    achieved: 2026-04-19
+  T1.2:
+    name: apply_equivalence rewrites code in either direction with diff preview and apply/undo support
+    status: achieved
+    value: 0.0
+    cost: 0.0
+    observable: true
+    acceptance:
+    - apply_equivalence MCP tool accepts an equivalence name and a direction (left_to_right or right_to_left)
+    - All matches across the codebase are rewritten in the chosen direction
+    - Output is a unified diff per file, gated by the standard apply/undo flow
+    - Path filter is supported, consistent with other transforms
+    - 'Round-trip safety: applying left_to_right then right_to_left produces source byte-identical to the original (when the patterns are truly equivalent)'
+    context: 'The execution side of 🎯T1: take a stored bidirectional pair and rewrite source. Builds on the existing transform/match engine and the rewrite/ ApplyEdits infrastructure. Round-trip safety is the canonical correctness check.'
+    depends_on:
+    - T1.1
+    tags:
+    - pattern-matching
+    - T1
+    origin: manual
+    discovered: 2026-04-19
+    achieved: 2026-04-19
+  T1.3:
+    name: check_equivalences flags non-preferred forms as convention violations
+    status: achieved
+    value: 0.0
+    cost: 0.0
+    observable: true
+    acceptance:
+    - check_equivalences MCP tool scans the codebase for matches of any equivalence's non-preferred side
+    - Each violation reports file, location (line/column), the matched pattern, and the suggested rewrite
+    - Equivalences with no preferred direction are skipped
+    - Path filter is supported
+    context: The static-check side of 🎯T1, parallel to check_conventions and check_invariants. Lets a project enforce a preferred form (e.g. `errors.Is(err, X)` over `err == X`). Independent of T1.2 — uses the same matching logic but doesn't modify files.
+    depends_on:
+    - T1.1
+    tags:
+    - pattern-matching
+    - T1
+    origin: manual
+    discovered: 2026-04-19
+    achieved: 2026-04-19
+  T1.4:
+    name: Transitive chains produce derived equivalences — A↔B and B↔C imply A↔C
+    status: achieved
+    value: 0.0
+    cost: 0.0
+    observable: true
+    acceptance:
+    - Equivalence storage tracks pairs as a graph of patterns, computing the transitive closure on demand
+    - apply_equivalence and check_equivalences honour derived equivalences (not only the directly-taught pairs)
+    - 'Cycle detection: equivalences that close a loop are stored once, not repeated'
+    - list_equivalences distinguishes taught vs derived
+    context: The composability extension. Captures the algebraic property that motivates 🎯T1 in the first place — equivalence is transitive. Implementation is graph-walk over the equivalence pairs to compute closure. Closing cycles correctly is the subtle bit.
+    depends_on:
+    - T1.2
+    - T1.3
+    tags:
+    - pattern-matching
+    - T1
+    origin: manual
+    discovered: 2026-04-19
+    achieved: 2026-04-19
+  T10:
+    name: ASTs are stored relationally in SQLite — normalised node tables with integer FK node types, field names, and blob-SHA dedup across commits
+    status: achieved
+    value: 13.0
+    cost: 13.0
+    acceptance:
+    - A nodes table stores (id, file_blob_sha, parent_id, node_type_id, field_name_id, start_byte, end_byte) with integer FKs to lookup tables
+    - node_types and field_names lookup tables normalise repeated strings to integer IDs
+    - Byte offsets use delta encoding from parent where beneficial
+    - File content is stored once per unique blob SHA — if the same file appears across 500 commits unchanged, one copy exists
+    - A commit_files junction table maps (commit_sha, file_path) → blob_sha
+    - 'SQL can answer structural queries: function parameters, method receivers, return types, parent-child relationships'
+    - Indexing a commit parses only files whose blob SHA is not already indexed
+    context: 'This is the core data model for 🎯T6. The design was discussed in detail: normalised node types/field names as integer FKs, blob-SHA dedup to avoid re-parsing unchanged files, relational AST storage so SQL can answer structural queries directly without Tree-sitter round-trips. This replaces the current flat symbol-only index with a full structural representation.'
+    depends_on:
+    - T9
+    tags:
+    - git
+    - schema
+    - sqlite
+    - T6
+    origin: decomposition of 🎯T6
+    discovered: 2026-04-11
+    achieved: 2026-04-12
+  T11:
+    name: Commits are lazily indexed — walking the commit graph and parsing files on demand, with progress tracking for bulk indexing
+    status: achieved
+    value: 8.0
+    cost: 8.0
+    acceptance:
+    - HEAD, branch tips, and tags are indexed automatically when the daemon starts or a branch changes
+    - Older commits are indexed lazily when a query touches them
+    - Bulk indexing (index all commits) is available as an explicit MCP tool with progress reporting
+    - First-parent walking is the default for linear history; merge commits fan out on demand
+    - Already-indexed commits are skipped (commit SHA is the cache key)
+    context: Controls when and how commits get indexed. The key insight is that most queries only need recent history, so lazy indexing avoids upfront cost. Bulk indexing is available for users who want the full history. Depends on git object access (🎯T6.1) and the relational AST schema (🎯T6.2).
+    depends_on:
+    - T9
+    - T10
+    tags:
+    - git
+    - indexing
+    - daemon
+    - T6
+    origin: decomposition of 🎯T6
+    discovered: 2026-04-11
+    achieved: 2026-04-12
+  T12:
+    name: MCP tools expose structured git queries — git_log, git_diff_summary, git_blame_symbol return structured data instead of text
+    status: achieved
+    value: 13.0
+    cost: 8.0
+    observable: true
+    acceptance:
+    - git_log returns structured commit metadata (SHA, author, date, message, files changed, symbols changed) with filtering and pagination
+    - git_diff_summary returns added/removed/modified symbols per file between any two refs, not raw hunks
+    - git_blame_symbol returns the commit that last modified a given symbol's body, signature, or existence separately
+    - All tools accept refs (branch names, tags, SHAs) and resolve them via the git object layer
+    - Results are compact structured data suitable for agent consumption without context window waste
+    context: The agent-facing surface of 🎯T6. These tools replace shelling out to git and parsing text output. They operate on the indexed data, so responses are fast. Depends on the indexing layer (🎯T6.3) being able to ensure queried commits are indexed.
+    depends_on:
+    - T11
+    tags:
+    - git
+    - mcp
+    - tools
+    - T6
+    origin: decomposition of 🎯T6
+    discovered: 2026-04-11
+    achieved: 2026-04-12
+  T13:
+    name: Semantic diffing compares ASTs structurally — detecting moves, renames, parameter changes, and generating API surface changelogs
+    status: achieved
+    value: 13.0
+    cost: 13.0
+    acceptance:
+    - 'Structural diff between two commits produces edit operations: add, remove, modify, move, rename'
+    - 'Move detection: a function deleted from file A and added to file B with similar AST structure is reported as a move'
+    - 'Rename detection: a symbol with changed name but preserved structure is reported as a rename'
+    - 'Signature change detection: parameter list or return type changes are reported specifically'
+    - API surface changelog between two tags lists added/removed/changed public symbols with their signature changes
+    - Data format diffs (YAML, JSON, TOML, XML) report key-level changes, not line-level
+    context: The high-value capability that makes semantic git qualitatively different from text-based git. Uses the relational AST data to compare structure rather than text. GumTree-style algorithm (top-down isomorphic subtree matching, bottom-up container matching) is the likely approach. Data format diffs are trivially enabled since Tree-sitter already parses them. Depends on the relational AST schema (🎯T6.2) and query tools (🎯T6.4).
+    depends_on:
+    - T10
+    - T12
+    tags:
+    - git
+    - diffing
+    - semantic
+    - T6
+    origin: decomposition of 🎯T6
+    discovered: 2026-04-11
+    achieved: 2026-04-13
+  T14:
+    name: Semantic bisect finds the commit where a structural predicate changed — without running the code
+    status: achieved
+    value: 8.0
+    cost: 5.0
+    acceptance:
+    - git_semantic_bisect accepts a structural predicate (e.g. 'function X has parameter Y', 'type T implements interface I') and a commit range
+    - Binary search over the commit range, indexing commits as needed, to find the first commit where the predicate flips
+    - Returns the commit SHA, author, message, and the specific structural change that caused the predicate to flip
+    context: A natural combination of lazy indexing and structural queries. Instead of 'does this commit build?' (requiring code execution), it answers 'at which commit did this structural property change?' (requiring only parsing). Depends on the indexing layer and structural query capability.
+    depends_on:
+    - T11
+    - T13
+    tags:
+    - git
+    - bisect
+    - semantic
+    - T6
+    origin: decomposition of 🎯T6
+    discovered: 2026-04-11
+    achieved: 2026-04-19
+  T15:
+    name: Early milestones — phases 2–6, rich ctx API, teach by example, convention invariants, LSP on ctx, structural pre-flight checks, agent prompt generation
+    status: achieved
+    value: 1.0
+    cost: 1.0
+    acceptance:
+    - All early milestone sub-targets (originally T1–T10) completed during the Rust era
+    context: Phases 2–6, rich ctx API, teach by example, convention invariants, LSP on ctx, structural pre-flight checks, agent prompt generation. All completed during the Rust era.
+    origin: manual
+    discovered: 2026-04-06
+    achieved: 2026-04-06
+  T16:
+    name: Rewrite in Go + daemon architecture
+    status: achieved
+    value: 21.0
+    cost: 13.0
+    acceptance:
+    - Full rewrite from Rust to Go with daemon architecture
+    - 7 sub-targets (T11.1–T11.7) all achieved
+    context: Full rewrite from Rust to Go with daemon architecture. 7 sub-targets all achieved.
+    origin: manual
+    discovered: 2026-04-06
+    achieved: 2026-04-06
+  T17:
+    name: LSP client integration
+    status: achieved
+    value: 21.0
+    cost: 8.0
+    acceptance:
+    - go/lspclient/ package
+    - hover/definition/references/diagnostics MCP tools
+    - Codegen ctx LSP methods
+    - Graceful degradation without LSP binary
+    context: go/lspclient/ package. hover/definition/references/diagnostics MCP tools. Codegen ctx LSP methods. Graceful degradation without LSP binary.
+    origin: manual
+    discovered: 2026-04-06
+    achieved: 2026-04-06
+  T18:
+    name: File rename with import cascade
+    status: achieved
+    value: 8.0
+    cost: 3.0
+    acceptance:
+    - rename_file tool with import path updates across 5 languages
+    context: rename_file tool with import path updates across 5 languages.
+    origin: manual
+    discovered: 2026-04-06
+    achieved: 2026-04-06
+  T19:
+    name: Add field + propagate to construction sites
+    status: achieved
+    value: 21.0
+    cost: 8.0
+    acceptance:
+    - add_field tool with struct literal and factory propagation
+    context: add_field tool with struct literal and factory propagation.
+    origin: manual
+    discovered: 2026-04-06
+    achieved: 2026-04-06
+  T2:
+    name: Model manager is an active process
+    status: achieved
+    value: 13.0
+    cost: 8.0
+    acceptance:
+    - Model manager goroutine owns the forest, store, and symbol index
+    - Watcher goroutine feeds file events to the model manager
+    - On startup, manager reconciles filesystem state against stale SQLite database before accepting queries
+    - MCP handlers send requests to the manager via channels — no direct access to forest or store
+    - After apply writes files, the manager observes watcher events and re-parses automatically
+    - Multiple concurrent MCP sessions on the same root are safe by construction
+    - 'Test exists: two sessions do independent transforms and applies with consistent model'
+    context: The current CodebaseModel is a passive struct with no concurrency control. The watcher produces events on a channel only drained by explicit Sync(). After apply, the model is stale. Multiple handlers sharing the model have unsynchronised access. The fix is making the model an active subsystem (actor pattern) that owns its state and serves queries through channels.
+    tags:
+    - daemon
+    - concurrency
+    - architecture
+    origin: manual
+    discovered: 2026-04-07
+    achieved: 2026-04-08
+  T20:
+    name: Type shape migration
+    status: achieved
+    value: 21.0
+    cost: 13.0
+    acceptance:
+    - migrate_type tool with pattern matching engine for construction rewriting, field/method access rewriting, and type renaming
+    context: migrate_type tool with pattern matching engine for construction rewriting, field/method access rewriting, and type renaming.
+    origin: manual
+    discovered: 2026-04-06
+    achieved: 2026-04-06
+  T21:
+    name: Dependency impact analysis
+    status: achieved
+    value: 8.0
+    cost: 3.0
+    acceptance:
+    - dependency_usage tool with heuristic qualified-access matching
+    context: dependency_usage tool with heuristic qualified-access matching.
+    origin: manual
+    discovered: 2026-04-06
+    achieved: 2026-04-06
+  T22:
+    name: Clone-and-adapt
+    status: achieved
+    value: 8.0
+    cost: 2.0
+    acceptance:
+    - clone_and_adapt tool with symbol/range extraction
+    context: clone_and_adapt tool with symbol/range extraction.
+    origin: manual
+    discovered: 2026-04-06
+    achieved: 2026-04-06
+  T23:
+    name: Structural invariants
+    status: achieved
+    value: 13.0
+    cost: 5.0
+    acceptance:
+    - teach_invariant, check_invariants, list_invariants, delete_invariant tools with JSON rule language
+    context: teach_invariant, check_invariants, list_invariants, delete_invariant tools with JSON rule language.
+    origin: manual
+    discovered: 2026-04-06
+    achieved: 2026-04-06
+  T24:
+    name: Sawmill's verification tools emit structured failure payloads that downstream orchestrators can consume programmatically
+    status: achieved
+    value: 0.0
+    cost: 0.0
+    observable: true
+    acceptance:
+    - '`check_conventions` supports a structured-output mode in which each violation is an object with `source`, `file`, `line`, optional `column`, `severity`, `rule`, `message`, and optional `snippet`/`suggested_fix` — not just a free-form string constructed by the convention''s JS program'
+    - The convention DSL allows a program to return either `string[]` (current behaviour, preserved) or an array of structured violation objects; sawmill normalises both into the same structured output shape
+    - '`check_invariants` (has_field / has_method variants) emits the same structured payload shape — file, type name, rule identifier, missing-field/method detail — instead of the current `fmt.Sprintf`-constructed strings'
+    - '`query` returns each match with file, line, column, and snippet in a stable shape suitable for programmatic consumption'
+    - 'Prose rendering is preserved as the default or selectable via a format parameter (e.g. `format: "text" | "json"`) so existing human-facing callers don''t break'
+    - Documentation and agent guide describe the structured payload schema, with worked examples of how an orchestrator (e.g. bullseye's rework flow) would consume it
+    context: |-
+      Downstream consumer: bullseye 🎯T1.5 "Rework diagnosis integration" wants to combine `{sawmill structured failure report} + {mnemo prior-attempt history}` into a `targets_rework` payload. Today sawmill's three check families all return prose — `check_conventions` wraps JS-produced strings in `Convention "X": N violation(s):\n<line>...`, `check_invariants` uses `fmt.Sprintf("%s: %s: missing field %q of type %q", ...)`, `query` returns formatted text. Any downstream orchestrator has to parse prose to build machine-readable diagnosis, which is the exact bottleneck blocking bullseye T1.5.
+
+      Minimum viable structured violation:
+      ```
+      { source: "convention:name" | "invariant:name" | "query",
+        file: "src/foo.go", line: 42, column?: 10,
+        severity: "error" | "warning",
+        rule: "<id>", message: "<human text>",
+        snippet?: "...", suggested_fix?: "..." }
+      ```
+
+      Scope boundary — this target is specifically about _producing_ structured output from the three existing check families. It is NOT:
+      - auto-fix orchestration (that's 🎯T3 "Diagnostic-driven automatic fixes", which _consumes_ structured diagnostics — this target provides the input 🎯T3 will want)
+      - cross-compiler diagnostic normalisation (a broader concern in 🎯T3)
+      - a convention DSL rewrite — the JS program's current contract (`return []string`) stays working; structured return is additive
+
+      Backwards compatibility is a hard requirement. Existing human-facing callers (agents running `check_conventions` interactively) must keep getting readable prose by default. Add structured output as a parallel mode (format flag or sibling field), don't break the text path.
+
+      Complements 🎯T3: this target produces structured diagnostics; T3 consumes them to drive automated fixes. T3 is higher value but depends on this one's output shape settling first, so this target could reasonably be filed as a T3 prerequisite (`blocks: [T3]`) — but the dependency is implicit in T3's scope rather than explicit in today's acceptance criteria, so leaving the edge informal until T3 is picked up.
+
+      Discovered 2026-04-18 while triaging bullseye 🎯T1.5's "externally blocked" context during a bullseye /cv run.
+    tags:
+    - diagnostics
+    - api-shape
+    - mcp
+    - foundation
+    origin: forked-from bullseye 🎯T1.5 triage 2026-04-18 — surfaced as the upstream prerequisite that makes T1.5 actionable
+    discovered: 2026-04-19
+    achieved: 2026-04-19
+  T3:
+    name: Diagnostic-driven automatic fixes
+    status: achieved
+    value: 13.0
+    cost: 13.0
+    acceptance:
+    - teach_fix tool associates a diagnostic pattern with a fix action (inline transform or recipe reference) with parameter extraction from regex captures; stored in SQLite
+    - auto_fix tool runs diagnostics, matches against catalogue, applies safe fixes, reports uncertain ones; convergence loop terminates when clean, stuck, or iteration limit reached
+    - Pre-populated catalogue covers common Go and TypeScript errors out of the box
+    - 'Observation-based learning: when auto_fix reports unmatched diagnostics and a subsequent operation resolves them, sawmill offers to save the pairing'
+    - Per-compiler diagnostic normalisation for at least Go and TypeScript
+    - Each fix entry has a confidence annotation (auto-apply vs. suggest)
+    - 'Cycle detection: if a diagnostic reappears after its fix was applied, skip it and flag the fix as broken'
+    context: 'Two bootstrapping paths: pre-populated entries from compiler error catalogues for common cases, and learn-from-observation for project-specific patterns. The agent already fixes errors manually — sawmill just needs to watch and remember.'
+    depends_on:
+    - T3.1
+    - T3.2
+    - T3.3
+    - T3.4
+    - T3.5
+    tags:
+    - diagnostics
+    - automation
+    origin: manual
+    discovered: 2026-04-07
+    achieved: 2026-04-19
+  T3.1:
+    name: Fix entries are stored — teach_fix MCP tool persists diagnostic-pattern → fix-action mappings in SQLite
+    status: achieved
+    value: 0.0
+    cost: 0.0
+    observable: true
+    acceptance:
+    - teach_fix accepts a name, a diagnostic regex (with named captures available to the fix action), a fix action (recipe reference with parameter bindings or an inline transform spec), a confidence annotation ("auto" or "suggest"), and an optional description
+    - Fix entries are persisted in a new fixes SQLite table alongside recipes/conventions/invariants/equivalences
+    - list_fixes returns all stored fix entries (name, regex, confidence, action summary)
+    - delete_fix removes one by name
+    - Match capture names referenced by the fix action must exist in the regex; teach_fix rejects mismatches at save time
+    context: Foundation for 🎯T3 (diagnostic-driven automatic fixes). Mirrors the storage pattern used by recipes/conventions/invariants/equivalences. Once stored, the auto_fix loop (🎯T3.2) iterates diagnostics and matches them against this catalogue. Confidence determines whether a match is auto-applied or suggested.
+    depends_on:
+    - T16
+    tags:
+    - diagnostics
+    - automation
+    - T3
+    origin: manual
+    discovered: 2026-04-19
+    achieved: 2026-04-19
+  T3.2:
+    name: auto_fix loop runs diagnostics, applies safe fixes, and terminates cleanly with cycle detection
+    status: achieved
+    value: 0.0
+    cost: 0.0
+    observable: true
+    acceptance:
+    - auto_fix MCP tool accepts a file (or path filter) and an optional iteration limit (default 10)
+    - 'On each iteration: pull diagnostics, match each against the fix catalogue (regex → captures → fix action), apply entries with confidence=auto, return entries with confidence=suggest as recommendations'
+    - 'Termination: clean (no diagnostics), stuck (no fixes applied this iteration), or iteration-limit reached'
+    - 'Cycle detection: if a diagnostic message reappears verbatim after its fix was applied, flag the fix as broken (don''t loop forever) and report it in the output'
+    - Each loop iteration's outcome (diagnostics seen, fixes applied, suggestions, cycle warnings) is included in the structured response so an orchestrator can drive multi-pass workflows
+    context: The convergence loop. Builds on stored fix entries (🎯T3.1) and on the structured diagnostic shape (🎯T3.3) so matching is robust across LSPs. Cycle detection is the subtle correctness bit — without it the loop can oscillate.
+    depends_on:
+    - T3.1
+    - T3.3
+    tags:
+    - diagnostics
+    - automation
+    - T3
+    origin: manual
+    discovered: 2026-04-19
+    achieved: 2026-04-19
+  T3.3:
+    name: Diagnostics MCP tool emits structured normalised diagnostics for at least Go and TypeScript
+    status: achieved
+    value: 0.0
+    cost: 0.0
+    observable: true
+    acceptance:
+    - lspclient.Diagnostic gains a Code field (LSP diagnostic code, e.g. gopls's UnusedImport or TS's TS2304) and a Source field (gopls/tsserver/...)
+    - diagnostics MCP tool accepts format="text"|"json" mirroring 🎯T24's check tools
+    - JSON output is an array of {file, line, column, severity, code, source, message} objects
+    - 'Verified against gopls and the TypeScript language server: code and source fields populate consistently for at least three common error categories per language'
+    context: The input shape that auto_fix consumes. Today the diagnostics tool emits prose; orchestrators have to parse it. Adds JSON output and the missing code/source fields, mirroring the structured-payload work in 🎯T24. Code is what fix-pattern catalogues key off of.
+    depends_on:
+    - T16
+    tags:
+    - diagnostics
+    - lsp
+    - T3
+    origin: manual
+    discovered: 2026-04-19
+    achieved: 2026-04-19
+  T3.4:
+    name: A starter fix catalogue covers common Go and TypeScript errors out of the box
+    status: achieved
+    value: 0.0
+    cost: 0.0
+    observable: true
+    acceptance:
+    - seed_fixes MCP tool installs a curated set of fix entries for common Go errors (unused import, missing field on struct literal, type mismatch in return) and TS errors (TS2304 'cannot find name', TS6133 'declared but never used', TS2532 'object is possibly undefined')
+    - Each seed entry has confidence=auto for unambiguous fixes (e.g. add missing import) and confidence=suggest for ambiguous ones (e.g. fix possibly-undefined)
+    - seed_fixes is idempotent — running it twice doesn't create duplicates
+    context: Bootstraps a useful catalogue so a fresh project gets value from auto_fix immediately, without having to teach every entry first. Each entry references either a built-in transform or a recipe; the recipes for the seed fixes ship as JSON literals embedded in the binary.
+    depends_on:
+    - T3.1
+    - T3.3
+    tags:
+    - diagnostics
+    - automation
+    - T3
+    origin: manual
+    discovered: 2026-04-19
+    achieved: 2026-04-19
+  T3.5:
+    name: Observation-based learning — sawmill offers to save fix pairings inferred from agent edits that resolve diagnostics
+    status: achieved
+    value: 0.0
+    cost: 0.0
+    observable: true
+    acceptance:
+    - learn_from_observation MCP tool accepts a pre-state diagnostic snapshot (from diagnostics format=json) and a post-state diff (a recently-applied changeset)
+    - Diagnostics that disappear in the post-state are paired with the changeset edits that overlap their location; sawmill returns candidate fix entries (regex over the diagnostic message, action = recipe ref or inline edit)
+    - Returned candidates have confidence=suggest by default; user can teach_fix them to make them permanent
+    context: 'Lets the agent''s existing manual fix work bootstrap the catalogue. Each time the agent fixes a diagnostic, learn_from_observation can propose a permanent rule. Closes the loop: T24 produces structured diagnostics → T3.2 applies known fixes → T3.5 learns new ones from human/agent edits.'
+    depends_on:
+    - T3.1
+    - T3.2
+    tags:
+    - diagnostics
+    - automation
+    - learning
+    - T3
+    origin: manual
+    discovered: 2026-04-19
+    achieved: 2026-04-19
+  T4:
+    name: CST node tree is stored in SQLite — in-memory CSTs are transient parse artifacts only
+    status: achieved
+    value: 13.0
+    cost: 20.0
+    acceptance:
+    - Nodes table stores full tree structure (type, field, parent, byte ranges) for all parsed files
+    - All structural queries (find_references, query, pattern matching) run against SQLite, not in-memory CSTs
+    - In-memory CSTs exist only during parse of a single file, then are discarded
+    - Daemon memory stays bounded regardless of project size — scales with SQLite page cache, not file count
+    - Cold start is instant — no full-project reparse needed, nodes persist across restarts
+    context: Tree-sitter CSTs (10-100x source size) were held in memory for every file indefinitely, causing the daemon to consume multiple GB on large projects. The fix is to serialize the full node tree into SQLite after parsing, then discard the in-memory CST. Structural queries become SQL joins against the nodes table — which is actually more powerful than S-expression queries (cross-file joins, aggregation, set operations). Tree-sitter is still used for parsing, but SQLite becomes the query engine.
+    tags:
+    - performance
+    - daemon
+    - memory
+    origin: User report — daemon killed due to memory pressure
+    discovered: 2026-04-09
+    achieved: 2026-04-10
+  T5:
+    name: Sawmill supports coordinated transforms across multiple repositories
+    status: identified
+    value: 8.0
+    cost: 13.0
+    acceptance:
+    - Transforms can target multiple project roots in a single operation
+    - Daemon manages models for multiple repos concurrently (already partially true)
+    - Cross-repo batch operations produce per-repo diffs/previews
+    - 'PR lifecycle support: create branches and PRs across target repos'
+    context: 'Sawmill''s architecture (global daemon, per-project models, MCP interface) is naturally extensible to multi-repo workflows. This would cover the same ground as Sourcegraph Batch Changes but with native AST-level transformation intelligence built in, rather than BYO container scripts. The daemon already manages multiple project roots — the gap is orchestration: repo discovery, coordinated cross-repo transforms, and PR lifecycle management.'
+    tags:
+    - multi-repo
+    - orchestration
+    - feature
+    origin: Discussion comparing sawmill to Sourcegraph — identified cross-repo as a natural extension
+    discovered: 2026-04-10
+  T6:
+    name: Git history is semantically indexed — commits are parsed with Tree-sitter and symbol changes are queryable via MCP tools
+    status: achieved
+    value: 20.0
+    cost: 20.0
+    observable: true
+    acceptance:
+    - Commits are lazily parsed with Tree-sitter and symbol tables stored in SQLite keyed by commit SHA
+    - Blob-SHA deduplication avoids re-parsing unchanged files across commits
+    - 'MCP tools provide structured git queries: git_log (structured metadata), git_blame_symbol (who last touched a symbol), git_diff_summary (added/removed/modified symbols per file)'
+    - Semantic bisect finds the commit where a structural predicate changed (e.g. function gained a parameter)
+    - Semantic blame distinguishes when a symbol was introduced, when its body was last modified, and when its signature last changed
+    - Refactoring detection recognises renames and moves across files by comparing AST structure minus identifiers
+    - API surface changelog can be auto-generated from semantic diffs between tags
+    context: Agents constantly shell out to git log, git diff, git blame and parse text output, wasting context window and losing structural information. Sawmill already has Tree-sitter parsing and a SQLite symbol index for the working tree — extending this across git history creates a 'semantic git' layer where queries operate on structure (functions, types, parameters) rather than text (lines, hunks). The daemon architecture means the index persists and only grows with new commits. Git history is immutable, so once indexed, it's indexed forever. This is the foundation layer that enables cross-version queries, semantic diffing, convention drift detection, and dead code archaeology.
+    depends_on:
+    - T9
+    - T10
+    - T11
+    - T12
+    - T13
+    - T14
+    tags:
+    - git
+    - indexing
+    - semantic
+    - foundation
+    origin: design discussion — git indexing in sawmill
+    discovered: 2026-04-10
+    achieved: 2026-04-19
+  T7:
+    name: Sawmill understands semantic identity across representations — the same value in code, config, schema, and embedded DSLs is recognised as one entity
+    status: identified
+    value: 13.0
+    cost: 20.0
+    acceptance:
+    - Sawmill can parse embedded DSLs within string literals (SQL in Go, regex in Python, GraphQL in TS tagged templates) using Tree-sitter injection grammars
+    - 'Cross-file semantic identity: a timeout value in Go code, the same key in YAML config, and a DEFAULT in a SQL migration are linked as the same entity'
+    - 'Git history detects cross-representation migrations: literal deleted from code + key added to config = migration, not unrelated changes'
+    - 'Convention drift detection: track when extracted values regress to hardcoded literals'
+    - 'Interface-implementation tracking: detect when a proto/OpenAPI schema adds a field but the Go implementation doesn''t use it yet'
+    context: 'Real codebases express the same semantic content in multiple formats: Go structs mirror protobuf schemas, config YAML duplicates code defaults, SQL migrations encode the same constraints as validation logic. Today these connections are invisible to tools — git sees unrelated text changes across files. Inspired by the Real language design discussion about ''the end of all strings'' — every structured value is the same entity regardless of its syntactic representation. Sawmill''s multi-language Tree-sitter parsing and SQLite store are uniquely positioned to track these cross-representation relationships. Builds on git semantic indexing to detect migrations and drift over time.'
+    tags:
+    - cross-representation
+    - semantic
+    - embedded-dsl
+    - detection
+    origin: design discussion — cross-representation awareness, inspired by Real macro invocation architecture
+    discovered: 2026-04-10
+  T8:
+    name: Sawmill actively transforms content between representations — extract literals to config, inline config to code, extract embedded DSLs to files, sync schemas with implementations
+    status: identified
+    value: 13.0
+    cost: 20.0
+    acceptance:
+    - 'extract_to_config: select code literals, generate YAML/JSON config with sensible keys, rewrite code to read from config, generate loader boilerplate'
+    - 'extract_to_env: generate .env.example, rewrite code to use os.Getenv/process.env, update .gitignore'
+    - 'extract_dsl: move SQL string literals to .sql files with go:embed, regex to compiled patterns, GraphQL to .graphql files'
+    - 'promote_constant: magic numbers become named constants, config entries, or enum members depending on semantic context'
+    - 'align_representations: given a protobuf schema and Go struct, generate missing fields in either direction; sync JSON Schema with TypeScript interfaces'
+    - 'internalise_dependency: inline config values used only once, collapse single-use .sql files back to code'
+    - 'migrate_pattern: structurally identify all instances of an old pattern and rewrite to a new one with proper import management'
+    - All transforms produce diff previews and support undo, consistent with existing sawmill transform workflow
+    context: 'Sawmill currently transforms code within a single language. The natural extension is cross-file, cross-format transforms: extract structured content from one representation, create it in another, and rewrite the original to reference the extraction. This is a generic pattern — extract_to(source_pattern, target_format, reference_style) — of which specific transforms like extract_to_config and extract_dsl are instances. Combined with git semantic indexing, the system creates a feedback loop: transforms perform migrations, git indexing verifies they stuck, and the convention system flags regressions. Also enables git workflow automation: post-squash-merge cleanup, semantic bisect on structural predicates, branch hygiene with semantic merge detection.'
+    tags:
+    - cross-representation
+    - transform
+    - extraction
+    - git-workflow
+    origin: design discussion — cross-representation transforms and git workflow automation
+    discovered: 2026-04-10
+  T8.1:
+    name: promote_constant — magic literals become named constants in idiomatic per-language form
+    status: achieved
+    value: 0.0
+    cost: 0.0
+    observable: true
+    acceptance:
+    - promote_constant MCP tool accepts a literal value (string or number), a constant name, an optional file/path filter, and an optional package/module placement
+    - All occurrences of the literal in the targeted scope are replaced with a reference to the new constant
+    - 'A constant declaration is generated in the appropriate idiomatic location for the language (Go: package-level const block; Python: module-level UPPER_CASE assignment; TS: top-level const; C++: constexpr in the relevant header)'
+    - Produces a unified diff per file gated by the standard apply/undo flow
+    - 'Idempotent: running promote_constant again with the same name and value detects the existing constant and re-uses it rather than declaring a duplicate'
+    context: Standalone cross-representation transform — one of the most common refactorings (eliminate magic numbers/strings). Doesn't depend on the cross-representation identity work in 🎯T7; operates purely within one language's source tree. Builds on existing AST query + rewrite infrastructure.
+    depends_on:
+    - T16
+    tags:
+    - transform
+    - T8
+    origin: manual
+    discovered: 2026-04-19
+    achieved: 2026-04-19
+  T8.2:
+    name: extract_to_env — code literal becomes an environment variable read with .env.example scaffolding
+    status: achieved
+    value: 0.0
+    cost: 0.0
+    observable: true
+    acceptance:
+    - extract_to_env MCP tool accepts a literal value, an env-var name, and an optional file filter
+    - 'Replaces all occurrences of the literal with an environment-variable read appropriate to the language (Go: os.Getenv; Python: os.environ.get; TS: process.env; C++: std::getenv)'
+    - Creates or updates a .env.example file at the project root with the key + literal value as documentation
+    - Adds .env to .gitignore if not already present
+    - Produces a per-file diff and respects the standard apply/undo flow
+    context: Standalone — doesn't require cross-representation identity tracking. Mechanically replaces a literal with a runtime env-var read and scaffolds the .env.example contract. Common refactoring for hard-coded URLs, ports, API keys.
+    depends_on:
+    - T16
+    tags:
+    - transform
+    - T8
+    origin: manual
+    discovered: 2026-04-19
+    achieved: 2026-04-19
+  T8.3:
+    name: migrate_pattern — generalised structural pattern rewriting across files with import management
+    status: achieved
+    value: 0.0
+    cost: 0.0
+    observable: true
+    acceptance:
+    - migrate_pattern MCP tool accepts an old pattern, a new pattern (both using the $placeholder DSL), and an optional file filter
+    - Identifies every structural occurrence of the old pattern in the targeted scope and rewrites to the new pattern with captured placeholders bound
+    - 'Manages imports: if the new pattern references a symbol not currently imported, the import is added; conversely, if the old pattern''s import becomes unused, it is removed'
+    - Produces a per-file diff gated by the standard apply/undo flow
+    - Generalises 🎯T1.2 apply_equivalence with explicit add/drop import semantics rather than implicit symmetric rewriting
+    context: 'Builds on the equivalence pattern engine (🎯T1) by adding import-aware semantics. Common case: replacing a deprecated API call across the codebase, where the rewrite needs to add an import for the new symbol and drop the import of the old. Standalone from 🎯T7 cross-rep identity.'
+    depends_on:
+    - T1
+    tags:
+    - transform
+    - T8
+    origin: manual
+    discovered: 2026-04-19
+    achieved: 2026-04-19
+  T9:
+    name: Git objects are accessible from Go — sawmill can read commits, trees, and blobs from the git repo without shelling out
+    status: achieved
+    value: 8.0
+    cost: 5.0
+    acceptance:
+    - A git package provides Go functions to walk commits, read trees, and extract blob contents by SHA
+    - No dependency on the git CLI — uses go-git or direct packfile reading
+    - Blob content is accessible as []byte for feeding to Tree-sitter
+    - Commit metadata (author, date, message, parent SHAs) is available as structured data
+    context: Everything in 🎯T6 depends on being able to read git objects programmatically. This is the lowest-level foundation — without it, nothing else can be built. Pure Go is preferred (go-git or similar) to maintain the no-CGo property.
+    tags:
+    - git
+    - foundation
+    - T6
+    origin: decomposition of 🎯T6
+    discovered: 2026-04-11
+    achieved: 2026-04-11

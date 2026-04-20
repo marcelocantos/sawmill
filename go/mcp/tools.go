@@ -8,6 +8,7 @@ import (
 	_ "embed"
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"sort"
@@ -20,10 +21,15 @@ import (
 	"github.com/marcelocantos/sawmill/codegen"
 	"github.com/marcelocantos/sawmill/exemplar"
 	"github.com/marcelocantos/sawmill/forest"
+	"github.com/marcelocantos/sawmill/gitindex"
+	"github.com/marcelocantos/sawmill/gitrepo"
 	"github.com/marcelocantos/sawmill/jsengine"
 	"github.com/marcelocantos/sawmill/lspclient"
 	"github.com/marcelocantos/sawmill/model"
+	"github.com/marcelocantos/sawmill/bisect"
 	"github.com/marcelocantos/sawmill/rewrite"
+	"github.com/marcelocantos/sawmill/semdiff"
+	"github.com/marcelocantos/sawmill/store"
 	"github.com/marcelocantos/sawmill/transform"
 )
 
@@ -76,24 +82,32 @@ func (h *Handler) handleParse(args map[string]any) (string, bool, error) {
 	defer h.mu.Unlock()
 
 	if path == "" && h.model != nil {
-		// No path and model already loaded (e.g. by daemon handshake) —
-		// the manager goroutine keeps it up to date, just return the summary.
+		// No path and model already loaded — re-use it, the watcher keeps
+		// the underlying state in sync.
 	} else {
-		// Load a new model (or re-load if path changed).
 		if path == "" {
 			return "path is required when no model is pre-loaded", true, nil
 		}
-		if h.model != nil {
-			_ = h.model.Close()
+		// Switch (or first-time) load. Release any previously-borrowed model
+		// before acquiring the new one.
+		if h.release != nil {
+			h.release()
+			h.release = nil
 		}
+		h.model = nil
 		h.pending = nil
 		h.lastBackups = nil
 
-		m, err := model.Load(path)
+		loader := h.loader
+		if loader == nil {
+			loader = directLoader
+		}
+		m, release, err := loader(path)
 		if err != nil {
 			return fmt.Sprintf("parsing %q: %v", path, err), true, nil
 		}
 		h.model = m
+		h.release = release
 	}
 
 	// Build summary from the store (avoids ForestSnapshot).
@@ -205,6 +219,13 @@ func (h *Handler) handleQuery(args map[string]any) (string, bool, error) {
 	rawQuery := optString(args, "raw_query")
 	capture := optString(args, "capture")
 	pathFilter := optString(args, "path")
+	format := optString(args, "format")
+	if format == "" {
+		format = "text"
+	}
+	if format != "text" && format != "json" {
+		return fmt.Sprintf("invalid format %q (want \"text\" or \"json\")", format), true, nil
+	}
 
 	h.mu.Lock()
 	defer h.mu.Unlock()
@@ -240,6 +261,25 @@ func (h *Handler) handleQuery(args map[string]any) (string, bool, error) {
 		if err != nil {
 			return fmt.Sprintf("querying %s: %v", acc.Path(), err), true, nil
 		}
+	}
+
+	if format == "json" {
+		matches := make([]QueryMatch, 0, len(results))
+		for _, r := range results {
+			matches = append(matches, QueryMatch{
+				File:    r.Path,
+				Line:    int(r.StartLine),
+				Column:  int(r.StartCol),
+				Kind:    r.Kind,
+				Name:    r.Name,
+				Snippet: r.Text,
+			})
+		}
+		out, err := json.MarshalIndent(matches, "", "  ")
+		if err != nil {
+			return fmt.Sprintf("marshalling: %v", err), true, nil
+		}
+		return string(out), false, nil
 	}
 
 	if len(results) == 0 {
@@ -1013,6 +1053,13 @@ func (h *Handler) handleTeachConvention(args map[string]any) (string, bool, erro
 
 func (h *Handler) handleCheckConventions(args map[string]any) (string, bool, error) {
 	pathFilter := optString(args, "path")
+	format := optString(args, "format")
+	if format == "" {
+		format = "text"
+	}
+	if format != "text" && format != "json" {
+		return fmt.Sprintf("invalid format %q (want \"text\" or \"json\")", format), true, nil
+	}
 
 	h.mu.Lock()
 	defer h.mu.Unlock()
@@ -1028,6 +1075,9 @@ func (h *Handler) handleCheckConventions(args map[string]any) (string, bool, err
 	}
 
 	if len(conventions) == 0 {
+		if format == "json" {
+			return "[]", false, nil
+		}
 		return "No conventions defined.", false, nil
 	}
 
@@ -1043,23 +1093,66 @@ func (h *Handler) handleCheckConventions(args map[string]any) (string, bool, err
 		f = &forest.Forest{Files: filtered}
 	}
 
-	var sb strings.Builder
-	totalViolations := 0
+	type convResult struct {
+		name        string
+		err         error
+		structured  []Violation
+		legacyTexts []string // populated only for plain-string violations to preserve prose output
+	}
+	results := make([]convResult, 0, len(conventions))
 
 	for _, conv := range conventions {
 		violations, err := codegen.RunConventionCheck(f, conv.CheckProgram)
 		if err != nil {
-			fmt.Fprintf(&sb, "Convention %q: error: %v\n", conv.Name, err)
+			results = append(results, convResult{name: conv.Name, err: err})
 			continue
 		}
-		if len(violations) == 0 {
-			fmt.Fprintf(&sb, "Convention %q: OK\n", conv.Name)
-		} else {
-			fmt.Fprintf(&sb, "Convention %q: %d violation(s):\n", conv.Name, len(violations))
-			for _, v := range violations {
-				fmt.Fprintf(&sb, "  %s\n", v)
-				totalViolations++
+		var structured []Violation
+		var legacy []string
+		for _, v := range violations {
+			structured = append(structured, conventionViolationToStructured(conv.Name, v))
+			if isPlainStringViolation(v) {
+				legacy = append(legacy, v.Message)
 			}
+		}
+		results = append(results, convResult{name: conv.Name, structured: structured, legacyTexts: legacy})
+	}
+
+	if format == "json" {
+		var allViolations []Violation
+		for _, r := range results {
+			allViolations = append(allViolations, r.structured...)
+		}
+		out, err := json.MarshalIndent(allViolations, "", "  ")
+		if err != nil {
+			return fmt.Sprintf("marshalling: %v", err), true, nil
+		}
+		return string(out), false, nil
+	}
+
+	var sb strings.Builder
+	totalViolations := 0
+	for _, r := range results {
+		if r.err != nil {
+			fmt.Fprintf(&sb, "Convention %q: error: %v\n", r.name, r.err)
+			continue
+		}
+		if len(r.structured) == 0 {
+			fmt.Fprintf(&sb, "Convention %q: OK\n", r.name)
+			continue
+		}
+		fmt.Fprintf(&sb, "Convention %q: %d violation(s):\n", r.name, len(r.structured))
+		// Preserve legacy prose for plain-string returns; render structured
+		// returns as `file:line: message`.
+		legacyIdx := 0
+		for _, v := range r.structured {
+			if v.File == "" && v.Line == 0 && legacyIdx < len(r.legacyTexts) {
+				fmt.Fprintf(&sb, "  %s\n", r.legacyTexts[legacyIdx])
+				legacyIdx++
+			} else {
+				fmt.Fprintf(&sb, "  %s\n", formatViolationLine(v))
+			}
+			totalViolations++
 		}
 	}
 
@@ -1070,6 +1163,54 @@ func (h *Handler) handleCheckConventions(args map[string]any) (string, bool, err
 	}
 
 	return sb.String(), false, nil
+}
+
+// conventionViolationToStructured maps a codegen.ConventionViolation
+// (returned by the JS check program) into the canonical mcp.Violation shape.
+// Plain-string returns become Violations with only Message populated.
+func conventionViolationToStructured(convName string, v codegen.ConventionViolation) Violation {
+	severity := v.Severity
+	if severity == "" {
+		severity = "error"
+	}
+	rule := v.Rule
+	if rule == "" {
+		rule = convName
+	}
+	return Violation{
+		Source:       "convention:" + convName,
+		File:         v.File,
+		Line:         v.Line,
+		Column:       v.Column,
+		Severity:     severity,
+		Rule:         rule,
+		Message:      v.Message,
+		Snippet:      v.Snippet,
+		SuggestedFix: v.SuggestedFix,
+	}
+}
+
+// isPlainStringViolation reports whether the JS program returned just a
+// string for this violation (vs. a structured object). Used to keep the
+// existing prose-only output bytewise unchanged for the legacy case.
+func isPlainStringViolation(v codegen.ConventionViolation) bool {
+	return v.File == "" && v.Line == 0 && v.Column == 0 && v.Severity == "" && v.Rule == "" &&
+		v.Snippet == "" && v.SuggestedFix == "" && v.Message != ""
+}
+
+// formatViolationLine renders a structured violation as
+// "file:line:col: message" (omitting empty parts).
+func formatViolationLine(v Violation) string {
+	switch {
+	case v.File != "" && v.Line > 0 && v.Column > 0:
+		return fmt.Sprintf("%s:%d:%d: %s", v.File, v.Line, v.Column, v.Message)
+	case v.File != "" && v.Line > 0:
+		return fmt.Sprintf("%s:%d: %s", v.File, v.Line, v.Message)
+	case v.File != "":
+		return fmt.Sprintf("%s: %s", v.File, v.Message)
+	default:
+		return v.Message
+	}
 }
 
 // ---- list_conventions -----------------------------------------------------
@@ -2052,6 +2193,13 @@ func (h *Handler) handleDiagnostics(args map[string]any) (string, bool, error) {
 	if err != nil {
 		return err.Error(), true, nil
 	}
+	format := optString(args, "format")
+	if format == "" {
+		format = "text"
+	}
+	if format != "text" && format != "json" {
+		return fmt.Sprintf("invalid format %q (want \"text\" or \"json\")", format), true, nil
+	}
 
 	h.mu.Lock()
 	defer h.mu.Unlock()
@@ -2063,6 +2211,9 @@ func (h *Handler) handleDiagnostics(args map[string]any) (string, bool, error) {
 
 	client, msg := h.getLSPClient(m, file)
 	if client == nil {
+		if format == "json" {
+			return "[]", false, nil
+		}
 		return msg, false, nil
 	}
 
@@ -2070,6 +2221,19 @@ func (h *Handler) handleDiagnostics(args map[string]any) (string, bool, error) {
 	if err != nil {
 		return fmt.Sprintf("diagnostics: %v", err), true, nil
 	}
+
+	if format == "json" {
+		// Always return a non-nil slice so consumers see "[]" rather than "null".
+		if diags == nil {
+			diags = []lspclient.Diagnostic{}
+		}
+		out, err := json.MarshalIndent(diags, "", "  ")
+		if err != nil {
+			return fmt.Sprintf("marshalling diagnostics: %v", err), true, nil
+		}
+		return string(out), false, nil
+	}
+
 	if len(diags) == 0 {
 		return "No diagnostics", false, nil
 	}
@@ -2085,11 +2249,26 @@ func formatLocations(locs []lspclient.Location) string {
 	return sb.String()
 }
 
-// formatDiagnostics formats a slice of Diagnostics as "file:line:col [severity] message".
+// formatDiagnostics formats a slice of Diagnostics as
+// "file:line:col [severity] [source code] message", omitting empty parts.
 func formatDiagnostics(diags []lspclient.Diagnostic) string {
 	var sb strings.Builder
 	for _, d := range diags {
-		fmt.Fprintf(&sb, "%s:%d:%d [%s] %s\n", d.File, d.Line, d.Column, d.Severity, d.Message)
+		fmt.Fprintf(&sb, "%s:%d:%d [%s]", d.File, d.Line, d.Column, d.Severity)
+		if d.Source != "" || d.Code != "" {
+			sb.WriteString(" [")
+			if d.Source != "" {
+				sb.WriteString(d.Source)
+				if d.Code != "" {
+					sb.WriteByte(' ')
+				}
+			}
+			if d.Code != "" {
+				sb.WriteString(d.Code)
+			}
+			sb.WriteByte(']')
+		}
+		fmt.Fprintf(&sb, " %s\n", d.Message)
 	}
 	return sb.String()
 }
@@ -2800,6 +2979,13 @@ func (h *Handler) handleTeachInvariant(args map[string]any) (string, bool, error
 
 func (h *Handler) handleCheckInvariants(args map[string]any) (string, bool, error) {
 	pathFilter := optString(args, "path")
+	format := optString(args, "format")
+	if format == "" {
+		format = "text"
+	}
+	if format != "text" && format != "json" {
+		return fmt.Sprintf("invalid format %q (want \"text\" or \"json\")", format), true, nil
+	}
 
 	h.mu.Lock()
 	defer h.mu.Unlock()
@@ -2815,6 +3001,9 @@ func (h *Handler) handleCheckInvariants(args map[string]any) (string, bool, erro
 	}
 
 	if len(invariants) == 0 {
+		if format == "json" {
+			return "[]", false, nil
+		}
 		return "No invariants defined.", false, nil
 	}
 
@@ -2830,29 +3019,54 @@ func (h *Handler) handleCheckInvariants(args map[string]any) (string, bool, erro
 		f = &forest.Forest{Files: filtered}
 	}
 
-	var sb strings.Builder
-	totalViolations := 0
+	type invResult struct {
+		name       string
+		err        error
+		structured []Violation
+	}
+	results := make([]invResult, 0, len(invariants))
 
 	for _, inv := range invariants {
-		rule, err := ParseInvariantRule(inv.RuleJSON)
-		if err != nil {
-			fmt.Fprintf(&sb, "Invariant %q: parse error: %v\n", inv.Name, err)
+		rule, perr := ParseInvariantRule(inv.RuleJSON)
+		if perr != nil {
+			results = append(results, invResult{name: inv.Name, err: fmt.Errorf("parse error: %w", perr)})
 			continue
 		}
+		violations, cerr := CheckInvariant(f, inv.Name, rule)
+		if cerr != nil {
+			results = append(results, invResult{name: inv.Name, err: cerr})
+			continue
+		}
+		results = append(results, invResult{name: inv.Name, structured: violations})
+	}
 
-		violations, err := CheckInvariant(f, inv.Name, rule)
+	if format == "json" {
+		var allViolations []Violation
+		for _, r := range results {
+			allViolations = append(allViolations, r.structured...)
+		}
+		out, err := json.MarshalIndent(allViolations, "", "  ")
 		if err != nil {
-			fmt.Fprintf(&sb, "Invariant %q: error: %v\n", inv.Name, err)
+			return fmt.Sprintf("marshalling: %v", err), true, nil
+		}
+		return string(out), false, nil
+	}
+
+	var sb strings.Builder
+	totalViolations := 0
+	for _, r := range results {
+		if r.err != nil {
+			fmt.Fprintf(&sb, "Invariant %q: %v\n", r.name, r.err)
 			continue
 		}
-		if len(violations) == 0 {
-			fmt.Fprintf(&sb, "Invariant %q: OK\n", inv.Name)
-		} else {
-			fmt.Fprintf(&sb, "Invariant %q: %d violation(s):\n", inv.Name, len(violations))
-			for _, v := range violations {
-				fmt.Fprintf(&sb, "  %s\n", v)
-				totalViolations++
-			}
+		if len(r.structured) == 0 {
+			fmt.Fprintf(&sb, "Invariant %q: OK\n", r.name)
+			continue
+		}
+		fmt.Fprintf(&sb, "Invariant %q: %d violation(s):\n", r.name, len(r.structured))
+		for _, v := range r.structured {
+			fmt.Fprintf(&sb, "  %s\n", FormatInvariantViolation(v))
+			totalViolations++
 		}
 	}
 
@@ -2923,4 +3137,1146 @@ func (h *Handler) handleDeleteInvariant(args map[string]any) (string, bool, erro
 	}
 
 	return fmt.Sprintf("Invariant %q deleted.", name), false, nil
+}
+
+// ---- git_log ----------------------------------------------------------------
+
+func (h *Handler) handleGitLog(args map[string]any) (string, bool, error) {
+	ref := optString(args, "ref")
+	if ref == "" {
+		ref = "HEAD"
+	}
+	limitF, _ := args["limit"].(float64)
+	limit := int(limitF)
+	if limit <= 0 {
+		limit = 20
+	}
+	pathFilter := optString(args, "path")
+
+	h.mu.Lock()
+	m, err := h.requireModel()
+	h.mu.Unlock()
+	if err != nil {
+		return err.Error(), true, nil
+	}
+
+	if m.GitIndex == nil {
+		return "git index is not available (project root is not inside a git repository)", true, nil
+	}
+
+	repo := m.GitIndex.Repo()
+	store := m.GitIndex.Store()
+
+	startSHA, err := repo.Resolve(ref)
+	if err != nil {
+		return fmt.Sprintf("resolving ref %q: %v", ref, err), true, nil
+	}
+
+	type commitEntry struct {
+		SHA          string   `json:"sha"`
+		ShortSHA     string   `json:"short_sha"`
+		Author       string   `json:"author"`
+		Email        string   `json:"email"`
+		Date         string   `json:"date"`
+		Message      string   `json:"message"`
+		FilesChanged []string `json:"files_changed"`
+	}
+
+	var result []commitEntry
+	prevBlobForPath := ""
+
+	walkErr := repo.WalkCommits(startSHA, func(c *gitrepo.Commit) error {
+		if err := m.GitIndex.EnsureCommitIndexed(c.SHA); err != nil {
+			return fmt.Errorf("indexing commit %s: %w", c.SHA, err)
+		}
+
+		// Apply path filter if specified.
+		if pathFilter != "" {
+			blobSHA, ok, err := store.BlobSHAForFile(c.SHA, pathFilter)
+			if err != nil {
+				return err
+			}
+			if !ok {
+				return nil // file not in this commit
+			}
+			if blobSHA == prevBlobForPath {
+				return nil // file unchanged since last commit
+			}
+			prevBlobForPath = blobSHA
+		}
+
+		files, err := store.CommitFiles(c.SHA)
+		if err != nil {
+			return fmt.Errorf("getting files for commit %s: %w", c.SHA, err)
+		}
+		filePaths := make([]string, len(files))
+		for i, f := range files {
+			filePaths[i] = f.FilePath
+		}
+
+		msg := c.Message
+		if idx := strings.IndexByte(msg, '\n'); idx >= 0 {
+			msg = msg[:idx]
+		}
+		msg = strings.TrimSpace(msg)
+
+		sha := c.SHA
+		shortSHA := sha
+		if len(shortSHA) > 7 {
+			shortSHA = shortSHA[:7]
+		}
+
+		result = append(result, commitEntry{
+			SHA:          sha,
+			ShortSHA:     shortSHA,
+			Author:       c.Author,
+			Email:        c.Email,
+			Date:         c.When.UTC().Format("2006-01-02T15:04:05Z"),
+			Message:      msg,
+			FilesChanged: filePaths,
+		})
+
+		if len(result) >= limit {
+			return io.EOF
+		}
+		return nil
+	})
+	if walkErr != nil {
+		return fmt.Sprintf("walking commits: %v", walkErr), true, nil
+	}
+
+	out, err := json.MarshalIndent(result, "", "  ")
+	if err != nil {
+		return fmt.Sprintf("marshalling result: %v", err), true, nil
+	}
+	return string(out), false, nil
+}
+
+// ---- git_diff_summary -------------------------------------------------------
+
+func (h *Handler) handleGitDiffSummary(args map[string]any) (string, bool, error) {
+	base, err := requireString(args, "base")
+	if err != nil {
+		return err.Error(), true, nil
+	}
+	head := optString(args, "head")
+	if head == "" {
+		head = "HEAD"
+	}
+	pathFilter := optString(args, "path")
+
+	h.mu.Lock()
+	m, merr := h.requireModel()
+	h.mu.Unlock()
+	if merr != nil {
+		return merr.Error(), true, nil
+	}
+
+	if m.GitIndex == nil {
+		return "git index is not available (project root is not inside a git repository)", true, nil
+	}
+
+	repo := m.GitIndex.Repo()
+	store := m.GitIndex.Store()
+
+	baseSHA, err := repo.Resolve(base)
+	if err != nil {
+		return fmt.Sprintf("resolving base ref %q: %v", base, err), true, nil
+	}
+	headSHA, err := repo.Resolve(head)
+	if err != nil {
+		return fmt.Sprintf("resolving head ref %q: %v", head, err), true, nil
+	}
+
+	if err := m.GitIndex.EnsureCommitIndexed(baseSHA); err != nil {
+		return fmt.Sprintf("indexing base commit: %v", err), true, nil
+	}
+	if err := m.GitIndex.EnsureCommitIndexed(headSHA); err != nil {
+		return fmt.Sprintf("indexing head commit: %v", err), true, nil
+	}
+
+	baseFiles, err := store.CommitFiles(baseSHA)
+	if err != nil {
+		return fmt.Sprintf("getting base files: %v", err), true, nil
+	}
+	headFiles, err := store.CommitFiles(headSHA)
+	if err != nil {
+		return fmt.Sprintf("getting head files: %v", err), true, nil
+	}
+
+	baseMap := make(map[string]string, len(baseFiles))
+	for _, f := range baseFiles {
+		baseMap[f.FilePath] = f.BlobSHA
+	}
+	headMap := make(map[string]string, len(headFiles))
+	for _, f := range headFiles {
+		headMap[f.FilePath] = f.BlobSHA
+	}
+
+	type fileDiff struct {
+		Path    string     `json:"path"`
+		Status  string     `json:"status"`
+		Symbols symbolDiff `json:"symbols"`
+	}
+	type diffResult struct {
+		Files []fileDiff `json:"files"`
+	}
+
+	// Collect all paths from both commits.
+	allPaths := make(map[string]bool)
+	for p := range baseMap {
+		allPaths[p] = true
+	}
+	for p := range headMap {
+		allPaths[p] = true
+	}
+
+	var files []fileDiff
+	for path := range allPaths {
+		if pathFilter != "" && path != pathFilter {
+			continue
+		}
+		baseBlobSHA, inBase := baseMap[path]
+		headBlobSHA, inHead := headMap[path]
+
+		var status string
+		switch {
+		case inBase && inHead && baseBlobSHA == headBlobSHA:
+			continue // unchanged
+		case inBase && inHead:
+			status = "modified"
+		case inHead:
+			status = "added"
+		default:
+			status = "removed"
+		}
+
+		var syms symbolDiff
+		if status == "modified" {
+			baseSymbols, err := symbolsForBlob(store, repo, baseBlobSHA)
+			if err != nil {
+				return fmt.Sprintf("getting symbols for base blob %s: %v", baseBlobSHA, err), true, nil
+			}
+			headSymbols, err := symbolsForBlob(store, repo, headBlobSHA)
+			if err != nil {
+				return fmt.Sprintf("getting symbols for head blob %s: %v", headBlobSHA, err), true, nil
+			}
+			syms = diffSymbols(baseSymbols, headSymbols)
+		} else if status == "added" {
+			headSymbols, err := symbolsForBlob(store, repo, headBlobSHA)
+			if err != nil {
+				return fmt.Sprintf("getting symbols for head blob %s: %v", headBlobSHA, err), true, nil
+			}
+			names := symbolNames(headSymbols)
+			syms = symbolDiff{Added: names, Removed: []string{}, Modified: []string{}}
+		} else {
+			baseSymbols, err := symbolsForBlob(store, repo, baseBlobSHA)
+			if err != nil {
+				return fmt.Sprintf("getting symbols for base blob %s: %v", baseBlobSHA, err), true, nil
+			}
+			names := symbolNames(baseSymbols)
+			syms = symbolDiff{Added: []string{}, Removed: names, Modified: []string{}}
+		}
+
+		files = append(files, fileDiff{Path: path, Status: status, Symbols: syms})
+	}
+
+	// Sort by path for stable output.
+	sort.Slice(files, func(i, j int) bool { return files[i].Path < files[j].Path })
+
+	out, err := json.MarshalIndent(diffResult{Files: files}, "", "  ")
+	if err != nil {
+		return fmt.Sprintf("marshalling result: %v", err), true, nil
+	}
+	return string(out), false, nil
+}
+
+// symbolsForBlob retrieves SymbolInfo for a blob, reading source from git.
+func symbolsForBlob(store *gitindex.Store, repo *gitrepo.Repo, blobSHA string) ([]gitindex.SymbolInfo, error) {
+	indexed, err := store.IsIndexed(blobSHA)
+	if err != nil {
+		return nil, err
+	}
+	if !indexed {
+		return nil, nil
+	}
+	source, err := repo.ReadBlob(blobSHA)
+	if err != nil {
+		return nil, err
+	}
+	return store.SymbolNames(blobSHA, source)
+}
+
+// symbolNames extracts just the names from a slice of SymbolInfo.
+func symbolNames(syms []gitindex.SymbolInfo) []string {
+	names := make([]string, len(syms))
+	for i, s := range syms {
+		names[i] = s.Name
+	}
+	return names
+}
+
+type symbolDiff struct {
+	Added    []string `json:"added"`
+	Removed  []string `json:"removed"`
+	Modified []string `json:"modified"`
+}
+
+// diffSymbols compares two sets of symbols and returns added/removed/modified lists.
+// A symbol is "modified" if its name exists in both sets but at a different byte range.
+func diffSymbols(base, head []gitindex.SymbolInfo) symbolDiff {
+	type byteRange struct{ start, end int }
+	baseMap := make(map[string]byteRange, len(base))
+	for _, s := range base {
+		baseMap[s.Name] = byteRange{s.StartByte, s.EndByte}
+	}
+	headMap := make(map[string]byteRange, len(head))
+	for _, s := range head {
+		headMap[s.Name] = byteRange{s.StartByte, s.EndByte}
+	}
+
+	var added, removed, modified []string
+	for name, hr := range headMap {
+		br, inBase := baseMap[name]
+		if !inBase {
+			added = append(added, name)
+		} else if br != hr {
+			modified = append(modified, name)
+		}
+	}
+	for name := range baseMap {
+		if _, inHead := headMap[name]; !inHead {
+			removed = append(removed, name)
+		}
+	}
+	sort.Strings(added)
+	sort.Strings(removed)
+	sort.Strings(modified)
+	return symbolDiff{
+		Added:    nullSafeStringSlice(added),
+		Removed:  nullSafeStringSlice(removed),
+		Modified: nullSafeStringSlice(modified),
+	}
+}
+
+func nullSafeStringSlice(s []string) []string {
+	if s == nil {
+		return []string{}
+	}
+	return s
+}
+
+// ---- git_blame_symbol -------------------------------------------------------
+
+type blameCommit struct {
+	SHA     string `json:"sha"`
+	Author  string `json:"author"`
+	Date    string `json:"date"`
+	Message string `json:"message"`
+}
+
+type blameResult struct {
+	Symbol               string       `json:"symbol"`
+	Path                 string       `json:"path"`
+	Introduced           *blameCommit `json:"introduced,omitempty"`
+	LastModified         *blameCommit `json:"last_modified,omitempty"`
+	BodyLastModified     *blameCommit `json:"body_last_modified,omitempty"`
+	SignatureLastChanged *blameCommit `json:"signature_last_changed,omitempty"`
+}
+
+func (h *Handler) handleGitBlameSymbol(args map[string]any) (string, bool, error) {
+	filePath, err := requireString(args, "path")
+	if err != nil {
+		return err.Error(), true, nil
+	}
+	symbolName, err := requireString(args, "symbol")
+	if err != nil {
+		return err.Error(), true, nil
+	}
+	ref := optString(args, "ref")
+	if ref == "" {
+		ref = "HEAD"
+	}
+
+	h.mu.Lock()
+	m, merr := h.requireModel()
+	h.mu.Unlock()
+	if merr != nil {
+		return merr.Error(), true, nil
+	}
+
+	if m.GitIndex == nil {
+		return "git index is not available (project root is not inside a git repository)", true, nil
+	}
+
+	repo := m.GitIndex.Repo()
+	store := m.GitIndex.Store()
+
+	startSHA, err := repo.Resolve(ref)
+	if err != nil {
+		return fmt.Sprintf("resolving ref %q: %v", ref, err), true, nil
+	}
+
+	makeRef := func(c *gitrepo.Commit) *blameCommit {
+		msg := c.Message
+		if i := strings.IndexByte(msg, '\n'); i >= 0 {
+			msg = msg[:i]
+		}
+		return &blameCommit{
+			SHA:     c.SHA,
+			Author:  c.Author,
+			Date:    c.When.UTC().Format("2006-01-02T15:04:05Z"),
+			Message: strings.TrimSpace(msg),
+		}
+	}
+
+	var introduced, lastModified, bodyLastModified, sigLastChanged *blameCommit
+	var newestDecl, newestBody, newestSig string
+	var lastModFound, bodyModFound, sigChangeFound bool
+	var prevWithSymbol *blameCommit
+	var prevBlobSHA string
+	var symbolKind string
+
+	walkErr := repo.WalkCommits(startSHA, func(c *gitrepo.Commit) error {
+		if err := m.GitIndex.EnsureCommitIndexed(c.SHA); err != nil {
+			return fmt.Errorf("indexing commit %s: %w", c.SHA, err)
+		}
+
+		blobSHA, ok, err := store.BlobSHAForFile(c.SHA, filePath)
+		if err != nil {
+			return err
+		}
+		if !ok {
+			// File didn't exist at this commit — past the file's introduction.
+			return io.EOF
+		}
+
+		// Same blob as the more-recent commit means same symbol content;
+		// just push introduced back.
+		if blobSHA == prevBlobSHA && prevWithSymbol != nil {
+			introduced = makeRef(c)
+			prevWithSymbol = introduced
+			return nil
+		}
+
+		source, err := repo.ReadBlob(blobSHA)
+		if err != nil {
+			return err
+		}
+		syms, err := store.SymbolNames(blobSHA, source)
+		if err != nil {
+			return err
+		}
+
+		var sym *gitindex.SymbolInfo
+		for i := range syms {
+			if syms[i].Name == symbolName {
+				sym = &syms[i]
+				break
+			}
+		}
+		if sym == nil {
+			// Symbol absent in this commit — past the symbol's introduction.
+			return io.EOF
+		}
+
+		decl, body, sig := extractSymbolSnapshot(store, source, *sym)
+		cref := makeRef(c)
+
+		if prevWithSymbol == nil {
+			// First (newest) commit with the symbol — establish baseline.
+			newestDecl = decl
+			newestBody = body
+			newestSig = sig
+			symbolKind = sym.Kind
+		} else {
+			if !lastModFound && decl != newestDecl {
+				lastModified = prevWithSymbol
+				lastModFound = true
+			}
+			if !bodyModFound && body != newestBody {
+				bodyLastModified = prevWithSymbol
+				bodyModFound = true
+			}
+			if !sigChangeFound && sig != newestSig {
+				sigLastChanged = prevWithSymbol
+				sigChangeFound = true
+			}
+		}
+		introduced = cref
+		prevWithSymbol = cref
+		prevBlobSHA = blobSHA
+		return nil
+	})
+
+	if walkErr != nil {
+		return fmt.Sprintf("walking commits: %v", walkErr), true, nil
+	}
+	if introduced == nil {
+		return fmt.Sprintf("symbol %q not found in %s at %s", symbolName, filePath, ref), true, nil
+	}
+
+	// If an aspect never changed during the walk, it was last set at introduction.
+	if !lastModFound {
+		lastModified = introduced
+	}
+
+	result := blameResult{
+		Symbol:       symbolName,
+		Path:         filePath,
+		Introduced:   introduced,
+		LastModified: lastModified,
+	}
+	if symbolKind == "function" {
+		if !bodyModFound {
+			bodyLastModified = introduced
+		}
+		if !sigChangeFound {
+			sigLastChanged = introduced
+		}
+		result.BodyLastModified = bodyLastModified
+		result.SignatureLastChanged = sigLastChanged
+	}
+
+	out, err := json.MarshalIndent(result, "", "  ")
+	if err != nil {
+		return fmt.Sprintf("marshalling result: %v", err), true, nil
+	}
+	return string(out), false, nil
+}
+
+// extractSymbolSnapshot returns the source text of (declaration, body,
+// signature) for a symbol. Body and sig are empty strings when sym is not a
+// function — those distinctions only make sense for callable symbols.
+func extractSymbolSnapshot(store *gitindex.Store, source []byte, sym gitindex.SymbolInfo) (decl, body, sig string) {
+	if sym.DeclStartByte >= 0 && sym.DeclEndByte <= len(source) {
+		decl = string(source[sym.DeclStartByte:sym.DeclEndByte])
+	}
+	if sym.Kind != "function" {
+		return decl, "", ""
+	}
+	children, err := store.QueryChildren(sym.NodeID)
+	if err != nil {
+		return decl, "", ""
+	}
+	for _, c := range children {
+		switch {
+		case c.NodeType == "parameter_list" || c.FieldName == "parameters":
+			if c.StartByte >= 0 && c.EndByte <= len(source) {
+				sig = string(source[c.StartByte:c.EndByte])
+			}
+		case c.FieldName == "body" || c.NodeType == "block" || c.NodeType == "compound_statement":
+			if c.StartByte >= 0 && c.EndByte <= len(source) {
+				body = string(source[c.StartByte:c.EndByte])
+			}
+		}
+	}
+	return decl, body, sig
+}
+
+// ---- git_index ----------------------------------------------------------------
+
+func (h *Handler) handleGitIndex(args map[string]any) (string, bool, error) {
+	ref := optString(args, "ref")
+	if ref == "" {
+		ref = "HEAD"
+	}
+	limitF, _ := args["limit"].(float64)
+	limit := int(limitF)
+
+	h.mu.Lock()
+	m, err := h.requireModel()
+	h.mu.Unlock()
+	if err != nil {
+		return err.Error(), true, nil
+	}
+
+	if m.GitIndex == nil {
+		return "git index is not available (project root is not inside a git repository)", true, nil
+	}
+
+	if limit > 0 {
+		n, err := m.GitIndex.IndexRange(ref, limit)
+		if err != nil {
+			return fmt.Sprintf("indexing commits: %v", err), true, nil
+		}
+		return fmt.Sprintf("Indexed %d commits from %s.", n, ref), false, nil
+	}
+
+	indexed := 0
+	if err := m.GitIndex.IndexAll(ref, func(n int) { indexed = n }); err != nil {
+		return fmt.Sprintf("indexing commits: %v", err), true, nil
+	}
+	return fmt.Sprintf("Indexed %d commits from %s.", indexed, ref), false, nil
+}
+
+// ---- semantic_diff ------------------------------------------------------------
+
+func (h *Handler) handleSemanticDiff(args map[string]any) (string, bool, error) {
+	base, err := requireString(args, "base")
+	if err != nil {
+		return err.Error(), true, nil
+	}
+	head := optString(args, "head")
+	if head == "" {
+		head = "HEAD"
+	}
+	pathFilter := optString(args, "path")
+
+	h.mu.Lock()
+	m, merr := h.requireModel()
+	h.mu.Unlock()
+	if merr != nil {
+		return merr.Error(), true, nil
+	}
+
+	if m.GitIndex == nil {
+		return "git index is not available (project root is not inside a git repository)", true, nil
+	}
+
+	repo := m.GitIndex.Repo()
+	store := m.GitIndex.Store()
+
+	baseSHA, err := repo.Resolve(base)
+	if err != nil {
+		return fmt.Sprintf("resolving base ref %q: %v", base, err), true, nil
+	}
+	headSHA, err := repo.Resolve(head)
+	if err != nil {
+		return fmt.Sprintf("resolving head ref %q: %v", head, err), true, nil
+	}
+
+	if err := m.GitIndex.EnsureCommitIndexed(baseSHA); err != nil {
+		return fmt.Sprintf("indexing base commit: %v", err), true, nil
+	}
+	if err := m.GitIndex.EnsureCommitIndexed(headSHA); err != nil {
+		return fmt.Sprintf("indexing head commit: %v", err), true, nil
+	}
+
+	result, err := semdiff.Diff(store, repo, baseSHA, headSHA)
+	if err != nil {
+		return fmt.Sprintf("computing semantic diff: %v", err), true, nil
+	}
+
+	// Apply path filter if specified.
+	if pathFilter != "" {
+		var filtered []semdiff.FileDiff
+		for _, f := range result.Files {
+			if f.Path == pathFilter || f.OldPath == pathFilter {
+				filtered = append(filtered, f)
+			}
+		}
+		result.Files = filtered
+	}
+
+	out, err := json.MarshalIndent(result, "", "  ")
+	if err != nil {
+		return fmt.Sprintf("marshalling result: %v", err), true, nil
+	}
+	return string(out), false, nil
+}
+
+// ---- api_changelog ------------------------------------------------------------
+
+func (h *Handler) handleAPIChangelog(args map[string]any) (string, bool, error) {
+	base, err := requireString(args, "base")
+	if err != nil {
+		return err.Error(), true, nil
+	}
+	head := optString(args, "head")
+	if head == "" {
+		head = "HEAD"
+	}
+
+	h.mu.Lock()
+	m, merr := h.requireModel()
+	h.mu.Unlock()
+	if merr != nil {
+		return merr.Error(), true, nil
+	}
+
+	if m.GitIndex == nil {
+		return "git index is not available (project root is not inside a git repository)", true, nil
+	}
+
+	repo := m.GitIndex.Repo()
+	store := m.GitIndex.Store()
+
+	baseSHA, err := repo.Resolve(base)
+	if err != nil {
+		return fmt.Sprintf("resolving base ref %q: %v", base, err), true, nil
+	}
+	headSHA, err := repo.Resolve(head)
+	if err != nil {
+		return fmt.Sprintf("resolving head ref %q: %v", head, err), true, nil
+	}
+
+	if err := m.GitIndex.EnsureCommitIndexed(baseSHA); err != nil {
+		return fmt.Sprintf("indexing base commit: %v", err), true, nil
+	}
+	if err := m.GitIndex.EnsureCommitIndexed(headSHA); err != nil {
+		return fmt.Sprintf("indexing head commit: %v", err), true, nil
+	}
+
+	result, err := semdiff.Diff(store, repo, baseSHA, headSHA)
+	if err != nil {
+		return fmt.Sprintf("computing semantic diff: %v", err), true, nil
+	}
+
+	return semdiff.Changelog(result), false, nil
+}
+
+// ---- apply_equivalence -----------------------------------------------------
+
+func (h *Handler) handleApplyEquivalence(args map[string]any) (string, bool, error) {
+	name, err := requireString(args, "name")
+	if err != nil {
+		return err.Error(), true, nil
+	}
+	direction, err := requireString(args, "direction")
+	if err != nil {
+		return err.Error(), true, nil
+	}
+	pathFilter := optString(args, "path")
+	format := optBool(args, "format")
+
+	var srcPatStr, dstPatStr string
+	switch direction {
+	case "left_to_right":
+		// patterns set after we look up the equivalence
+	case "right_to_left":
+	default:
+		return fmt.Sprintf("invalid direction %q (want left_to_right or right_to_left)", direction), true, nil
+	}
+
+	h.mu.Lock()
+	defer h.mu.Unlock()
+
+	m, err := h.requireModel()
+	if err != nil {
+		return err.Error(), true, nil
+	}
+
+	equiv, err := m.LoadEquivalence(name)
+	if err != nil {
+		return fmt.Sprintf("loading equivalence: %v", err), true, nil
+	}
+	if equiv == nil {
+		return fmt.Sprintf("no equivalence named %q", name), true, nil
+	}
+
+	if direction == "left_to_right" {
+		srcPatStr, dstPatStr = equiv.LeftPattern, equiv.RightPattern
+	} else {
+		srcPatStr, dstPatStr = equiv.RightPattern, equiv.LeftPattern
+	}
+
+	// Expand the source-pattern set via the transitive closure: any other
+	// pattern in dstPatStr's equivalence class is also a valid source for
+	// this rewrite. The destination is fixed by the chosen direction.
+	allEquivs, err := m.ListEquivalences()
+	if err != nil {
+		return fmt.Sprintf("listing equivalences: %v", err), true, nil
+	}
+	graph := buildEquivalenceGraph(allEquivs)
+	sources := []string{srcPatStr}
+	for _, p := range graph.nonPreferredPatternsIn(dstPatStr) {
+		if p != srcPatStr {
+			sources = append(sources, p)
+		}
+	}
+
+	type compiled struct {
+		src    *Pattern
+		srcStr string
+	}
+	patterns := make([]compiled, 0, len(sources))
+	for _, s := range sources {
+		patterns = append(patterns, compiled{src: ParsePattern(s), srcStr: s})
+	}
+
+	accessors, err := m.FileAccessors(pathFilter)
+	if err != nil {
+		return fmt.Sprintf("listing files: %v", err), true, nil
+	}
+
+	var changes []forest.FileChange
+	var diffs []string
+	totalMatches := 0
+
+	for _, acc := range accessors {
+		err := acc.WithTree(func(source []byte, tree *tree_sitter.Tree) error {
+			pf := &forest.ParsedFile{
+				Path:           acc.Path(),
+				OriginalSource: source,
+				Tree:           tree,
+				Adapter:        acc.Adapter(),
+			}
+			var fileMatches []equivalenceMatch
+			for _, p := range patterns {
+				fileMatches = append(fileMatches, findEquivalenceMatches(pf, p.src, dstPatStr)...)
+			}
+			if len(fileMatches) == 0 {
+				return nil
+			}
+			// Sort by start byte; drop overlaps (keep the first encountered).
+			sort.Slice(fileMatches, func(i, j int) bool {
+				return fileMatches[i].StartByte < fileMatches[j].StartByte
+			})
+			deduped := fileMatches[:0]
+			var lastEnd uint
+			for _, m := range fileMatches {
+				if m.StartByte < lastEnd {
+					continue
+				}
+				deduped = append(deduped, m)
+				lastEnd = m.EndByte
+			}
+			edits := equivalenceEdits(deduped)
+			newSource := rewrite.ApplyEdits(source, edits)
+			if string(newSource) == string(source) {
+				return nil
+			}
+			if format {
+				newSource, _ = rewrite.FormatSource(acc.Adapter(), newSource)
+			}
+			diff := rewrite.UnifiedDiff(acc.Path(), source, newSource)
+			diffs = append(diffs, diff)
+			changes = append(changes, forest.FileChange{
+				Path:      acc.Path(),
+				Original:  source,
+				NewSource: newSource,
+			})
+			totalMatches += len(deduped)
+			return nil
+		})
+		if err != nil {
+			return fmt.Sprintf("applying equivalence in %s: %v", acc.Path(), err), true, nil
+		}
+	}
+
+	if len(changes) == 0 {
+		return fmt.Sprintf("Equivalence %q (%s) had no matches.", name, direction), false, nil
+	}
+
+	h.pending = &PendingChanges{Changes: changes, Diffs: diffs}
+
+	var sb strings.Builder
+	derivedNote := ""
+	if len(sources) > 1 {
+		derivedNote = fmt.Sprintf(" (including %d derived source pattern(s))", len(sources)-1)
+	}
+	fmt.Fprintf(&sb, "Applied equivalence %q (%s)%s: %d match(es) in %d file(s). Call apply to write.\n\n",
+		name, direction, derivedNote, totalMatches, len(changes))
+	for _, d := range diffs {
+		sb.WriteString(d)
+		sb.WriteString("\n")
+	}
+	return sb.String(), false, nil
+}
+
+// ---- check_equivalences ----------------------------------------------------
+
+func (h *Handler) handleCheckEquivalences(args map[string]any) (string, bool, error) {
+	pathFilter := optString(args, "path")
+
+	h.mu.Lock()
+	defer h.mu.Unlock()
+
+	m, err := h.requireModel()
+	if err != nil {
+		return err.Error(), true, nil
+	}
+
+	equivs, err := m.ListEquivalences()
+	if err != nil {
+		return fmt.Sprintf("listing equivalences: %v", err), true, nil
+	}
+	graph := buildEquivalenceGraph(equivs)
+
+	// Build the actionable scan list: for each class with a unanimous
+	// preferred pattern, every other pattern in the class is "non-preferred"
+	// and counts as a violation. This naturally honours derived equivalences
+	// — patterns that share a class only via a transitive chain still appear.
+	type scanPattern struct {
+		nonPreferred string
+		preferred    string
+		classIdx     int
+	}
+	var scans []scanPattern
+	classesWithPref := 0
+	for idx, pref := range graph.preferred {
+		if pref == "" {
+			continue
+		}
+		classesWithPref++
+		for _, p := range graph.classes[idx] {
+			if p == pref {
+				continue
+			}
+			scans = append(scans, scanPattern{nonPreferred: p, preferred: pref, classIdx: idx})
+		}
+	}
+	if classesWithPref == 0 {
+		return "No equivalences with a preferred direction defined.", false, nil
+	}
+
+	accessors, err := m.FileAccessors(pathFilter)
+	if err != nil {
+		return fmt.Sprintf("listing files: %v", err), true, nil
+	}
+
+	type violation struct {
+		source string // e.g. "equivalence:left↔right" or "equivalence:taught-name"
+		path   string
+		match  equivalenceMatch
+	}
+	var violations []violation
+
+	for _, sp := range scans {
+		srcPat := ParsePattern(sp.nonPreferred)
+		// Try to find a taught equivalence connecting these two patterns to
+		// give the violation a meaningful source label; fall back to "derived".
+		label := equivalenceLabel(equivs, sp.nonPreferred, sp.preferred)
+
+		for _, acc := range accessors {
+			err := acc.WithTree(func(source []byte, tree *tree_sitter.Tree) error {
+				pf := &forest.ParsedFile{
+					Path:           acc.Path(),
+					OriginalSource: source,
+					Tree:           tree,
+					Adapter:        acc.Adapter(),
+				}
+				matches := findEquivalenceMatches(pf, srcPat, sp.preferred)
+				for _, m := range matches {
+					violations = append(violations, violation{
+						source: label,
+						path:   acc.Path(),
+						match:  m,
+					})
+				}
+				return nil
+			})
+			if err != nil {
+				return fmt.Sprintf("checking equivalences in %s: %v", acc.Path(), err), true, nil
+			}
+		}
+	}
+
+	if len(violations) == 0 {
+		return fmt.Sprintf("All %d equivalence class(es) with preferred direction are satisfied.", classesWithPref), false, nil
+	}
+
+	var sb strings.Builder
+	fmt.Fprintf(&sb, "%d violation(s) across %d equivalence class(es):\n\n", len(violations), classesWithPref)
+	for _, v := range violations {
+		fmt.Fprintf(&sb, "  %s:%d:%d [%s]\n    %s\n    → %s\n\n",
+			v.path, v.match.Line, v.match.Column, v.source, v.match.Original, v.match.Rewrite)
+	}
+	return sb.String(), false, nil
+}
+
+// equivalenceLabel returns the name of a taught equivalence directly
+// connecting `from` and `to` (in either order), or "derived" if no such
+// pair was directly taught.
+func equivalenceLabel(equivs []store.Equivalence, from, to string) string {
+	for _, e := range equivs {
+		if (e.LeftPattern == from && e.RightPattern == to) || (e.LeftPattern == to && e.RightPattern == from) {
+			return e.Name
+		}
+	}
+	return "derived"
+}
+
+// ---- teach_equivalence / list_equivalences / delete_equivalence -------------
+
+func (h *Handler) handleTeachEquivalence(args map[string]any) (string, bool, error) {
+	name, err := requireString(args, "name")
+	if err != nil {
+		return err.Error(), true, nil
+	}
+	leftPattern, err := requireString(args, "left_pattern")
+	if err != nil {
+		return err.Error(), true, nil
+	}
+	rightPattern, err := requireString(args, "right_pattern")
+	if err != nil {
+		return err.Error(), true, nil
+	}
+	description := optString(args, "description")
+	direction := optString(args, "preferred_direction")
+
+	if leftPattern == rightPattern {
+		return "left_pattern and right_pattern must differ", true, nil
+	}
+
+	h.mu.Lock()
+	defer h.mu.Unlock()
+
+	m, err := h.requireModel()
+	if err != nil {
+		return err.Error(), true, nil
+	}
+
+	if err := m.SaveEquivalence(name, description, leftPattern, rightPattern, direction); err != nil {
+		return fmt.Sprintf("saving equivalence: %v", err), true, nil
+	}
+
+	return fmt.Sprintf("Equivalence %q saved.", name), false, nil
+}
+
+func (h *Handler) handleListEquivalences(_ map[string]any) (string, bool, error) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+
+	m, err := h.requireModel()
+	if err != nil {
+		return err.Error(), true, nil
+	}
+
+	equivs, err := m.ListEquivalences()
+	if err != nil {
+		return fmt.Sprintf("listing equivalences: %v", err), true, nil
+	}
+
+	if len(equivs) == 0 {
+		return "No equivalences saved.", false, nil
+	}
+
+	graph := buildEquivalenceGraph(equivs)
+
+	var sb strings.Builder
+	fmt.Fprintf(&sb, "%d equivalence(s) [taught]:\n", len(equivs))
+	for _, e := range equivs {
+		fmt.Fprintf(&sb, "  %s: %s ↔ %s", e.Name, e.LeftPattern, e.RightPattern)
+		if e.PreferredDirection != "" {
+			fmt.Fprintf(&sb, " [prefers %s]", e.PreferredDirection)
+		}
+		if e.Description != "" {
+			fmt.Fprintf(&sb, " — %s", e.Description)
+		}
+		sb.WriteString("\n")
+	}
+
+	// Derived pairs: every (a, b) within a class that wasn't taught directly.
+	type derivedPair struct {
+		left, right, preferred string
+		classIdx               int
+	}
+	var derived []derivedPair
+	for idx, members := range graph.classes {
+		if len(members) < 3 {
+			continue // a class of 1 has no pairs; a class of 2 has only the taught pair
+		}
+		for i := 0; i < len(members); i++ {
+			for j := i + 1; j < len(members); j++ {
+				pair := unorderedPair(members[i], members[j])
+				if graph.taught[pair] {
+					continue
+				}
+				derived = append(derived, derivedPair{
+					left:      members[i],
+					right:     members[j],
+					preferred: graph.preferred[idx],
+					classIdx:  idx,
+				})
+			}
+		}
+	}
+	if len(derived) > 0 {
+		fmt.Fprintf(&sb, "\n%d equivalence(s) [derived via transitive closure]:\n", len(derived))
+		for _, d := range derived {
+			fmt.Fprintf(&sb, "  %s ↔ %s", d.left, d.right)
+			if d.preferred != "" {
+				if d.preferred == d.left {
+					sb.WriteString(" [prefers left]")
+				} else if d.preferred == d.right {
+					sb.WriteString(" [prefers right]")
+				}
+			}
+			sb.WriteString("\n")
+		}
+	}
+
+	return sb.String(), false, nil
+}
+
+func (h *Handler) handleDeleteEquivalence(args map[string]any) (string, bool, error) {
+	name, err := requireString(args, "name")
+	if err != nil {
+		return err.Error(), true, nil
+	}
+
+	h.mu.Lock()
+	defer h.mu.Unlock()
+
+	m, err := h.requireModel()
+	if err != nil {
+		return err.Error(), true, nil
+	}
+
+	deleted, err := m.DeleteEquivalence(name)
+	if err != nil {
+		return fmt.Sprintf("deleting equivalence: %v", err), true, nil
+	}
+	if !deleted {
+		return fmt.Sprintf("No equivalence named %q.", name), false, nil
+	}
+	return fmt.Sprintf("Equivalence %q deleted.", name), false, nil
+}
+
+// ---- git_semantic_bisect ------------------------------------------------------
+
+func (h *Handler) handleGitSemanticBisect(args map[string]any) (string, bool, error) {
+	predicateStr, err := requireString(args, "predicate")
+	if err != nil {
+		return err.Error(), true, nil
+	}
+	good, err := requireString(args, "good")
+	if err != nil {
+		return err.Error(), true, nil
+	}
+	bad, err := requireString(args, "bad")
+	if err != nil {
+		return err.Error(), true, nil
+	}
+
+	pred, err := bisect.ParsePredicate(predicateStr)
+	if err != nil {
+		return err.Error(), true, nil
+	}
+
+	h.mu.Lock()
+	m, merr := h.requireModel()
+	h.mu.Unlock()
+	if merr != nil {
+		return merr.Error(), true, nil
+	}
+
+	if m.GitIndex == nil {
+		return "git index is not available (project root is not inside a git repository)", true, nil
+	}
+
+	repo := m.GitIndex.Repo()
+	store := m.GitIndex.Store()
+
+	goodSHA, err := repo.Resolve(good)
+	if err != nil {
+		return fmt.Sprintf("resolving good ref %q: %v", good, err), true, nil
+	}
+	badSHA, err := repo.Resolve(bad)
+	if err != nil {
+		return fmt.Sprintf("resolving bad ref %q: %v", bad, err), true, nil
+	}
+
+	result, err := bisect.Bisect(m.GitIndex, store, repo, pred, goodSHA, badSHA)
+	if err != nil {
+		return fmt.Sprintf("bisecting: %v", err), true, nil
+	}
+
+	out, err := json.MarshalIndent(result, "", "  ")
+	if err != nil {
+		return fmt.Sprintf("marshalling result: %v", err), true, nil
+	}
+	return string(out), false, nil
 }

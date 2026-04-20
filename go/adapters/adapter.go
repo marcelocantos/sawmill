@@ -86,6 +86,20 @@ type LanguageAdapter interface {
 	// GenImport generates an import statement for the given path.
 	GenImport(path string) string
 
+	// GenConstDeclaration generates an idiomatic top-level constant
+	// declaration. value is the literal source text (e.g. "\"foo\"" for a
+	// string literal, "42" for a number). The returned string includes the
+	// trailing newline and is suitable for splicing into a file at the
+	// chosen insertion point.
+	GenConstDeclaration(name, value string) string
+
+	// GenEnvRead generates the idiomatic expression for reading an
+	// environment variable at runtime. The caller is responsible for
+	// ensuring the surrounding context imports the relevant module (os in
+	// Go/Python, std::env in Rust, <cstdlib> in C++ — the expression itself
+	// doesn't include the import).
+	GenEnvRead(varName string) string
+
 	// ResolveImportPath maps an import string (as it appears in source code)
 	// to the filesystem path it refers to, relative to root. importingFile is
 	// the absolute path of the file containing the import. Returns "" if the

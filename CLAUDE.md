@@ -20,14 +20,14 @@ Requires Go 1.26+.
 
 ```
 go/
-  cmd/sawmill/main.go — CLI entry point (daemon, serve, version)
-  mcp/              — MCP server (33 tools)
-    server.go       — SawmillServer, tool registration, Serve/ServeConn
+  cmd/sawmill/main.go — CLI entry point (serve, version)
+  mcp/              — MCP server (50 tools)
+    server.go       — Per-session Handler + tool registration with mcp-go
     tools.go        — All tool handler implementations
     helpers.go      — Batch transform helpers, parameter editing
   model/model.go    — CodebaseModel (persistent state, incremental parsing)
-  daemon/daemon.go  — Unix socket daemon, multi-project model management
-  proxy/proxy.go    — Stdio-to-socket proxy for MCP clients
+  modelpool/        — Ref-counted shared CodebaseModel pool keyed by project root
+  daemon/daemon.go  — HTTP MCP server (mcp-go streamable HTTP transport)
   forest/forest.go  — Forest/ParsedFile, apply_with_backup, undo
   store/store.go    — SQLite store (files, symbols, recipes, conventions)
   adapters/         — Language adapters (Python, Rust, TS, Go, C++)
@@ -36,6 +36,8 @@ go/
   codegen/          — JavaScript code generation runtime (ctx API)
   jsengine/         — QuickJS-based per-node JS transforms
   exemplar/         — Teach-by-example template extraction
+  semdiff/          — Structural AST diffing (moves, renames, signatures, data formats)
+  bisect/           — Semantic git bisect (binary search on structural predicates)
   index/            — Symbol extraction from Tree-sitter trees
   watcher/          — File system watcher with debouncing (fsnotify)
 homebrew/
@@ -49,13 +51,17 @@ agents-guide.md     — Reference for AI coding agents (embedded in binary)
 
 ## Architecture
 
-Sawmill runs as a single global daemon (`sawmill serve`) on
-`~/.sawmill/sawmill.sock`. Each MCP proxy (`sawmill`, no args) connects
-to this daemon and announces its project root in the handshake. The daemon
-lazily loads and shares a `CodebaseModel` per unique project root —
-multiple connections to the same root amortise parsing cost.
+Sawmill runs as a single global HTTP MCP server (`sawmill serve`) listening
+on `127.0.0.1:8765` by default. Stdio-based MCP clients (Claude Code, etc.)
+connect through a transparent gateway such as mcpbridge, which translates
+stdio ↔ streamable HTTP without altering the protocol.
 
-Each connection gets its own session state (pending changes, backups)
+Each MCP session must call `parse(path=...)` once to bind itself to a
+project root. The server lazily loads and shares a `CodebaseModel` per
+unique project root via `modelpool.Pool` — multiple sessions targeting
+the same root amortise parsing cost.
+
+Each session gets its own per-session state (pending changes, backups)
 while sharing the underlying model.
 
 Each model ties together:

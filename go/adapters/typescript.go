@@ -83,6 +83,14 @@ func (a *TypeScriptAdapter) GenImport(path string) string {
 	return fmt.Sprintf("import { %s };\n", path)
 }
 
+func (a *TypeScriptAdapter) GenConstDeclaration(name, value string) string {
+	return fmt.Sprintf("const %s = %s;\n", name, value)
+}
+
+func (a *TypeScriptAdapter) GenEnvRead(varName string) string {
+	return fmt.Sprintf("process.env[%q]", varName)
+}
+
 // ResolveImportPath resolves relative TS imports like "./foo" or "../bar"
 // to filesystem paths relative to root.
 func (a *TypeScriptAdapter) ResolveImportPath(importText, importingFile, root string) string {

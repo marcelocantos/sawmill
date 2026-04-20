@@ -30,17 +30,9 @@ func rootHash(root string) string {
 	return hex.EncodeToString(h[:8])
 }
 
-// GlobalSocketPath returns the Unix domain socket path for the global daemon.
-// e.g. ~/.sawmill/sawmill.sock
-func GlobalSocketPath() string {
-	return filepath.Join(Base(), "sawmill.sock")
-}
-
-// SocketPath returns the Unix domain socket path for a project's daemon.
-// e.g. ~/.sawmill/sockets/a1b2c3d4e5f6a7b8.sock
-func SocketPath(root string) string {
-	return filepath.Join(Base(), "sockets", rootHash(root)+".sock")
-}
+// DefaultListenAddr returns the default HTTP listen address for the
+// sawmill MCP server.
+const DefaultListenAddr = "127.0.0.1:8765"
 
 // StoreDir returns the directory for a project's SQLite store.
 // e.g. ~/.sawmill/stores/a1b2c3d4e5f6a7b8/

@@ -87,14 +87,19 @@ func globMatch(pattern, name string) bool {
 }
 
 // CheckInvariant evaluates a single InvariantRule against all files in the
-// forest and returns a list of violation strings.
-func CheckInvariant(f *forest.Forest, invName string, rule *InvariantRule) ([]string, error) {
-	var violations []string
+// forest and returns structured violations. Each Violation has Source set to
+// "invariant:<name>".
+func CheckInvariant(f *forest.Forest, invName string, rule *InvariantRule) ([]Violation, error) {
+	var violations []Violation
+	src := "invariant:" + invName
 
 	if rule.ForEach.Implementing != "" {
-		violations = append(violations,
-			fmt.Sprintf("invariant %q: 'implementing' clause requires LSP (not yet supported syntactically); skipping implementing filter", invName),
-		)
+		violations = append(violations, Violation{
+			Source:   src,
+			Severity: "warning",
+			Rule:     invName,
+			Message:  "'implementing' clause requires LSP (not yet supported syntactically); skipping implementing filter",
+		})
 	}
 
 	// Map the abstract kind to the transform kind string.
@@ -127,45 +132,60 @@ func CheckInvariant(f *forest.Forest, invName string, rule *InvariantRule) ([]st
 				continue
 			}
 
+			line := int(result.StartLine)
+			col := int(result.StartCol)
+
 			for _, req := range rule.Require {
-				var violation string
+				var msg string
 				if req.HasField != nil {
 					ok, err := checkHasField(file, entityName, req.HasField)
 					if err != nil {
-						violation = fmt.Sprintf("%s: %s: checking has_field %q: %v",
-							file.Path, entityName, req.HasField.Name, err)
+						msg = fmt.Sprintf("%s: checking has_field %q: %v", entityName, req.HasField.Name, err)
 					} else if !ok {
 						if req.HasField.Type != "" {
-							violation = fmt.Sprintf("%s: %s: missing field %q of type %q",
-								file.Path, entityName, req.HasField.Name, req.HasField.Type)
+							msg = fmt.Sprintf("%s: missing field %q of type %q", entityName, req.HasField.Name, req.HasField.Type)
 						} else {
-							violation = fmt.Sprintf("%s: %s: missing field %q",
-								file.Path, entityName, req.HasField.Name)
+							msg = fmt.Sprintf("%s: missing field %q", entityName, req.HasField.Name)
 						}
 					}
 				} else if req.HasMethod != nil {
 					ok, err := checkHasMethod(file, entityName, req.HasMethod)
 					if err != nil {
-						violation = fmt.Sprintf("%s: %s: checking has_method %q: %v",
-							file.Path, entityName, req.HasMethod.Name, err)
+						msg = fmt.Sprintf("%s: checking has_method %q: %v", entityName, req.HasMethod.Name, err)
 					} else if !ok {
 						if req.HasMethod.Returns != "" {
-							violation = fmt.Sprintf("%s: %s: missing method %q returning %q",
-								file.Path, entityName, req.HasMethod.Name, req.HasMethod.Returns)
+							msg = fmt.Sprintf("%s: missing method %q returning %q", entityName, req.HasMethod.Name, req.HasMethod.Returns)
 						} else {
-							violation = fmt.Sprintf("%s: %s: missing method %q",
-								file.Path, entityName, req.HasMethod.Name)
+							msg = fmt.Sprintf("%s: missing method %q", entityName, req.HasMethod.Name)
 						}
 					}
 				}
-				if violation != "" {
-					violations = append(violations, violation)
+				if msg != "" {
+					violations = append(violations, Violation{
+						Source:   src,
+						File:     file.Path,
+						Line:     line,
+						Column:   col,
+						Severity: "error",
+						Rule:     invName,
+						Message:  msg,
+					})
 				}
 			}
 		}
 	}
 
 	return violations, nil
+}
+
+// FormatInvariantViolation renders a structured invariant violation as the
+// human-readable line that handleCheckInvariants used to emit verbatim.
+// Preserved for backwards-compatible prose output.
+func FormatInvariantViolation(v Violation) string {
+	if v.File == "" {
+		return v.Message
+	}
+	return fmt.Sprintf("%s: %s", v.File, v.Message)
 }
 
 // typeByteRange holds the start and end byte offsets of a type definition node.

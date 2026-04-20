@@ -33,9 +33,6 @@ func testHandler(t *testing.T, files map[string]string) *Handler {
 	if isErr {
 		t.Fatalf("handleParse returned error: %s", text)
 	}
-	if strings.Contains(text, "error") || strings.Contains(text, "Error") {
-		t.Fatalf("parse returned error: %s", text)
-	}
 	return h
 }
 

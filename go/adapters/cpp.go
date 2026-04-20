@@ -82,6 +82,14 @@ func (a *CppAdapter) GenImport(path string) string {
 	return fmt.Sprintf("#include \"%s\"\n", path)
 }
 
+func (a *CppAdapter) GenConstDeclaration(name, value string) string {
+	return fmt.Sprintf("constexpr auto %s = %s;\n", name, value)
+}
+
+func (a *CppAdapter) GenEnvRead(varName string) string {
+	return fmt.Sprintf("std::getenv(%q)", varName)
+}
+
 // ResolveImportPath resolves C/C++ #include "path" to a filesystem path
 // relative to root. Returns "" for system includes (#include <...>).
 func (a *CppAdapter) ResolveImportPath(importText, importingFile, root string) string {

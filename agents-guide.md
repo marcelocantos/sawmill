@@ -24,36 +24,29 @@ steps succeed — installing the binary alone is not enough.
 brew install marcelocantos/tap/sawmill
 ```
 
-**Step 2 — Start the background service:**
+**Step 2 — Start the background HTTP server:**
 
 ```bash
 brew services start sawmill
 ```
 
-This starts the sawmill daemon which manages parsed codebases and
-persists state across sessions. The daemon starts automatically on
-login.
+This launches `sawmill serve --addr 127.0.0.1:8765`, an HTTP MCP server
+on port 8765 that manages parsed codebases and persists state across
+sessions. The server starts automatically on login.
 
 **Step 3 — Register as an MCP server:**
 
-For Claude Code (global install — available in all projects):
+Sawmill speaks the MCP streamable HTTP transport at `http://127.0.0.1:8765/mcp`.
+Stdio-based MCP clients connect through a transparent gateway such as
+[mcpbridge](https://github.com/marcelocantos/mcpbridge), which translates
+stdio ↔ HTTP without altering the protocol:
 
 ```bash
-claude mcp add --scope user sawmill -- sawmill
+claude mcp add --scope user sawmill -- mcpbridge http://127.0.0.1:8765/mcp
 ```
 
-For other MCP clients, add to the client's MCP configuration
-(e.g. `.mcp.json` for project scope):
-
-```json
-{
-  "mcpServers": {
-    "sawmill": {
-      "command": "sawmill"
-    }
-  }
-}
-```
+For MCP clients that natively support HTTP transport, point them
+directly at `http://127.0.0.1:8765/mcp`.
 
 **Step 4 — Restart the agent session.** MCP servers are loaded at
 session start — sawmill won't be available until the next session.
@@ -64,8 +57,11 @@ is complete.
 
 ## Recommended Workflow
 
-1. **Parse first.** Call `parse` with the project root. This loads and
-   indexes all source files. Subsequent `parse` calls are incremental.
+1. **Parse first.** Call `parse` with the project root path on the first
+   call in each MCP session — this binds the session to a project root
+   and loads/indexes all source files. Subsequent `parse` calls re-use
+   the loaded model. Sessions targeting the same root share one model
+   internally (amortised parsing).
 2. **Query/find.** Use `query`, `find_symbol`, or `find_references` to
    locate the code you need to change.
 3. **Transform.** Use `rename`, `transform`, `codegen`,
@@ -110,6 +106,9 @@ replaces any unapplied pending changes.
 | `add_field` | Add a field to a struct/class, propagate to constructors | `type_name`, `field_name`, `field_type`, `default_value` |
 | `clone_and_adapt` | Copy a symbol with string substitutions | `source`, `substitutions`, `target_file` |
 | `migrate_type` | Rewrite all usage sites of a type | `type_name`, `rules` |
+| `promote_constant` | Replace every occurrence of a literal with a named constant; declares it in idiomatic per-language form | `literal`, `name`, `path`, `format` |
+| `extract_to_env` | Replace a literal with an env-var read (os.Getenv / os.environ.get / process.env / std::getenv); scaffold .env.example + .gitignore | `literal`, `var_name`, `path`, `format` |
+| `migrate_pattern` | Generalised pattern rewriting with import management (add the new symbol's import; drop the old one if unused) | `old_pattern`, `new_pattern`, `add_import`, `drop_import`, `path`, `format` |
 
 ### Teaching
 
@@ -120,6 +119,17 @@ replaces any unapplied pending changes.
 | `instantiate` | Create code from a taught recipe | `recipe`, `params` |
 | `teach_convention` | Define an enforceable project rule | `name`, `check_program` |
 | `check_conventions` | Scan for convention violations | `path` |
+| `teach_fix` | Save a diagnostic-pattern → fix-action mapping (regex with named captures + recipe or transform; auto/suggest confidence) | `name`, `diagnostic_regex`, `action`, `confidence` |
+| `auto_fix` | Convergence loop: pull diagnostics → match the catalogue → apply auto fixes / report suggestions / detect cycles. Returns structured per-iteration JSON | `file`, `max_iterations`, `dry_run` |
+| `seed_fixes` | Install the curated starter catalogue (Go + TypeScript common errors). Idempotent — preserves user customisations | -- |
+| `learn_from_observation` | Infer candidate fix entries from a pre/post diagnostic snapshot — the resolved diagnostics become draft regex+action stubs the user can promote via `teach_fix` | `pre_diagnostics`, `post_diagnostics` |
+| `list_fixes` | List all saved fix entries | -- |
+| `delete_fix` | Delete a saved fix entry by name | `name` |
+| `teach_equivalence` | Save a bidirectional code-pattern pair (e.g. `errors.Is(err, X) ↔ err == X`) | `name`, `left_pattern`, `right_pattern`, `preferred_direction` |
+| `apply_equivalence` | Rewrite all matches of an equivalence in the chosen direction (`left_to_right` or `right_to_left`); produces a diff preview | `name`, `direction`, `path`, `format` |
+| `check_equivalences` | Scan the codebase for matches of any equivalence's non-preferred side; reports as violations | `path` |
+| `list_equivalences` | List all saved equivalence pairs | -- |
+| `delete_equivalence` | Delete a saved equivalence by name | `name` |
 | `list_recipes` | List all taught recipes | -- |
 | `list_conventions` | List all taught conventions | -- |
 
@@ -139,7 +149,19 @@ replaces any unapplied pending changes.
 | `hover` | Type info at a position | `file`, `line`, `column` (1-based) |
 | `definition` | Go to definition | `file`, `line`, `column` |
 | `lsp_references` | Find all references via LSP | `file`, `line`, `column` |
-| `diagnostics` | Get compile errors/warnings | `file`, `content` (optional) |
+| `diagnostics` | Get compile errors/warnings (set `format=json` for structured `{file, line, column, severity, code, source, message}` array) | `file`, `format` |
+
+### Git History
+
+| Tool | Purpose | Key params |
+|---|---|---|
+| `git_log` | Structured commit history with file-change metadata | `ref`, `limit`, `path` |
+| `git_diff_summary` | Symbol-level diff (added/removed/modified) between two refs | `base`, `head`, `path` |
+| `git_blame_symbol` | Find which commit last modified or introduced a symbol | `path`, `symbol`, `ref` |
+| `git_index` | Index commit history for structural queries | `ref`, `limit` |
+| `semantic_diff` | Structural AST diff — detects moves, renames, signature changes, key-level data format changes | `base`, `head`, `path` |
+| `api_changelog` | Markdown API surface changelog between two refs | `base`, `head` |
+| `git_semantic_bisect` | Find the commit where a structural predicate flipped (binary search, no code execution) | `predicate` (JSON), `good`, `bad` |
 
 ### Application
 
@@ -314,6 +336,78 @@ conventions and persist across sessions.
 - `for_each.implementing`: optional interface name (requires LSP)
 - `require`: list of assertions — `has_field` (with optional `type`)
   or `has_method` (with optional `returns`)
+
+## Structured Output for Programmatic Consumers
+
+`check_conventions`, `check_invariants`, and `query` all support a
+`format` parameter. The default `"text"` returns the human-readable
+prose unchanged. Setting `format: "json"` returns a structured array
+suitable for orchestrators that need machine-readable diagnostics.
+
+**Violation schema** (returned by check_conventions and check_invariants):
+
+```jsonc
+{
+  "source":   "convention:no-bare-except"  | "invariant:config-needs-name",
+  "file":     "src/foo.go",
+  "line":     42,                  // 1-based; omitted if zero
+  "column":   10,                  // 1-based; omitted if zero
+  "severity": "error" | "warning", // defaults to "error"
+  "rule":     "no-bare-except",    // short stable identifier
+  "message":  "use specific exception",
+  "snippet":      "except:",       // optional source excerpt
+  "suggested_fix": "except Exception:"  // optional rewrite
+}
+```
+
+**QueryMatch schema** (returned by query):
+
+```jsonc
+{
+  "file":    "src/foo.go",
+  "line":    7,
+  "column":  3,
+  "kind":    "function_definition",  // raw tree-sitter node type
+  "name":    "Foo",                  // identifier if applicable
+  "snippet": "def Foo(): ..."
+}
+```
+
+**Convention check programs** can return either an array of plain
+strings (legacy contract — strings become `Violation.Message`) or an
+array of structured objects matching the Violation schema above.
+Sawmill normalises both into the same JSON output:
+
+```javascript
+// Legacy: just messages.
+return ["unused import in main.py", "TODO: cleanup"];
+
+// New: full structured violations.
+return [{
+  file: "src/foo.go",
+  line: 42, column: 10,
+  severity: "warning",
+  rule: "no-bare-except",
+  message: "use specific exception",
+  suggested_fix: "except Exception:"
+}];
+```
+
+**Worked example — orchestrator consuming the JSON output:**
+
+```python
+import json, subprocess
+out = subprocess.check_output([
+    "claude", "mcp", "call", "sawmill", "check_invariants",
+    "--arg", "format=json",
+])
+violations = json.loads(out)
+for v in violations:
+    print(f"{v['source']}: {v['file']}:{v['line']}: {v['message']}")
+    if v.get("suggested_fix"):
+        # Hand off to an automated fix flow.
+        ...
+```
 
 ## Tips and Gotchas
 

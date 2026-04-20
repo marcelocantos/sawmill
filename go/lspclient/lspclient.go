@@ -32,7 +32,9 @@ type Diagnostic struct {
 	File     string `json:"file"`
 	Line     uint32 `json:"line"`
 	Column   uint32 `json:"column"`
-	Severity string `json:"severity"` // "error", "warning", "info", "hint"
+	Severity string `json:"severity"`         // "error", "warning", "info", "hint"
+	Code     string `json:"code,omitempty"`   // LSP diagnostic code (e.g. gopls "UnusedImport", TS "2304")
+	Source   string `json:"source,omitempty"` // Producing tool (e.g. "gopls", "tsserver", "compiler")
 	Message  string `json:"message"`
 }
 
@@ -409,6 +411,8 @@ func parseDiagnosticsNotification(params any, targetURI, filePath string) []Diag
 		return nil
 	}
 
+	// LSP Diagnostic.code is `integer | string`; capture as RawMessage so we
+	// can normalise both forms into a string field.
 	var p struct {
 		URI         string `json:"uri"`
 		Diagnostics []struct {
@@ -418,8 +422,10 @@ func parseDiagnosticsNotification(params any, targetURI, filePath string) []Diag
 					Character uint32 `json:"character"`
 				} `json:"start"`
 			} `json:"range"`
-			Severity int    `json:"severity"`
-			Message  string `json:"message"`
+			Severity int             `json:"severity"`
+			Code     json.RawMessage `json:"code"`
+			Source   string          `json:"source"`
+			Message  string          `json:"message"`
 		} `json:"diagnostics"`
 	}
 	if err := json.Unmarshal(data, &p); err != nil {
@@ -449,8 +455,28 @@ func parseDiagnosticsNotification(params any, targetURI, filePath string) []Diag
 			Line:     d.Range.Start.Line + 1,
 			Column:   d.Range.Start.Character + 1,
 			Severity: sev,
+			Code:     normaliseDiagnosticCode(d.Code),
+			Source:   d.Source,
 			Message:  d.Message,
 		})
 	}
 	return diags
+}
+
+// normaliseDiagnosticCode converts an LSP diagnostic code (which may be
+// integer or string) to a canonical string form. Returns "" for absent
+// or null codes.
+func normaliseDiagnosticCode(raw json.RawMessage) string {
+	if len(raw) == 0 || string(raw) == "null" {
+		return ""
+	}
+	var s string
+	if err := json.Unmarshal(raw, &s); err == nil {
+		return s
+	}
+	var n json.Number
+	if err := json.Unmarshal(raw, &n); err == nil {
+		return n.String()
+	}
+	return ""
 }
