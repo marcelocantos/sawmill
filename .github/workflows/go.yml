@@ -14,6 +14,8 @@ jobs:
         working-directory: go
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0  # gitindex tests walk real commit history
       - uses: actions/setup-go@v5
         with:
           go-version-file: go/go.mod
