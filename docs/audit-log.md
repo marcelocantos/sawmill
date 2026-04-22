@@ -52,5 +52,5 @@ maintenance activities. Append-only — newest entries at the bottom.
 
 ## 2026-04-22 — /release v0.10.0
 
-- **Commit**: `pending`
+- **Commit**: `a717113`
 - **Outcome**: Released v0.10.0 (darwin-arm64, linux-amd64, linux-arm64). Major release: tool count grew 33 → 54. Two complete pillars retired (🎯T1 intra-language pattern equivalences, 🎯T3 diagnostic-driven automatic fixes). Other deliverables: 🎯T6 semantic git history (git_log / git_diff_summary / git_blame_symbol with body-vs-signature distinction), 🎯T13 semantic_diff + api_changelog, 🎯T14 git_semantic_bisect, 🎯T24 structured failure payloads (`format=json` on check_conventions / check_invariants / query / diagnostics), 🎯T8.1–T8.3 cross-rep transforms (promote_constant, extract_to_env, migrate_pattern). Architectural rework: dropped mcpbridge / Unix-socket / stdio-proxy in favour of pure HTTP MCP server (mcp-go streamable HTTP transport on `127.0.0.1:8765`). 201 tests under -race. STABILITY.md, README, and agents-guide refreshed for the HTTP architecture and new tool surface. Homebrew formula updated.
