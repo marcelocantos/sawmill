@@ -9,7 +9,7 @@ pre-1.0 period exists to get these right.
 
 ## Interaction surface catalogue
 
-Snapshot as of v0.9.0. 153 public surface items.
+Snapshot as of v0.10.0. 233 public surface items.
 
 ### CLI
 
@@ -21,14 +21,14 @@ Snapshot as of v0.9.0. 153 public surface items.
 | `sawmill --help-agent` | Agent guide | **Stable** |
 | `--addr HOST:PORT` (serve) | string, default `127.0.0.1:8765` | **Stable** |
 
-### MCP tools (33 tools, 99 parameters)
+### MCP tools (54 tools, 158 parameters)
 
 | Tool | Required params | Optional params | Stability |
 |---|---|---|---|
 | `parse` | — | `path` | **Stable** |
 | `rename` | `from`, `to` | `path`, `format` | **Stable** |
 | `rename_file` | `from`, `to` | `format` | **Stable** |
-| `query` | — | `kind`, `name`, `file`, `raw_query`, `capture`, `path` | **Stable** |
+| `query` | — | `kind`, `name`, `file`, `raw_query`, `capture`, `path`, `format` | **Stable** |
 | `find_symbol` | `symbol` | `kind` | **Stable** |
 | `find_references` | `symbol` | — | **Stable** |
 | `dependency_usage` | `package` | `path` | **Stable** |
@@ -41,16 +41,16 @@ Snapshot as of v0.9.0. 153 public surface items.
 | `instantiate` | `recipe` | `params`, `path`, `format` | **Stable** |
 | `list_recipes` | — | — | **Stable** |
 | `teach_convention` | `name`, `check_program` | `description` | **Stable** |
-| `check_conventions` | — | `path` | **Stable** |
+| `check_conventions` | — | `path`, `format` | **Stable** |
 | `list_conventions` | — | — | **Stable** |
 | `teach_invariant` | `name`, `rule` | `description` | **Stable** |
-| `check_invariants` | — | `path` | **Stable** |
+| `check_invariants` | — | `path`, `format` | **Stable** |
 | `list_invariants` | — | — | **Stable** |
 | `delete_invariant` | `name` | — | **Stable** |
 | `hover` | `file`, `line`, `column` | — | **Stable** |
 | `definition` | `file`, `line`, `column` | — | **Stable** |
 | `lsp_references` | `file`, `line`, `column` | — | **Stable** |
-| `diagnostics` | `file` | `content` | **Stable** |
+| `diagnostics` | `file` | `format` | **Stable** |
 | `get_agent_prompt` | — | — | **Stable** |
 | `teach_by_example` | `name`, `exemplar`, `parameters` | `description`, `also_affects` | **Needs review** — `parameters` and `also_affects` are JSON strings |
 | `add_parameter` | `function`, `param_name` | `path`, `param_type`, `default_value`, `position`, `format` | **Stable** |
@@ -58,6 +58,27 @@ Snapshot as of v0.9.0. 153 public surface items.
 | `add_field` | `type_name`, `field_name`, `field_type`, `default_value` | `path`, `format` | **Stable** |
 | `clone_and_adapt` | `source`, `substitutions`, `target_file` | `position`, `format` | **Stable** |
 | `migrate_type` | `type_name`, `rules` | `path`, `format` | **Needs review** — pattern language is new, may evolve |
+| `git_index` | — | `ref`, `limit` | **Stable** |
+| `git_log` | — | `ref`, `limit`, `path` | **Stable** |
+| `git_diff_summary` | `base` | `head`, `path` | **Stable** |
+| `git_blame_symbol` | `path`, `symbol` | `ref` | **Stable** |
+| `semantic_diff` | `base` | `head`, `path` | **Stable** |
+| `api_changelog` | `base` | `head` | **Stable** |
+| `git_semantic_bisect` | `predicate`, `good`, `bad` | — | **Stable** |
+| `teach_equivalence` | `name`, `left_pattern`, `right_pattern` | `description`, `preferred_direction` | **Stable** |
+| `list_equivalences` | — | — | **Stable** |
+| `delete_equivalence` | `name` | — | **Stable** |
+| `apply_equivalence` | `name`, `direction` | `path`, `format` | **Stable** |
+| `check_equivalences` | — | `path` | **Stable** |
+| `teach_fix` | `name`, `diagnostic_regex`, `action` | `confidence`, `description` | **Stable** |
+| `list_fixes` | — | — | **Stable** |
+| `delete_fix` | `name` | — | **Stable** |
+| `migrate_pattern` | `old_pattern`, `new_pattern` | `add_import`, `drop_import`, `path`, `format` | **Stable** |
+| `extract_to_env` | `literal`, `var_name` | `path`, `format` | **Stable** |
+| `promote_constant` | `literal`, `name` | `path`, `format` | **Stable** |
+| `learn_from_observation` | `pre_diagnostics` | `post_diagnostics` | **Needs review** — heuristic regex generalisation may need refinement |
+| `seed_fixes` | — | — | **Stable** |
+| `auto_fix` | `file` | `max_iterations`, `dry_run` | **Needs review** — convergence loop semantics (cycle detection, termination conditions) may evolve |
 
 ### Configuration conventions
 
@@ -92,13 +113,19 @@ Snapshot as of v0.9.0. 153 public surface items.
   break user-saved recipes and conventions.
 - **File watcher robustness**: The watcher is new and lightly tested (4
   tests). Needs soak time before 1.0.
-- **`migrate_type` pattern language**: The `$placeholder` pattern syntax is
-  new and may need refinement before freezing. Evaluate whether it handles
-  all common migration patterns.
-- **Delete recipe tool**: No `delete_recipe` MCP tool exists (only
-  `delete_convention`). Add for symmetry.
+- **`migrate_type` / `$placeholder` pattern language**: The `$placeholder`
+  pattern syntax (shared by `migrate_type`, `migrate_pattern`,
+  `teach_equivalence`, `apply_equivalence`) is new and may need refinement
+  before freezing. Evaluate coverage of complex migration patterns.
+- **Delete recipe tool**: No `delete_recipe` MCP tool exists (symmetry is
+  now narrower — `delete_equivalence` and `delete_fix` ship in v0.10.0,
+  but recipes still lack a delete operation). Add for symmetry before 1.0.
 - **Error recovery**: No test coverage for server crashes, transport
   disconnections, or store corruption.
+- **`auto_fix` and `learn_from_observation` maturity**: Both tools ship
+  in v0.10.0 but carry algorithmic novelty (convergence loop, heuristic
+  regex generalisation). Mark stable after soak time and real-world
+  validation of cycle detection and candidate quality.
 
 ## Out of scope for 1.0
 

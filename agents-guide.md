@@ -34,21 +34,51 @@ This launches `sawmill serve --addr 127.0.0.1:8765`, an HTTP MCP server
 on port 8765 that manages parsed codebases and persists state across
 sessions. The server starts automatically on login.
 
-**Step 3 — Register as an MCP server:**
+**Step 3 — Confirm the server is listening:**
 
-Sawmill speaks the MCP streamable HTTP transport at `http://127.0.0.1:8765/mcp`.
-Stdio-based MCP clients connect through a transparent gateway such as
-[mcpbridge](https://github.com/marcelocantos/mcpbridge), which translates
-stdio ↔ HTTP without altering the protocol:
+```bash
+lsof -iTCP:8765 -sTCP:LISTEN
+```
+
+You should see one `sawmill` process. **Do not use `curl`** to probe
+the endpoint — MCP only accepts POST requests with a JSON-RPC body, so
+plain `curl` returns nothing and reads as "server not ready" when it's
+actually fine.
+
+**Step 4 — Register as an MCP server.**
+
+Sawmill speaks the MCP streamable HTTP transport natively at
+`http://127.0.0.1:8765/mcp`.
+
+**Claude Code** (one command — global install for all projects):
+
+```bash
+claude mcp add --scope user --transport http sawmill http://127.0.0.1:8765/mcp
+```
+
+**Generic MCP client** (e.g. `.mcp.json` in a project, or another
+client's config) — every MCP client that supports streamable HTTP can
+use the same JSON shape:
+
+```json
+{
+  "mcpServers": {
+    "sawmill": {
+      "transport": "http",
+      "url": "http://127.0.0.1:8765/mcp"
+    }
+  }
+}
+```
+
+Stdio-only clients can route through a transparent gateway such as
+[mcpbridge](https://github.com/marcelocantos/mcpbridge):
 
 ```bash
 claude mcp add --scope user sawmill -- mcpbridge http://127.0.0.1:8765/mcp
 ```
 
-For MCP clients that natively support HTTP transport, point them
-directly at `http://127.0.0.1:8765/mcp`.
-
-**Step 4 — Restart the agent session.** MCP servers are loaded at
+**Step 5 — Restart the agent session.** MCP servers are loaded at
 session start — sawmill won't be available until the next session.
 
 **Verification:** After restarting, call the `get_agent_prompt` tool to

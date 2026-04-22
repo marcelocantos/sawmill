@@ -69,34 +69,49 @@ go build -o sawmill ./cmd/sawmill
 brew services start sawmill
 ```
 
-This starts the sawmill daemon which manages parsed codebases and
-persists state across sessions. The daemon auto-starts on login.
+This launches `sawmill serve --addr 127.0.0.1:8765`, the HTTP MCP
+server. It starts automatically on login and persists parsed state
+across sessions.
 
-If you don't use Homebrew services, the daemon is auto-started by
-`sawmill` on first use — no manual step needed.
+Confirm it's listening:
+
+```bash
+lsof -iTCP:8765 -sTCP:LISTEN
+```
+
+(Don't probe with `curl`. MCP only accepts POST + JSON-RPC, so a plain
+GET returns nothing — easy to mistake for "not running".)
 
 ### 3. Register the MCP server
 
 **Claude Code** (one command — installs globally for all projects):
 
 ```bash
-claude mcp add --scope user sawmill -- sawmill
+claude mcp add --scope user --transport http sawmill http://127.0.0.1:8765/mcp
 ```
 
 This writes the server entry to `~/.claude.json`. Restart Claude Code
 to pick up the new server.
 
-**Other MCP clients** — add to your client's MCP configuration file
-(e.g. `.mcp.json` for project scope, or the client's global config):
+**Other MCP clients** — every client that supports streamable HTTP can
+use the same JSON shape:
 
 ```json
 {
   "mcpServers": {
     "sawmill": {
-      "command": "sawmill"
+      "transport": "http",
+      "url": "http://127.0.0.1:8765/mcp"
     }
   }
 }
+```
+
+Stdio-only clients can route through a transparent gateway like
+[mcpbridge](https://github.com/marcelocantos/mcpbridge):
+
+```bash
+claude mcp add --scope user sawmill -- mcpbridge http://127.0.0.1:8765/mcp
 ```
 
 ### 4. Verify
@@ -107,59 +122,98 @@ agents guide, installation is complete.
 ## Architecture
 
 ```
-AI Agent ──stdio──▶ sawmill ──socket──▶ sawmill serve (daemon)
-                                            │
-                                            ├─ CodebaseModel (per project)
-                                            │    ├─ Forest (Tree-sitter CSTs)
-                                            │    ├─ Store (SQLite)
-                                            │    └─ Watcher (fsnotify)
-                                            └─ MCP Server (33 tools)
+AI Agent ──HTTP──▶ sawmill serve (HTTP MCP server, port 8765)
+                       │
+                       ├─ CodebaseModel (per project)
+                       │    ├─ Forest (Tree-sitter CSTs)
+                       │    ├─ Store (SQLite)
+                       │    └─ Watcher (fsnotify)
+                       ├─ GitIndex (lazy AST snapshots per commit)
+                       └─ MCP Server (54 tools, streamable HTTP)
 ```
 
-- `sawmill` (no args) is the MCP stdio server that clients launch
-- `sawmill serve` is the background daemon, started via `brew services`
-- The daemon auto-starts if not running when `sawmill` connects
+- `sawmill serve` is the HTTP MCP server, listening on `127.0.0.1:8765`
+  (overridable with `--addr`). Started by `brew services start sawmill`.
+- Each MCP session runs in its own handler with per-session pending
+  changes/backups; sessions targeting the same project root share a
+  parsed model via the internal model pool (amortised parsing).
+- Stdio-only MCP clients connect through a transparent gateway such as
+  [mcpbridge](https://github.com/marcelocantos/mcpbridge).
 
 ## MCP tools
 
+54 tools, grouped by purpose. Every transform returns a diff preview;
+call `apply` to write changes, `undo` to revert.
+
+**Discovery & navigation**
+
 | Tool | Description |
 |---|---|
-| `parse` | Load and index the codebase (auto-loaded from working directory) |
-| `rename` | Rename a symbol across files (diff preview) |
-| `rename_file` | Rename a file and update all import paths |
-| `query` | Search for structural patterns (functions, classes, calls, imports) |
+| `parse` | Load and index the codebase for the current session |
+| `query` | Search for structural patterns by kind/name or raw Tree-sitter query (`format=json` for structured output) |
 | `find_symbol` | Find all definitions of a symbol by name |
 | `find_references` | Find all usages of a symbol by name |
-| `dependency_usage` | Analyse dependency imports, symbols used, and public API exposure |
-| `transform` | Match/act structural transform with declarative or JS actions |
-| `transform_batch` | Apply multiple transforms sequentially |
-| `add_parameter` | Add a parameter to a function definition |
-| `remove_parameter` | Remove a parameter from a function definition |
+| `dependency_usage` | Analyse package imports, symbols used, public API exposure |
+
+**Transforms**
+
+| Tool | Description |
+|---|---|
+| `rename` / `rename_file` | Rename an identifier or a file (with import cascade) |
+| `transform` / `transform_batch` | Match/act with declarative or JS actions |
+| `codegen` | JavaScript program against the whole codebase |
+| `add_parameter` / `remove_parameter` | Modify function signatures across call sites |
 | `add_field` | Add a field to a struct/class and propagate to constructors |
 | `clone_and_adapt` | Copy a symbol with string substitutions to a new location |
-| `migrate_type` | Rewrite all usage sites of a type (construction, access, rename) |
-| `codegen` | Execute a JavaScript code generator against the codebase |
-| `teach_by_example` | Extract a reusable template from exemplar code |
-| `teach_recipe` | Define a named sequence of transforms with parameters |
-| `instantiate` | Create new code from a taught recipe |
-| `teach_convention` | Define an enforceable project rule |
-| `check_conventions` | Scan for convention violations |
-| `list_recipes` | List all taught recipes |
-| `list_conventions` | List all taught conventions |
-| `teach_invariant` | Define a structural invariant (JSON rule) for types/functions |
-| `check_invariants` | Scan for invariant violations |
-| `list_invariants` | List all taught invariants |
-| `delete_invariant` | Remove an invariant |
-| `hover` | Type information at a source position (LSP) |
-| `definition` | Go to definition at a source position (LSP) |
-| `lsp_references` | Find all references via LSP |
-| `diagnostics` | Get compile errors and warnings (LSP) |
-| `get_agent_prompt` | Return the agent guide with all tool documentation |
+| `migrate_type` | Rewrite construction patterns, field access, and type names |
+| `migrate_pattern` | One-shot pattern rewrite with explicit add/drop import semantics |
+| `promote_constant` | Magic literals → named constants in idiomatic per-language form |
+| `extract_to_env` | Literal → env-var read; scaffolds `.env.example` and `.gitignore` |
+
+**Teaching & convention**
+
+| Tool | Description |
+|---|---|
+| `teach_recipe` / `instantiate` / `list_recipes` | Save a parameterised transform sequence and run it |
+| `teach_by_example` | Extract a template from exemplar code |
+| `teach_convention` / `check_conventions` / `list_conventions` | Define and check JS-based project rules (`format=json` for structured violations) |
+| `teach_invariant` / `check_invariants` / `list_invariants` / `delete_invariant` | Declarative structural assertions for types/functions (`format=json` for structured output) |
+| `teach_equivalence` / `apply_equivalence` / `check_equivalences` / `list_equivalences` / `delete_equivalence` | Bidirectional pattern pairs with transitive closure (e.g. `errors.Is(err, X) ↔ err == X`) |
+
+**Diagnostic-driven fixes**
+
+| Tool | Description |
+|---|---|
+| `teach_fix` / `list_fixes` / `delete_fix` | Save diagnostic-pattern → fix-action mappings |
+| `seed_fixes` | Install a curated starter catalogue (Go + TypeScript common errors) |
+| `auto_fix` | Convergence loop: pull diagnostics → match → apply (or suggest) → re-run, with cycle detection |
+| `learn_from_observation` | Infer candidate fix entries from pre/post diagnostic snapshots |
+
+**Git history (semantic)**
+
+| Tool | Description |
+|---|---|
+| `git_index` / `git_log` | Lazily index commits and walk structured history |
+| `git_diff_summary` | Symbol-level diff (added/removed/modified) between refs |
+| `git_blame_symbol` | Trace a symbol's introduction, last modification, body change, and signature change |
+| `semantic_diff` | Structural AST diff: detects moves, renames, signature changes, key-level data format changes |
+| `api_changelog` | Markdown API surface changelog between two refs |
+| `git_semantic_bisect` | Binary-search the commit where a structural predicate flipped — without running the code |
+
+**LSP**
+
+| Tool | Description |
+|---|---|
+| `hover` / `definition` / `lsp_references` | Language-server queries at a source position |
+| `diagnostics` | Compile errors/warnings (`format=json` for structured `{code, source, severity, ...}`) |
+
+**Application**
+
+| Tool | Description |
+|---|---|
 | `apply` | Write pending changes to disk (with backup) |
 | `undo` | Revert the last apply from backups |
-
-Every transform tool returns a diff preview. Call `apply` to write
-changes. Call `undo` to revert.
+| `get_agent_prompt` | Return the agent guide |
 
 ## Supported languages
 
