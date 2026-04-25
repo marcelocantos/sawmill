@@ -219,6 +219,8 @@ func (h *Handler) Call(name string, args map[string]any) (string, bool, error) {
 		return h.handleMigratePattern(args)
 	case "transform_multi_root":
 		return h.handleTransformMultiRoot(args)
+	case "apply_multi_root_pr":
+		return h.handleApplyMultiRootPR(args)
 	default:
 		return "", false, fmt.Errorf("unknown tool: %s", name)
 	}
@@ -1064,6 +1066,35 @@ func Definitions() []mcpgo.Tool {
 			),
 			mcpgo.WithBoolean("dry_run",
 				mcpgo.Description("If true, report what would be applied without modifying any files. Default: false"),
+			),
+		),
+
+		// apply_multi_root_pr
+		mcpgo.NewTool("apply_multi_root_pr",
+			mcpgo.WithDescription(`Create per-repo feature branches, commit diffs, push to origin, and open GitHub PRs in a single call. Accepts a list of {root, diff} bundles (typically the output of transform_multi_root) plus PR metadata. Per-repo errors do not abort siblings — partial success is reported in each bundle's "error" field.
+
+Auth: shells out to "gh pr create" — requires "gh auth login" to have been run. Git operations use the "git" CLI and rely on the user's configured credential helper / SSH agent.
+
+Idempotency: if a branch already exists, the diff is committed on top of it. If a PR already exists for the head branch, its URL is returned instead of creating a duplicate.
+
+Templates: branch_template, title_template, body_template, and commit_message support {root} (absolute path) and {repo} (basename) placeholders.`),
+			mcpgo.WithString("bundles",
+				mcpgo.Required(),
+				mcpgo.Description(`JSON array of {root, diff} objects. "root" is the absolute path to the repo working tree; "diff" is a unified diff string (e.g. from transform_multi_root's diffs array, joined with "\n").`),
+			),
+			mcpgo.WithString("branch_template",
+				mcpgo.Required(),
+				mcpgo.Description(`Template for the feature branch name, e.g. "sawmill/rename-{repo}". Supports {root} and {repo} placeholders.`),
+			),
+			mcpgo.WithString("title_template",
+				mcpgo.Required(),
+				mcpgo.Description(`PR title template, e.g. "chore({repo}): rename Foo to Bar". Supports {root} and {repo}.`),
+			),
+			mcpgo.WithString("body_template",
+				mcpgo.Description(`PR body template. Supports {root} and {repo}. May be empty.`),
+			),
+			mcpgo.WithString("commit_message",
+				mcpgo.Description(`Commit message template. Defaults to "Apply sawmill multi-root transform". Supports {root} and {repo}.`),
 			),
 		),
 
