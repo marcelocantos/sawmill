@@ -9,16 +9,14 @@ import (
 	"path/filepath"
 	"strings"
 
-	tree_sitter "github.com/tree-sitter/go-tree-sitter"
-
-	tree_sitter_python "github.com/tree-sitter/tree-sitter-python/bindings/go"
+	tree_sitter "github.com/marcelocantos/sawmill/tscompat"
 )
 
 // PythonAdapter implements LanguageAdapter for Python source files.
 type PythonAdapter struct{ baseAdapter }
 
 func (a *PythonAdapter) Language() *tree_sitter.Language {
-	return tree_sitter.NewLanguage(tree_sitter_python.Language())
+	return tree_sitter.PythonLanguage()
 }
 
 func (a *PythonAdapter) Extensions() []string { return []string{"py", "pyi"} }

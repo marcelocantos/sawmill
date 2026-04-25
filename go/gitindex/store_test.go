@@ -6,8 +6,7 @@ package gitindex_test
 import (
 	"testing"
 
-	tree_sitter "github.com/tree-sitter/go-tree-sitter"
-	tree_sitter_go "github.com/tree-sitter/tree-sitter-go/bindings/go"
+	tree_sitter "github.com/marcelocantos/sawmill/tscompat"
 
 	"github.com/marcelocantos/sawmill/gitindex"
 )
@@ -21,7 +20,7 @@ func parseGo(t *testing.T, src []byte) *tree_sitter.Tree {
 	t.Helper()
 	parser := tree_sitter.NewParser()
 	t.Cleanup(func() { parser.Close() })
-	if err := parser.SetLanguage(tree_sitter.NewLanguage(tree_sitter_go.Language())); err != nil {
+	if err := parser.SetLanguage(tree_sitter.GoLanguage()); err != nil {
 		t.Fatalf("SetLanguage: %v", err)
 	}
 	tree := parser.Parse(src, nil)

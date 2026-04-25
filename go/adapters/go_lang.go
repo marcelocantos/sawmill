@@ -9,16 +9,14 @@ import (
 	"path/filepath"
 	"strings"
 
-	tree_sitter "github.com/tree-sitter/go-tree-sitter"
-
-	tree_sitter_go "github.com/tree-sitter/tree-sitter-go/bindings/go"
+	tree_sitter "github.com/marcelocantos/sawmill/tscompat"
 )
 
 // GoAdapter implements LanguageAdapter for Go source files.
 type GoAdapter struct{ baseAdapter }
 
 func (a *GoAdapter) Language() *tree_sitter.Language {
-	return tree_sitter.NewLanguage(tree_sitter_go.Language())
+	return tree_sitter.GoLanguage()
 }
 
 func (a *GoAdapter) Extensions() []string { return []string{"go"} }

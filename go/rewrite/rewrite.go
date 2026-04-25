@@ -13,7 +13,7 @@ import (
 	"strings"
 
 	"github.com/pmezard/go-difflib/difflib"
-	tree_sitter "github.com/tree-sitter/go-tree-sitter"
+	tree_sitter "github.com/marcelocantos/sawmill/tscompat"
 
 	"github.com/marcelocantos/sawmill/adapters"
 )
@@ -78,8 +78,8 @@ func RenameInFile(
 				text := source[node.StartByte():node.EndByte()]
 				if string(text) == from {
 					edits = append(edits, Edit{
-						Start:       node.StartByte(),
-						End:         node.EndByte(),
+						Start:       uint(node.StartByte()),
+						End:         uint(node.EndByte()),
 						Replacement: to,
 					})
 				}
