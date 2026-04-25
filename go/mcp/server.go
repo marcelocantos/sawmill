@@ -217,6 +217,8 @@ func (h *Handler) Call(name string, args map[string]any) (string, bool, error) {
 		return h.handleExtractToEnv(args)
 	case "migrate_pattern":
 		return h.handleMigratePattern(args)
+	case "transform_multi_root":
+		return h.handleTransformMultiRoot(args)
 	default:
 		return "", false, fmt.Errorf("unknown tool: %s", name)
 	}
@@ -401,6 +403,22 @@ func Definitions() []mcpgo.Tool {
 			mcpgo.WithString("transforms",
 				mcpgo.Required(),
 				mcpgo.Description("JSON array of transform specifications"),
+			),
+		),
+
+		// transform_multi_root
+		mcpgo.NewTool("transform_multi_root",
+			mcpgo.WithDescription("Apply an ordered list of transforms across multiple project roots in a single call. Each root is loaded or reused from the shared model pool. Returns per-root diff bundles keyed by absolute root path. Does not modify the session's pending state — use apply/undo on individual parse sessions to write changes."),
+			mcpgo.WithString("roots",
+				mcpgo.Required(),
+				mcpgo.Description("JSON array of absolute project root paths"),
+			),
+			mcpgo.WithString("transforms",
+				mcpgo.Required(),
+				mcpgo.Description("JSON array of transform specifications (same shape as transform_batch)"),
+			),
+			mcpgo.WithBoolean("format",
+				mcpgo.Description("Run the language formatter after all transforms"),
 			),
 		),
 
