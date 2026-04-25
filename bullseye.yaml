@@ -1,4 +1,4 @@
-schema_version: 1
+schema_version: 3
 targets:
   T1:
     name: Intra-language pattern equivalences
@@ -27,7 +27,7 @@ targets:
     status: achieved
     value: 0.0
     cost: 0.0
-    observable: true
+    showcase: true
     acceptance:
     - teach_equivalence MCP tool accepts a name, two pattern strings (left/right), an optional description, and an optional preferred direction (left, right, or none)
     - Equivalences are persisted in a new SQLite table alongside recipes/conventions/invariants
@@ -48,7 +48,7 @@ targets:
     status: achieved
     value: 0.0
     cost: 0.0
-    observable: true
+    showcase: true
     acceptance:
     - apply_equivalence MCP tool accepts an equivalence name and a direction (left_to_right or right_to_left)
     - All matches across the codebase are rewritten in the chosen direction
@@ -69,7 +69,7 @@ targets:
     status: achieved
     value: 0.0
     cost: 0.0
-    observable: true
+    showcase: true
     acceptance:
     - check_equivalences MCP tool scans the codebase for matches of any equivalence's non-preferred side
     - Each violation reports file, location (line/column), the matched pattern, and the suggested rewrite
@@ -89,7 +89,7 @@ targets:
     status: achieved
     value: 0.0
     cost: 0.0
-    observable: true
+    showcase: true
     acceptance:
     - Equivalence storage tracks pairs as a graph of patterns, computing the transitive closure on demand
     - apply_equivalence and check_equivalences honour derived equivalences (not only the directly-taught pairs)
@@ -157,7 +157,7 @@ targets:
     status: achieved
     value: 13.0
     cost: 8.0
-    observable: true
+    showcase: true
     acceptance:
     - git_log returns structured commit metadata (SHA, author, date, message, files changed, symbols changed) with filtering and pagination
     - git_diff_summary returns added/removed/modified symbols per file between any two refs, not raw hunks
@@ -349,7 +349,7 @@ targets:
     status: achieved
     value: 0.0
     cost: 0.0
-    observable: true
+    showcase: true
     acceptance:
     - '`check_conventions` supports a structured-output mode in which each violation is an object with `source`, `file`, `line`, optional `column`, `severity`, `rule`, `message`, and optional `snippet`/`suggested_fix` — not just a free-form string constructed by the convention''s JS program'
     - The convention DSL allows a program to return either `string[]` (current behaviour, preserved) or an array of structured violation objects; sawmill normalises both into the same structured output shape
@@ -392,7 +392,7 @@ targets:
     status: achieved
     value: 0.0
     cost: 0.0
-    observable: true
+    showcase: true
     acceptance:
     - A single transform_multi_root invocation accepts N≥2 project roots and an action spec (no fixed upper bound; behaviour at N=2 must generalise unchanged to larger N)
     - Each root produces an independently-applicable diff preview (one diff bundle per repo)
@@ -408,10 +408,11 @@ targets:
     achieved: 2026-04-25
   T26:
     name: Sawmill parses an embedded DSL inside a host-language string literal via a Tree-sitter injection grammar and exposes its parse tree through MCP
-    status: identified
+    status: set_aside
     value: 0.0
     cost: 0.0
-    observable: true
+    showcase: true
+    set_aside_reason: parked — was the observable checkpoint for 🎯T7; parked alongside it. The injection-grammar approach was the slice we considered most demonstrable, but the SQL-in-Go viability assessment showed the demonstrable slice (single literal, no concatenation, no identity binding) is too narrow to anchor T7's vision while the meaningful slice is open-ended. Revisit if T7 is unparked under a tighter framing.
     acceptance:
     - At least one host/embedded pair works end-to-end (e.g. SQL inside a Go raw string literal, or regex inside a Python string)
     - A query MCP tool returns nodes from the embedded grammar (not just the host string node)
@@ -456,7 +457,7 @@ targets:
     status: achieved
     value: 0.0
     cost: 0.0
-    observable: true
+    showcase: true
     acceptance:
     - teach_fix accepts a name, a diagnostic regex (with named captures available to the fix action), a fix action (recipe reference with parameter bindings or an inline transform spec), a confidence annotation ("auto" or "suggest"), and an optional description
     - Fix entries are persisted in a new fixes SQLite table alongside recipes/conventions/invariants/equivalences
@@ -478,7 +479,7 @@ targets:
     status: achieved
     value: 0.0
     cost: 0.0
-    observable: true
+    showcase: true
     acceptance:
     - auto_fix MCP tool accepts a file (or path filter) and an optional iteration limit (default 10)
     - 'On each iteration: pull diagnostics, match each against the fix catalogue (regex → captures → fix action), apply entries with confidence=auto, return entries with confidence=suggest as recommendations'
@@ -501,7 +502,7 @@ targets:
     status: achieved
     value: 0.0
     cost: 0.0
-    observable: true
+    showcase: true
     acceptance:
     - lspclient.Diagnostic gains a Code field (LSP diagnostic code, e.g. gopls's UnusedImport or TS's TS2304) and a Source field (gopls/tsserver/...)
     - diagnostics MCP tool accepts format="text"|"json" mirroring 🎯T24's check tools
@@ -522,7 +523,7 @@ targets:
     status: achieved
     value: 0.0
     cost: 0.0
-    observable: true
+    showcase: true
     acceptance:
     - seed_fixes MCP tool installs a curated set of fix entries for common Go errors (unused import, missing field on struct literal, type mismatch in return) and TS errors (TS2304 'cannot find name', TS6133 'declared but never used', TS2532 'object is possibly undefined')
     - Each seed entry has confidence=auto for unambiguous fixes (e.g. add missing import) and confidence=suggest for ambiguous ones (e.g. fix possibly-undefined)
@@ -543,7 +544,7 @@ targets:
     status: achieved
     value: 0.0
     cost: 0.0
-    observable: true
+    showcase: true
     acceptance:
     - learn_from_observation MCP tool accepts a pre-state diagnostic snapshot (from diagnostics format=json) and a post-state diff (a recently-applied changeset)
     - Diagnostics that disappear in the post-state are paired with the changeset edits that overlap their location; sawmill returns candidate fix entries (regex over the diagnostic message, action = recipe ref or inline edit)
@@ -603,7 +604,7 @@ targets:
     status: achieved
     value: 20.0
     cost: 20.0
-    observable: true
+    showcase: true
     acceptance:
     - Commits are lazily parsed with Tree-sitter and symbol tables stored in SQLite keyed by commit SHA
     - Blob-SHA deduplication avoids re-parsing unchanged files across commits
@@ -630,9 +631,10 @@ targets:
     achieved: 2026-04-19
   T7:
     name: Sawmill understands semantic identity across representations — the same value in code, config, schema, and embedded DSLs is recognised as one entity
-    status: identified
+    status: set_aside
     value: 13.0
     cost: 20.0
+    set_aside_reason: 'parked — viability assessment concluded that reliable cross-representation identity (SQL-in-Go was the canonical case) requires solving open-ended detection problems: heuristic call-site sniffing breaks on wrappers/builders, string concatenation kills literal-only parses, and identity binding to schemas needs a full SQL semantic model rather than just an injection grammar. The bounded slice that''s actually demonstrable is too narrow to anchor T7''s broader vision; the meaningful slice is quarters of work. Revisit if a tighter framing emerges (e.g. file-boundary `go:embed` cross-references) or if upstream tree-sitter ecosystem makes inline injection cheap.'
     acceptance:
     - Sawmill can parse embedded DSLs within string literals (SQL in Go, regex in Python, GraphQL in TS tagged templates) using Tree-sitter injection grammars
     - 'Cross-file semantic identity: a timeout value in Go code, the same key in YAML config, and a DEFAULT in a SQL migration are linked as the same entity'
@@ -677,7 +679,7 @@ targets:
     status: achieved
     value: 0.0
     cost: 0.0
-    observable: true
+    showcase: true
     acceptance:
     - promote_constant MCP tool accepts a literal value (string or number), a constant name, an optional file/path filter, and an optional package/module placement
     - All occurrences of the literal in the targeted scope are replaced with a reference to the new constant
@@ -698,7 +700,7 @@ targets:
     status: achieved
     value: 0.0
     cost: 0.0
-    observable: true
+    showcase: true
     acceptance:
     - extract_to_env MCP tool accepts a literal value, an env-var name, and an optional file filter
     - 'Replaces all occurrences of the literal with an environment-variable read appropriate to the language (Go: os.Getenv; Python: os.environ.get; TS: process.env; C++: std::getenv)'
@@ -719,7 +721,7 @@ targets:
     status: achieved
     value: 0.0
     cost: 0.0
-    observable: true
+    showcase: true
     acceptance:
     - migrate_pattern MCP tool accepts an old pattern, a new pattern (both using the $placeholder DSL), and an optional file filter
     - Identifies every structural occurrence of the old pattern in the targeted scope and rewrites to the new pattern with captured placeholders bound
