@@ -558,6 +558,48 @@ targets:
     - feature
     origin: Discussion comparing sawmill to Sourcegraph — identified cross-repo as a natural extension
     discovered: 2026-04-10
+  T5.1:
+    name: Multi-root transform application — a single MCP call applies a transform across N project roots and returns per-root diff previews
+    status: achieved
+    value: 0.0
+    cost: 0.0
+    observable: true
+    acceptance:
+    - A new MCP tool (e.g. transform_multi_root) accepts a list of project roots and a transform recipe (or batch spec)
+    - For each root the daemon loads or reuses its CodebaseModel via modelpool — no per-root re-parse on warm models
+    - Per-root diffs are returned in a structured response keyed by absolute root path
+    - 'Apply/undo is per-root: applying to one root must not affect pending changes in another'
+    - Demonstrated end-to-end via a recipe applied to two side-by-side toy repos with diff preview
+    context: Foundation for cross-repo orchestration. The daemon already manages per-root CodebaseModels via modelpool.Pool; this surfaces that capability as a coordinated tool call. PR lifecycle (T5.2) builds directly on these per-root diffs. Observable because the human can run the tool against two repos and inspect the per-root diff bundle.
+    depends_on:
+    - T2
+    tags:
+    - multi-repo
+    - T5
+    origin: manual
+    discovered: 2026-04-24
+    achieved: 2026-04-25
+  T5.2:
+    name: Cross-repo branch and PR lifecycle — sawmill creates branches, commits, and PRs across multiple repos as a coordinated batch
+    status: identified
+    value: 0.0
+    cost: 0.0
+    observable: true
+    acceptance:
+    - MCP tool creates a branch in each target repo with a caller-supplied (or generated) shared name
+    - Per-repo commits encapsulate the diffs produced by T5.1 with a shared commit message template
+    - PRs are opened per-repo via gh or the GitHub API with a shared title/body template
+    - 'Response returns a per-repo record: branch name, commit SHA, PR URL, and CI status link'
+    - Failure in one repo does not roll back successful PRs in others — the tool reports partial success cleanly
+    context: 'Layered on T5.1: once a transform has produced per-root diffs, this layer materialises them as branches, commits, and PRs across the cohort. Brings sawmill into Sourcegraph-Batch-Changes territory but with native AST awareness. Observable because the human can see the resulting PR URLs.'
+    depends_on:
+    - T5.1
+    tags:
+    - multi-repo
+    - pr-lifecycle
+    - T5
+    origin: manual
+    discovered: 2026-04-24
   T6:
     name: Git history is semantically indexed — commits are parsed with Tree-sitter and symbol changes are queryable via MCP tools
     status: achieved
@@ -607,6 +649,69 @@ targets:
     - detection
     origin: design discussion — cross-representation awareness, inspired by Real macro invocation architecture
     discovered: 2026-04-10
+  T7.0:
+    name: Pure-Go tree-sitter grammars are available for SQL, regex, and GraphQL — no CGo required
+    status: identified
+    value: 0.0
+    cost: 0.0
+    observable: true
+    acceptance:
+    - A pure-Go tree-sitter binding for SQL (or SQLite) is identified, vendored, and parses a sample SQL string in a unit test
+    - A pure-Go tree-sitter binding for regex (PCRE-ish or POSIX) is identified, vendored, and parses a sample regex in a unit test
+    - A pure-Go tree-sitter binding for GraphQL is identified, vendored, and parses a sample GraphQL document in a unit test
+    - All three integrate with the existing pure-Go tree-sitter runtime used by sawmill (no CGo, no external library link)
+    - If a pure-Go binding does not exist for one or more grammars, the gap is documented in docs/design.md with the alternatives considered (port from C, accept CGo carve-out, drop the language) and the chosen path is proposed
+    context: 🎯T7.1 (injection grammars) is blocked by grammar availability. The earlier T7.1 attempt vendored CGo grammar sources, violating the project's pure-Go invariant. This target gates T7.1 by requiring the grammar question to be settled first — either pure-Go bindings exist and are integrated, or the project formally decides to carve out a CGo exception and documents why. Observable because the human can see three passing parse tests (or a written design decision).
+    tags:
+    - foundation
+    - pure-go
+    - embedded-dsl
+    - T7
+    origin: manual
+    discovered: 2026-04-25
+  T7.1:
+    name: Tree-sitter injection grammars — embedded DSLs in string literals are parsed as nested CSTs
+    status: identified
+    value: 0.0
+    cost: 0.0
+    observable: true
+    acceptance:
+    - SQL string literals inside Go source parse as SQL CSTs (via tree-sitter-sql injection)
+    - Regex string literals inside Python source parse as regex CSTs
+    - GraphQL strings inside TS tagged templates (gql`...`) parse as GraphQL CSTs
+    - find_symbol and query MCP tools traverse into injected CSTs and can match nodes inside them
+    - An injection registry lets new host-language/embedded-language pairs be added without touching the core engine
+    context: Foundation for the rest of T7 and for extract_dsl (T8.5). Without injection, embedded DSLs are opaque strings; with it, they become first-class subtrees the symbol store and transform engine can reason about. Observable because the human can run a query against an injected CST and see the matched nodes.
+    depends_on:
+    - T4
+    - T7.0
+    tags:
+    - cross-representation
+    - embedded-dsl
+    - T7
+    origin: manual
+    discovered: 2026-04-24
+  T7.2:
+    name: Cross-file value index — the same semantic value across code, config, and SQL is linked as one entity in the symbol store
+    status: identified
+    value: 0.0
+    cost: 0.0
+    observable: true
+    acceptance:
+    - SQLite store gains a value_identity (or equivalent) table linking nodes by canonical normalised value
+    - Indexer links a Go const, the matching key in YAML/JSON config, and a matching SQL DEFAULT as one entity
+    - find_references MCP tool surfaces all linked sites across representations in a single response
+    - Convention drift detection flags cases where a linked value has diverged across representations
+    - Demonstrated on a sample repo containing a Go const, a YAML config entry, and a SQL DEFAULT for the same logical value
+    context: Builds on T7.1 injection grammars (need to see inside string literals to link DSL values) and the existing SQLite symbol store. Enables align_representations (T8.6) and convention drift detection. Observable via find_references returning the cross-representation cluster.
+    depends_on:
+    - T7.1
+    tags:
+    - cross-representation
+    - semantic
+    - T7
+    origin: manual
+    discovered: 2026-04-24
   T8:
     name: Sawmill actively transforms content between representations — extract literals to config, inline config to code, extract embedded DSLs to files, sync schemas with implementations
     status: identified
@@ -692,6 +797,89 @@ targets:
     origin: manual
     discovered: 2026-04-19
     achieved: 2026-04-19
+  T8.4:
+    name: extract_to_config — code literal becomes a config-file value with loader rewriting
+    status: identified
+    value: 0.0
+    cost: 0.0
+    observable: true
+    acceptance:
+    - extract_to_config MCP tool accepts a literal value, a config key, an optional file/path filter, and an optional config file path
+    - Replaces all occurrences of the literal with a config-read appropriate to the host language
+    - Creates or updates the config file (YAML or JSON) with the key + literal value
+    - Generates loader boilerplate if not already present at a sensible location
+    - Produces a per-file unified diff and respects the standard apply/undo flow
+    - 'Idempotent: running again with the same key + value detects the existing config entry and reuses it'
+    context: One of the seven transforms in 🎯T8's acceptance. Standalone — doesn't require 🎯T7 cross-rep identity work. Mirrors the shape of T8.1 promote_constant and T8.2 extract_to_env.
+    depends_on:
+    - T16
+    tags:
+    - transform
+    - T8
+    origin: manual
+    discovered: 2026-04-24
+  T8.5:
+    name: extract_dsl — embedded DSL string literals (SQL/regex/GraphQL) are extracted to dedicated files with idiomatic loader
+    status: identified
+    value: 0.0
+    cost: 0.0
+    observable: true
+    acceptance:
+    - extract_dsl MCP tool accepts a DSL kind (sql/regex/graphql), an optional file filter, and an optional output directory
+    - SQL literals become .sql files referenced via go:embed (Go) or the language-idiomatic equivalent
+    - Regex literals become compiled patterns at module/package level (re.compile in Python, regexp.MustCompile in Go, etc.)
+    - GraphQL literals become .graphql files with an idiomatic loader
+    - Per-file unified diff with apply/undo, identical to other T8 transforms
+    context: One of the seven 🎯T8 transforms. Benefits from 🎯T7.1 injection grammars (cleaner DSL identification) but can operate on host-language string literals as a fallback. Inverse of T8.7 internalise_dependency.
+    depends_on:
+    - T16
+    tags:
+    - transform
+    - embedded-dsl
+    - T8
+    origin: manual
+    discovered: 2026-04-24
+  T8.6:
+    name: align_representations — schemas (proto/JSON Schema) and implementations (Go struct/TS interface) are kept in sync
+    status: identified
+    value: 0.0
+    cost: 0.0
+    observable: true
+    acceptance:
+    - align_representations MCP tool accepts a schema file and an implementation file (or pair list)
+    - Reports missing fields in either direction with field-level diff
+    - Generates code to add the missing fields on either side with appropriate defaults and idiomatic placement
+    - Per-file unified diff with apply/undo
+    - Demonstrated on a protobuf↔Go-struct pair and a JSON-Schema↔TS-interface pair
+    context: One of the seven 🎯T8 transforms. Depends on 🎯T7.2 cross-file value index to know schema↔implementation pairings rather than asking the user every time. The deepest of the T8 transforms — closes the loop with T7.
+    depends_on:
+    - T7.2
+    tags:
+    - transform
+    - cross-representation
+    - T8
+    origin: manual
+    discovered: 2026-04-24
+  T8.7:
+    name: internalise_dependency — config values used only once are inlined back into code; single-use DSL files are collapsed to literals
+    status: identified
+    value: 0.0
+    cost: 0.0
+    observable: true
+    acceptance:
+    - internalise_dependency MCP tool accepts a config key or a DSL file path
+    - If the value is referenced at exactly one site, the literal is inlined and the config entry / file is removed
+    - If referenced at multiple sites, the tool reports the conflict and refuses without writing
+    - Per-file unified diff with apply/undo, including the deletion of the source config entry / DSL file
+    - 'Idempotent: running on an already-inlined entity is a no-op with a clear status message'
+    context: One of the seven 🎯T8 transforms. Inverse of T8.4 extract_to_config and T8.5 extract_dsl. Prevents the codebase from drifting toward over-extraction by collapsing single-use indirections.
+    depends_on:
+    - T16
+    tags:
+    - transform
+    - T8
+    origin: manual
+    discovered: 2026-04-24
   T9:
     name: Git objects are accessible from Go — sawmill can read commits, trees, and blobs from the git repo without shelling out
     status: achieved
