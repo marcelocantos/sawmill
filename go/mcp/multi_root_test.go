@@ -58,7 +58,7 @@ func TestTransformMultiRootTwoRoots(t *testing.T) {
 			RawQuery: `(string) @s`,
 			Capture:  "s",
 			Action:   "replace",
-			Code:     strPtr(`"world"`),
+			Code:     new(`"world"`),
 		},
 	})
 
@@ -155,7 +155,7 @@ func TestTransformMultiRootPendingIsolation(t *testing.T) {
 			RawQuery: `(string) @s`,
 			Capture:  "s",
 			Action:   "replace",
-			Code:     strPtr(`"world"`),
+			Code:     new(`"world"`),
 		},
 	})
 	_, isErr2, err2 := h.handleTransformMultiRoot(map[string]any{
@@ -227,5 +227,101 @@ func TestTransformMultiRootBadRoot(t *testing.T) {
 	}
 }
 
-// strPtr is a test helper returning a pointer to s.
-func strPtr(s string) *string { return &s }
+// TestTransformMultiRootThreeRoots verifies N>2 scaling: two good roots and one
+// bad root in a single call. Both good roots produce independent diff bundles;
+// the bad root records a per-root error without aborting the other two.
+func TestTransformMultiRootThreeRoots(t *testing.T) {
+	root1 := makeRoot(t, map[string]string{
+		"alpha.py": "msg = \"hello\"\n",
+	})
+	root2 := makeRoot(t, map[string]string{
+		"beta.py":  "greeting = \"hello\"\n",
+		"gamma.py": "farewell = \"bye\"\n",
+	})
+	badRoot := "/nonexistent/does-not-exist-for-t25"
+
+	h := NewHandlerWithLoader(loaderForDirs())
+
+	rootsJSON, _ := json.Marshal([]string{root1, root2, badRoot})
+	transformsJSON, _ := json.Marshal([]transformSpec{
+		{
+			RawQuery: `(string) @s`,
+			Capture:  "s",
+			Action:   "replace",
+			Code:     new(`"world"`),
+		},
+	})
+
+	text, isErr, err := h.handleTransformMultiRoot(map[string]any{
+		"roots":      string(rootsJSON),
+		"transforms": string(transformsJSON),
+	})
+	if err != nil {
+		t.Fatalf("unexpected system error: %v", err)
+	}
+	if isErr {
+		t.Fatalf("unexpected tool error: %s", text)
+	}
+
+	jsonStart := strings.Index(text, "{")
+	if jsonStart < 0 {
+		t.Fatalf("no JSON in output: %s", text)
+	}
+	var results map[string]RootDiffBundle
+	if err := json.Unmarshal([]byte(text[jsonStart:]), &results); err != nil {
+		t.Fatalf("unmarshalling results: %v", err)
+	}
+	if len(results) != 3 {
+		t.Fatalf("expected 3 entries in results, got %d", len(results))
+	}
+
+	b1, ok := results[root1]
+	if !ok {
+		t.Fatalf("root1 missing from results")
+	}
+	if b1.Error != "" {
+		t.Errorf("root1 unexpected error: %s", b1.Error)
+	}
+	if b1.FileCount != 1 {
+		t.Errorf("root1 FileCount: want 1, got %d", b1.FileCount)
+	}
+	if len(b1.Diffs) != 1 {
+		t.Errorf("root1 Diffs: want 1, got %d", len(b1.Diffs))
+	}
+
+	b2, ok := results[root2]
+	if !ok {
+		t.Fatalf("root2 missing from results")
+	}
+	if b2.Error != "" {
+		t.Errorf("root2 unexpected error: %s", b2.Error)
+	}
+	if b2.FileCount != 2 {
+		t.Errorf("root2 FileCount: want 2 (beta.py + gamma.py), got %d", b2.FileCount)
+	}
+	if len(b2.Diffs) != 2 {
+		t.Errorf("root2 Diffs: want 2, got %d", len(b2.Diffs))
+	}
+
+	bad, ok := results[badRoot]
+	if !ok {
+		t.Fatalf("bad root missing from results")
+	}
+	if bad.Error == "" {
+		t.Error("bad root: expected Error field to be set")
+	}
+
+	// Summary line must name all three roots.
+	if !strings.Contains(text, "3 root(s)") {
+		t.Errorf("expected '3 root(s)' in summary, got: %s", text[:min(200, len(text))])
+	}
+	// At least 3 files changed (alpha.py + beta.py + gamma.py).
+	if !strings.Contains(text, "3 file(s)") {
+		t.Errorf("expected '3 file(s)' in summary, got: %s", text[:min(200, len(text))])
+	}
+	// Error count must appear.
+	if !strings.Contains(text, "1 root(s) with errors") {
+		t.Errorf("expected '1 root(s) with errors' in summary, got: %s", text[:min(200, len(text))])
+	}
+}
+
