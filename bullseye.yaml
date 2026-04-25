@@ -389,7 +389,7 @@ targets:
     achieved: 2026-04-19
   T25:
     name: Sawmill performs a coordinated transform across N project roots and produces per-repo diff previews via a single MCP call
-    status: identified
+    status: achieved
     value: 0.0
     cost: 0.0
     observable: true
@@ -405,6 +405,7 @@ targets:
     - T5
     origin: forked from 🎯T5 to introduce an observable checkpoint for convergence ranking
     discovered: 2026-04-25
+    achieved: 2026-04-25
   T26:
     name: Sawmill parses an embedded DSL inside a host-language string literal via a Tree-sitter injection grammar and exposes its parse tree through MCP
     status: identified
