@@ -428,7 +428,7 @@ targets:
     discovered: 2026-04-25
   T27:
     name: Sawmill applies a coordinated transform across N repos and opens a PR per repo via a single MCP call
-    status: identified
+    status: achieved
     value: 0.0
     cost: 0.0
     acceptance:
@@ -445,6 +445,7 @@ targets:
     - T5
     origin: forked from 🎯T5 to introduce an observable checkpoint for the remaining PR-lifecycle scope after 🎯T25 retired
     discovered: 2026-04-26
+    achieved: 2026-04-26
   T3:
     name: Diagnostic-driven automatic fixes
     status: achieved
@@ -601,7 +602,7 @@ targets:
     achieved: 2026-04-10
   T5:
     name: Sawmill supports coordinated transforms across multiple repositories
-    status: identified
+    status: achieved
     value: 8.0
     cost: 13.0
     acceptance:
@@ -619,6 +620,7 @@ targets:
     - feature
     origin: Discussion comparing sawmill to Sourcegraph — identified cross-repo as a natural extension
     discovered: 2026-04-10
+    achieved: 2026-04-26
   T6:
     name: Git history is semantically indexed — commits are parsed with Tree-sitter and symbol changes are queryable via MCP tools
     status: achieved
