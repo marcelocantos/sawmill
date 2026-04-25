@@ -387,6 +387,43 @@ targets:
     origin: forked-from bullseye 🎯T1.5 triage 2026-04-18 — surfaced as the upstream prerequisite that makes T1.5 actionable
     discovered: 2026-04-19
     achieved: 2026-04-19
+  T25:
+    name: Sawmill performs a coordinated transform across two project roots and produces per-repo diff previews via a single MCP call
+    status: identified
+    value: 0.0
+    cost: 0.0
+    observable: true
+    acceptance:
+    - A single transform_multi_root invocation accepts ≥2 project roots and an action spec
+    - Each root produces an independently-applicable diff preview (one diff bundle per repo)
+    - An end-to-end demo across two real repositories is recorded in docs (script or transcript) so a reader can reproduce it
+    - Per-repo errors don't abort sibling repos — partial success is reported, not silent failure
+    context: Observable checkpoint for 🎯T5 — gives the frontier a near-term, demonstrable milestone (a runnable two-repo demo) before tackling the larger PR-lifecycle scope. transform_multi_root already exists as scaffolding (🎯T5.1); this target proves it works end-to-end with a recorded demo.
+    tags:
+    - multi-repo
+    - demo
+    - T5
+    origin: forked from 🎯T5 to introduce an observable checkpoint for convergence ranking
+    discovered: 2026-04-25
+  T26:
+    name: Sawmill parses an embedded DSL inside a host-language string literal via a Tree-sitter injection grammar and exposes its parse tree through MCP
+    status: identified
+    value: 0.0
+    cost: 0.0
+    observable: true
+    acceptance:
+    - At least one host/embedded pair works end-to-end (e.g. SQL inside a Go raw string literal, or regex inside a Python string)
+    - A query MCP tool returns nodes from the embedded grammar (not just the host string node)
+    - find_references / query operates over the embedded tree — e.g. references to a SQL column name resolve inside Go code
+    - A short demo (script or test) exercises the embedded path on a real fixture and is committed to the repo
+    context: Observable checkpoint for 🎯T7 — the broader semantic-identity vision is multi-quarter; this target picks the most demonstrable slice (embedded-DSL parsing) and pins it as a runnable milestone. Establishes the injection-grammar plumbing that the rest of 🎯T7 (cross-file identity, drift detection) will build on.
+    tags:
+    - cross-representation
+    - embedded-dsl
+    - tree-sitter
+    - T7
+    origin: forked from 🎯T7 to introduce an observable checkpoint for convergence ranking
+    discovered: 2026-04-25
   T3:
     name: Diagnostic-driven automatic fixes
     status: achieved
@@ -552,6 +589,8 @@ targets:
     - Cross-repo batch operations produce per-repo diffs/previews
     - 'PR lifecycle support: create branches and PRs across target repos'
     context: 'Sawmill''s architecture (global daemon, per-project models, MCP interface) is naturally extensible to multi-repo workflows. This would cover the same ground as Sourcegraph Batch Changes but with native AST-level transformation intelligence built in, rather than BYO container scripts. The daemon already manages multiple project roots — the gap is orchestration: repo discovery, coordinated cross-repo transforms, and PR lifecycle management.'
+    depends_on:
+    - T25
     tags:
     - multi-repo
     - orchestration
@@ -600,6 +639,8 @@ targets:
     - 'Convention drift detection: track when extracted values regress to hardcoded literals'
     - 'Interface-implementation tracking: detect when a proto/OpenAPI schema adds a field but the Go implementation doesn''t use it yet'
     context: 'Real codebases express the same semantic content in multiple formats: Go structs mirror protobuf schemas, config YAML duplicates code defaults, SQL migrations encode the same constraints as validation logic. Today these connections are invisible to tools — git sees unrelated text changes across files. Inspired by the Real language design discussion about ''the end of all strings'' — every structured value is the same entity regardless of its syntactic representation. Sawmill''s multi-language Tree-sitter parsing and SQLite store are uniquely positioned to track these cross-representation relationships. Builds on git semantic indexing to detect migrations and drift over time.'
+    depends_on:
+    - T26
     tags:
     - cross-representation
     - semantic
@@ -609,7 +650,7 @@ targets:
     discovered: 2026-04-10
   T8:
     name: Sawmill actively transforms content between representations — extract literals to config, inline config to code, extract embedded DSLs to files, sync schemas with implementations
-    status: identified
+    status: achieved
     value: 13.0
     cost: 20.0
     acceptance:
@@ -629,6 +670,7 @@ targets:
     - git-workflow
     origin: design discussion — cross-representation transforms and git workflow automation
     discovered: 2026-04-10
+    achieved: 2026-04-25
   T8.1:
     name: promote_constant — magic literals become named constants in idiomatic per-language form
     status: achieved
