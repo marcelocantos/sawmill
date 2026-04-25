@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	tree_sitter "github.com/tree-sitter/go-tree-sitter"
+	tree_sitter "github.com/marcelocantos/sawmill/tscompat"
 
 	"github.com/marcelocantos/sawmill/adapters"
 	"github.com/marcelocantos/sawmill/rewrite"

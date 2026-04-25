@@ -9,16 +9,14 @@ import (
 	"path/filepath"
 	"strings"
 
-	tree_sitter "github.com/tree-sitter/go-tree-sitter"
-
-	tree_sitter_rust "github.com/tree-sitter/tree-sitter-rust/bindings/go"
+	tree_sitter "github.com/marcelocantos/sawmill/tscompat"
 )
 
 // RustAdapter implements LanguageAdapter for Rust source files.
 type RustAdapter struct{ baseAdapter }
 
 func (a *RustAdapter) Language() *tree_sitter.Language {
-	return tree_sitter.NewLanguage(tree_sitter_rust.Language())
+	return tree_sitter.RustLanguage()
 }
 
 func (a *RustAdapter) Extensions() []string { return []string{"rs"} }

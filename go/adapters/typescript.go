@@ -9,16 +9,14 @@ import (
 	"path/filepath"
 	"strings"
 
-	tree_sitter "github.com/tree-sitter/go-tree-sitter"
-
-	tree_sitter_typescript "github.com/tree-sitter/tree-sitter-typescript/bindings/go"
+	tree_sitter "github.com/marcelocantos/sawmill/tscompat"
 )
 
 // TypeScriptAdapter implements LanguageAdapter for TypeScript source files.
 type TypeScriptAdapter struct{ baseAdapter }
 
 func (a *TypeScriptAdapter) Language() *tree_sitter.Language {
-	return tree_sitter.NewLanguage(tree_sitter_typescript.LanguageTypescript())
+	return tree_sitter.TypescriptLanguage()
 }
 
 func (a *TypeScriptAdapter) Extensions() []string { return []string{"ts", "tsx"} }

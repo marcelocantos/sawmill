@@ -6,7 +6,7 @@ package mcp
 import (
 	"sort"
 
-	tree_sitter "github.com/tree-sitter/go-tree-sitter"
+	tree_sitter "github.com/marcelocantos/sawmill/tscompat"
 
 	"github.com/marcelocantos/sawmill/forest"
 	"github.com/marcelocantos/sawmill/rewrite"
@@ -225,8 +225,8 @@ func walkEquivalence(node *tree_sitter.Node, source []byte, srcPattern *Pattern,
 				*out = append(*out, equivalenceMatch{
 					StartByte: start,
 					EndByte:   end,
-					Line:      pos.Row + 1,
-					Column:    pos.Column + 1,
+					Line:      uint(pos.Row) + 1,
+					Column:    uint(pos.Column) + 1,
 					Original:  text,
 					Rewrite:   rewrite,
 				})

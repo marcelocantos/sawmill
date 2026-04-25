@@ -8,16 +8,14 @@ import (
 	"path/filepath"
 	"strings"
 
-	tree_sitter "github.com/tree-sitter/go-tree-sitter"
-
-	tree_sitter_cpp "github.com/tree-sitter/tree-sitter-cpp/bindings/go"
+	tree_sitter "github.com/marcelocantos/sawmill/tscompat"
 )
 
 // CppAdapter implements LanguageAdapter for C++ source files.
 type CppAdapter struct{ baseAdapter }
 
 func (a *CppAdapter) Language() *tree_sitter.Language {
-	return tree_sitter.NewLanguage(tree_sitter_cpp.Language())
+	return tree_sitter.CppLanguage()
 }
 
 func (a *CppAdapter) Extensions() []string {

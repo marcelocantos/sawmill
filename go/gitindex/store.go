@@ -11,7 +11,7 @@ import (
 	"database/sql"
 	"fmt"
 
-	tree_sitter "github.com/tree-sitter/go-tree-sitter"
+	tree_sitter "github.com/marcelocantos/sawmill/tscompat"
 
 	_ "modernc.org/sqlite" // SQLite driver registration.
 )

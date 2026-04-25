@@ -7,13 +7,8 @@ require (
 	github.com/go-git/go-billy/v5 v5.8.0
 	github.com/go-git/go-git/v5 v5.17.2
 	github.com/mark3labs/mcp-go v0.47.0
+	github.com/odvcencio/gotreesitter v0.15.2
 	github.com/pmezard/go-difflib v1.0.0
-	github.com/tree-sitter/go-tree-sitter v0.25.0
-	github.com/tree-sitter/tree-sitter-cpp v0.23.4
-	github.com/tree-sitter/tree-sitter-go v0.23.4
-	github.com/tree-sitter/tree-sitter-python v0.23.6
-	github.com/tree-sitter/tree-sitter-rust v0.23.2
-	github.com/tree-sitter/tree-sitter-typescript v0.23.2
 	gopkg.in/yaml.v3 v3.0.1
 	modernc.org/quickjs v0.17.2
 	modernc.org/sqlite v1.48.1
@@ -34,7 +29,6 @@ require (
 	github.com/jbenet/go-context v0.0.0-20150711004518-d14ea06fba99 // indirect
 	github.com/kevinburke/ssh_config v1.2.0 // indirect
 	github.com/mattn/go-isatty v0.0.20 // indirect
-	github.com/mattn/go-pointer v0.0.1 // indirect
 	github.com/ncruces/go-strftime v1.0.0 // indirect
 	github.com/pjbgf/sha1cd v0.3.2 // indirect
 	github.com/remyoudompheng/bigfft v0.0.0-20230129092748-24d4a6f8daec // indirect

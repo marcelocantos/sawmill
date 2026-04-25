@@ -3,7 +3,9 @@
 
 package adapters
 
-import tree_sitter "github.com/tree-sitter/go-tree-sitter"
+import (
+	tree_sitter "github.com/marcelocantos/sawmill/tscompat"
+)
 
 // LanguageAdapter maps abstract structural patterns to language-specific
 // Tree-sitter queries and code-generation templates.

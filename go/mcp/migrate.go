@@ -9,7 +9,7 @@ import (
 	"sort"
 	"strings"
 
-	tree_sitter "github.com/tree-sitter/go-tree-sitter"
+	tree_sitter "github.com/marcelocantos/sawmill/tscompat"
 
 	"github.com/marcelocantos/sawmill/forest"
 	"github.com/marcelocantos/sawmill/rewrite"
