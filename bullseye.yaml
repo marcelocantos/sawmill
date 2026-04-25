@@ -426,6 +426,25 @@ targets:
     - T7
     origin: forked from 🎯T7 to introduce an observable checkpoint for convergence ranking
     discovered: 2026-04-25
+  T27:
+    name: Sawmill applies a coordinated transform across N repos and opens a PR per repo via a single MCP call
+    status: identified
+    value: 0.0
+    cost: 0.0
+    acceptance:
+    - A single MCP call accepts the output of transform_multi_root (or equivalent inputs) plus PR metadata (title, body, branch name) and produces per-repo PRs
+    - 'Per repo: feature branch is created, the diff is committed and pushed, and a PR is opened against the repo''s default branch'
+    - 'Return shape includes a per-repo bundle: PR URL on success, error message on failure, no aggregate short-circuit'
+    - Per-repo errors don't abort siblings — partial success is reported (consistent with 🎯T25's error-isolation pattern)
+    - An end-to-end demo across N>2 real repositories is recorded in docs/ — script or transcript showing N PRs opened with at least one intentional per-repo failure to exercise the error-isolation path
+    - Authentication uses the user's existing gh credentials (no new credential management); document the assumption clearly
+    context: Observable checkpoint for 🎯T5. T25 proved transforms can fan out across N repos and produce per-repo diffs; this target proves the diffs can be turned into PRs the user can merge. Together they cover the substantive value of T5 (the daemon-multi-repo-management acceptance was already true). Builds on the existing transform_multi_root scaffolding and the per-repo error isolation pattern. The likely surface is a new MCP tool layered on top of transform_multi_root, plus a thin git+gh shell-out helper per repo (or use go-git + the GitHub REST API directly — pure-Go).
+    tags:
+    - multi-repo
+    - pr-lifecycle
+    - T5
+    origin: forked from 🎯T5 to introduce an observable checkpoint for the remaining PR-lifecycle scope after 🎯T25 retired
+    discovered: 2026-04-26
   T3:
     name: Diagnostic-driven automatic fixes
     status: achieved
@@ -593,6 +612,7 @@ targets:
     context: 'Sawmill''s architecture (global daemon, per-project models, MCP interface) is naturally extensible to multi-repo workflows. This would cover the same ground as Sourcegraph Batch Changes but with native AST-level transformation intelligence built in, rather than BYO container scripts. The daemon already manages multiple project roots — the gap is orchestration: repo discovery, coordinated cross-repo transforms, and PR lifecycle management.'
     depends_on:
     - T25
+    - T27
     tags:
     - multi-repo
     - orchestration
