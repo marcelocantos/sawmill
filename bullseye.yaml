@@ -651,7 +651,7 @@ targets:
     discovered: 2026-04-10
   T7.0:
     name: Pure-Go tree-sitter grammars are available for SQL, regex, and GraphQL — no CGo required
-    status: identified
+    status: achieved
     value: 0.0
     cost: 0.0
     observable: true
@@ -669,6 +669,7 @@ targets:
     - T7
     origin: manual
     discovered: 2026-04-25
+    achieved: 2026-04-25
   T7.1:
     name: Tree-sitter injection grammars — embedded DSLs in string literals are parsed as nested CSTs
     status: identified
