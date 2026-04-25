@@ -388,17 +388,17 @@ targets:
     discovered: 2026-04-19
     achieved: 2026-04-19
   T25:
-    name: Sawmill performs a coordinated transform across two project roots and produces per-repo diff previews via a single MCP call
+    name: Sawmill performs a coordinated transform across N project roots and produces per-repo diff previews via a single MCP call
     status: identified
     value: 0.0
     cost: 0.0
     observable: true
     acceptance:
-    - A single transform_multi_root invocation accepts ≥2 project roots and an action spec
+    - A single transform_multi_root invocation accepts N≥2 project roots and an action spec (no fixed upper bound; behaviour at N=2 must generalise unchanged to larger N)
     - Each root produces an independently-applicable diff preview (one diff bundle per repo)
-    - An end-to-end demo across two real repositories is recorded in docs (script or transcript) so a reader can reproduce it
+    - An end-to-end demo across multiple real repositories is recorded in docs (script or transcript) so a reader can reproduce it; the demo exercises N>2 to confirm scaling, not just the N=2 case
     - Per-repo errors don't abort sibling repos — partial success is reported, not silent failure
-    context: Observable checkpoint for 🎯T5 — gives the frontier a near-term, demonstrable milestone (a runnable two-repo demo) before tackling the larger PR-lifecycle scope. transform_multi_root already exists as scaffolding (🎯T5.1); this target proves it works end-to-end with a recorded demo.
+    context: 'Observable checkpoint for 🎯T5. Generalised from a 2-repo demo to N-repo because once the >1 boundary is crossed, scaling to larger N is incidental and shouldn''t be artificially capped by the target. The work is: prove transform_multi_root works end-to-end across an arbitrary set of project roots with per-repo diff previews and graceful per-repo error isolation. transform_multi_root scaffolding already exists (🎯T5.1).'
     tags:
     - multi-repo
     - demo
