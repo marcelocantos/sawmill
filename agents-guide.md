@@ -193,6 +193,13 @@ replaces any unapplied pending changes.
 | `api_changelog` | Markdown API surface changelog between two refs | `base`, `head` |
 | `git_semantic_bisect` | Find the commit where a structural predicate flipped (binary search, no code execution) | `predicate` (JSON), `good`, `bad` |
 
+### Multi-repo orchestration
+
+| Tool | Purpose | Key params |
+|---|---|---|
+| `transform_multi_root` | Run an ordered list of transforms across multiple project roots in a single call; returns per-root diff bundles. Does not modify any session's pending state | `roots` (JSON array of absolute paths), `transforms` (JSON array, same shape as `transform_batch`), `format` |
+| `apply_multi_root_pr` | Take per-root `{root, diff}` bundles (typically from `transform_multi_root`), create per-repo feature branches, commit, push, and open PRs via `git`/`gh`. Per-repo errors do not abort siblings; idempotent on existing branches/PRs | `bundles`, `branch_template`, `title_template`, `body_template`, `commit_message` (templates support `{root}` and `{repo}` placeholders) |
+
 ### Application
 
 | Tool | Purpose | Key params |
