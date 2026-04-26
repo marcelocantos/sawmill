@@ -129,7 +129,7 @@ AI Agent ──HTTP──▶ sawmill serve (HTTP MCP server, port 8765)
                        │    ├─ Store (SQLite)
                        │    └─ Watcher (fsnotify)
                        ├─ GitIndex (lazy AST snapshots per commit)
-                       └─ MCP Server (54 tools, streamable HTTP)
+                       └─ MCP Server (56 tools, streamable HTTP)
 ```
 
 - `sawmill serve` is the HTTP MCP server, listening on `127.0.0.1:8765`
@@ -142,7 +142,7 @@ AI Agent ──HTTP──▶ sawmill serve (HTTP MCP server, port 8765)
 
 ## MCP tools
 
-54 tools, grouped by purpose. Every transform returns a diff preview;
+56 tools, grouped by purpose. Every transform returns a diff preview;
 call `apply` to write changes, `undo` to revert.
 
 **Discovery & navigation**
@@ -206,6 +206,13 @@ call `apply` to write changes, `undo` to revert.
 |---|---|
 | `hover` / `definition` / `lsp_references` | Language-server queries at a source position |
 | `diagnostics` | Compile errors/warnings (`format=json` for structured `{code, source, severity, ...}`) |
+
+**Multi-repo orchestration**
+
+| Tool | Description |
+|---|---|
+| `transform_multi_root` | Apply an ordered list of transforms across multiple project roots in one call; returns per-root diff bundles |
+| `apply_multi_root_pr` | Take per-root diff bundles, create per-repo feature branches, commit, push, and open PRs via `git`/`gh`; per-repo errors don't abort siblings |
 
 **Application**
 

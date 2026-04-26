@@ -9,7 +9,7 @@ pre-1.0 period exists to get these right.
 
 ## Interaction surface catalogue
 
-Snapshot as of v0.10.0. 233 public surface items.
+Snapshot as of v0.11.0. 240 public surface items.
 
 ### CLI
 
@@ -21,7 +21,7 @@ Snapshot as of v0.10.0. 233 public surface items.
 | `sawmill --help-agent` | Agent guide | **Stable** |
 | `--addr HOST:PORT` (serve) | string, default `127.0.0.1:8765` | **Stable** |
 
-### MCP tools (54 tools, 158 parameters)
+### MCP tools (56 tools, 165 parameters)
 
 | Tool | Required params | Optional params | Stability |
 |---|---|---|---|
@@ -34,6 +34,8 @@ Snapshot as of v0.10.0. 233 public surface items.
 | `dependency_usage` | `package` | `path` | **Stable** |
 | `transform` | — | `path`, `kind`, `name`, `file`, `raw_query`, `capture`, `action`, `code`, `before`, `after`, `transform_fn`, `format` | **Stable** |
 | `transform_batch` | `transforms` | `path`, `format` | **Needs review** — `transforms` is a JSON string, not a native array |
+| `transform_multi_root` | `roots`, `transforms` | `format` | **Needs review** — `roots` and `transforms` are JSON strings; new in v0.11.0 |
+| `apply_multi_root_pr` | `bundles`, `branch_template`, `title_template` | `body_template`, `commit_message` | **Needs review** — new in v0.11.0; shells out to `git`/`gh`, idempotency relies on remote branch/PR state |
 | `codegen` | `program` | `path`, `format`, `validate` | **Stable** |
 | `apply` | `confirm` | — | **Stable** |
 | `undo` | — | — | **Stable** |
@@ -126,6 +128,16 @@ Snapshot as of v0.10.0. 233 public surface items.
   in v0.10.0 but carry algorithmic novelty (convergence loop, heuristic
   regex generalisation). Mark stable after soak time and real-world
   validation of cycle detection and candidate quality.
+- **Multi-repo orchestration maturity**: `transform_multi_root` and
+  `apply_multi_root_pr` ship in v0.11.0. The latter shells out to
+  `git`/`gh` and depends on the user's credential helper / SSH agent
+  for push and PR creation. Soak across real cross-repo refactors
+  before promoting to **Stable** — error-isolation and
+  branch/PR-idempotency semantics may need refinement.
+- **Tree-sitter runtime swap**: v0.11.0 swapped to the pure-Go
+  `gotreesitter` runtime (🎯T7.0). Existing tests pass, but watch for
+  parser regressions in real-world codebases (especially
+  large/edge-case grammars) before treating the swap as fully settled.
 
 ## Out of scope for 1.0
 

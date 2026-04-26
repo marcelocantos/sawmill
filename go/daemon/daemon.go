@@ -119,7 +119,7 @@ func New(version string) *Server {
 
 	mcp.RegisterTools(srv, resolve)
 
-	httpSrv := mcpsrv.NewStreamableHTTPServer(srv)
+	httpSrv := mcpsrv.NewStreamableHTTPServer(srv, mcpsrv.WithHeartbeatInterval(30*time.Second))
 
 	return &Server{
 		mcp:      srv,
