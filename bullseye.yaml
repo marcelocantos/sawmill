@@ -446,6 +446,21 @@ targets:
     origin: forked from 🎯T5 to introduce an observable checkpoint for the remaining PR-lifecycle scope after 🎯T25 retired
     discovered: 2026-04-26
     achieved: 2026-04-26
+  T28:
+    name: Sawmill's streamable-HTTP MCP server keeps idle Claude Code sessions connected via heartbeat pings
+    status: identified
+    value: 0.0
+    cost: 0.0
+    acceptance:
+    - go/daemon/daemon.go's NewStreamableHTTPServer call passes server.WithHeartbeatInterval(30*time.Second) (or similar finite duration)
+    - 'A Claude Code session that calls a sawmill tool, idles for 5+ minutes, then calls another sawmill tool does NOT see ''MCP error -32000: Connection closed'''
+    - go test ./... still passes
+    context: 'mark3labs/mcp-go''s StreamableHTTPServer ships with WithHeartbeatInterval disabled by default. Without it, the GET (SSE) stream that Claude Code holds open has no application-layer keepalive, so OS / NAT collapses the underlying TCP after ~3 minutes of idle and the next tool call surfaces as ''MCP error -32000: Connection closed'' before transparent reconnect succeeds. Same one-line fix as the mnemo commit shipped 2026-04-26 (mnemo master 4057332). Confirmed sawmill is affected by inspection: go/daemon/daemon.go:122 calls NewStreamableHTTPServer with no heartbeat option.'
+    tags:
+    - mcp
+    - reliability
+    origin: forked-from mnemo disconnect investigation 2026-04-26
+    discovered: 2026-04-26
   T3:
     name: Diagnostic-driven automatic fixes
     status: achieved
