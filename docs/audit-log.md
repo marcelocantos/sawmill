@@ -57,5 +57,5 @@ maintenance activities. Append-only — newest entries at the bottom.
 
 ## 2026-04-26 — /release v0.11.0
 
-- **Commit**: `pending`
+- **Commit**: `a462f4a`
 - **Outcome**: Released v0.11.0 (darwin-arm64, linux-amd64, linux-arm64). Tool count 54 → 56. Multi-repo orchestration lands end-to-end: 🎯T5.1 `transform_multi_root` (apply transforms across N project roots in one call) and 🎯T27 `apply_multi_root_pr` (per-repo branches, commits, pushes, and PRs via `git`/`gh`, with per-repo error isolation and idempotency on existing branches/PRs). 🎯T7.0 swapped tree-sitter to the pure-Go `gotreesitter` runtime (no CGo). 🎯T28 added `WithHeartbeatInterval(30s)` to the streamable-HTTP MCP server so idle Claude Code sessions no longer surface `MCP error -32000: Connection closed` after ~3 minutes. STABILITY.md snapshot bumped to v0.11.0; README and agents-guide gained a Multi-repo orchestration section. Homebrew formula updated.
