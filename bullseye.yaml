@@ -448,7 +448,7 @@ targets:
     achieved: 2026-04-26
   T28:
     name: Sawmill's streamable-HTTP MCP server keeps idle Claude Code sessions connected via heartbeat pings
-    status: identified
+    status: achieved
     value: 0.0
     cost: 0.0
     acceptance:
@@ -461,6 +461,7 @@ targets:
     - reliability
     origin: forked-from mnemo disconnect investigation 2026-04-26
     discovered: 2026-04-26
+    achieved: 2026-04-26
   T3:
     name: Diagnostic-driven automatic fixes
     status: achieved
