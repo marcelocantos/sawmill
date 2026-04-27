@@ -28,13 +28,15 @@ func main() {
 	flag.Usage = func() {
 		fmt.Fprintf(os.Stderr, "Usage: sawmill <command> [options]\n\n")
 		fmt.Fprintf(os.Stderr, "Commands:\n")
-		fmt.Fprintf(os.Stderr, "  serve     Start the HTTP MCP server\n")
-		fmt.Fprintf(os.Stderr, "  version   Print version and exit\n")
+		fmt.Fprintf(os.Stderr, "  serve          Start the HTTP MCP server\n")
+		fmt.Fprintf(os.Stderr, "  merge          AST-aware three-way merge (git mergetool driver)\n")
+		fmt.Fprintf(os.Stderr, "  merge-driver   Git low-level merge driver (%%O %%A %%B %%P)\n")
+		fmt.Fprintf(os.Stderr, "  version        Print version and exit\n")
 	}
 
 	if len(os.Args) < 2 {
 		flag.Usage()
-		os.Exit(2)
+		os.Exit(exitError)
 	}
 
 	cmd := os.Args[1]
@@ -43,6 +45,10 @@ func main() {
 	switch cmd {
 	case "serve":
 		runServe(args)
+	case "merge":
+		os.Exit(runMerge(args, os.Stderr))
+	case "merge-driver":
+		os.Exit(runMergeDriver(args, os.Stderr))
 	case "version", "--version", "-version":
 		fmt.Printf("sawmill %s\n", version)
 	case "help", "--help", "-help":
@@ -52,7 +58,7 @@ func main() {
 	default:
 		fmt.Fprintf(os.Stderr, "unknown command %q\n", cmd)
 		flag.Usage()
-		os.Exit(1)
+		os.Exit(exitError)
 	}
 }
 
@@ -78,7 +84,37 @@ USAGE
                             %s. The streamable HTTP MCP transport is
                             served at /mcp.
 
+  sawmill merge --base PATH --local PATH --remote PATH --output PATH \
+                [--language NAME] [--marker-style {diff3,merge}]
+                            AST-aware three-way merge (git mergetool driver).
+                            Reads base/local/remote files, writes merged result
+                            to --output. Exits 0 on clean merge, 1 if residual
+                            conflicts remain, 2 on hard error.
+
+  sawmill merge-driver BASE LOCAL REMOTE PATHNAME
+                            Git low-level merge driver. Invoked as:
+                              driver = sawmill merge-driver %%O %%A %%B %%P
+                            Writes merged result back to LOCAL (%%A) in place.
+                            Exits 0 on clean merge, 1 if residual conflicts, 2
+                            on hard error.
+
   sawmill version           Print version and exit.
+
+GIT INTEGRATION
+  To configure sawmill as a mergetool and merge driver, add to ~/.gitconfig or
+  .git/config:
+
+    [mergetool "sawmill"]
+        cmd = sawmill merge --base "$BASE" --local "$LOCAL" --remote "$REMOTE" --output "$MERGED"
+
+    [merge "sawmill"]
+        name = AST-aware merge
+        driver = sawmill merge-driver %%O %%A %%B %%P
+
+  Then enable it per file type in .gitattributes:
+
+    *.py  merge=sawmill
+    *.go  merge=sawmill
 
 CLIENT INTEGRATION
   Sawmill speaks the MCP streamable HTTP transport. Stdio-based MCP clients

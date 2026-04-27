@@ -221,6 +221,8 @@ func (h *Handler) Call(name string, args map[string]any) (string, bool, error) {
 		return h.handleTransformMultiRoot(args)
 	case "apply_multi_root_pr":
 		return h.handleApplyMultiRootPR(args)
+	case "merge_three_way":
+		return h.handleMergeThreeWay(args)
 	default:
 		return "", false, fmt.Errorf("unknown tool: %s", name)
 	}
@@ -1119,6 +1121,44 @@ All predicates accept an optional "file" key to restrict evaluation to one path.
 			mcpgo.WithString("bad",
 				mcpgo.Required(),
 				mcpgo.Description("Bad ref — commit where the predicate has its unexpected value (must be a descendant of good)"),
+			),
+		),
+
+		// merge_three_way
+		mcpgo.NewTool("merge_three_way",
+			mcpgo.WithDescription(`AST-aware three-way merge of (base, ours, theirs) into a single source. Edits that touch disjoint AST declarations always commute (parallel method additions, parallel import additions, format changes alongside logic changes); edits to the same declaration body fall back to a line-level diff3 with git-style conflict markers.
+
+Each side is supplied as either inline content (base_content, ours_content, theirs_content) or a file path (base_path, ours_path, theirs_path). The language adapter is selected from the explicit "language" hint or the "path"/"ours_path" extension.
+
+The tool is stateless — it does not require a parsed model and runs without binding the session via parse(). Callers (rebase bots, multi-root PR flows, mergetool drivers) can invoke it standalone.
+
+Returns JSON: {merged: string, conflicts: [...], stats: {...}, clean: bool}.`),
+			mcpgo.WithString("base_content",
+				mcpgo.Description("Inline content for the merge base. Required if base_path is not set."),
+			),
+			mcpgo.WithString("base_path",
+				mcpgo.Description("Path to a file containing the merge base. Required if base_content is not set."),
+			),
+			mcpgo.WithString("ours_content",
+				mcpgo.Description("Inline content for ours (local) side."),
+			),
+			mcpgo.WithString("ours_path",
+				mcpgo.Description("Path to a file containing the ours side."),
+			),
+			mcpgo.WithString("theirs_content",
+				mcpgo.Description("Inline content for theirs (remote) side."),
+			),
+			mcpgo.WithString("theirs_path",
+				mcpgo.Description("Path to a file containing the theirs side."),
+			),
+			mcpgo.WithString("language",
+				mcpgo.Description("Language adapter override (py, go, rs, ts, tsx, cpp, ...). When omitted, the adapter is inferred from path or ours_path."),
+			),
+			mcpgo.WithString("path",
+				mcpgo.Description("File path used in conflict labels and adapter detection. Optional but recommended."),
+			),
+			mcpgo.WithString("marker_style",
+				mcpgo.Description(`Conflict marker style: "diff3" (default, includes ||||||| base) or "merge" (ours/theirs only).`),
 			),
 		),
 	}
