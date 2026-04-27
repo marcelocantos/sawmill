@@ -10,7 +10,7 @@ release-local:
 	goreleaser release --snapshot --clean
 
 bullseye:
-	@cd go && go build ./... && echo "✓ build"
-	@cd go && go test ./... -count=1 2>&1 | tail -1 && echo "✓ tests"
-	@test -z "$$(git status --porcelain)" && echo "✓ clean" || \
-	 (echo "✗ dirty tree"; git status --short; exit 1)
+	@cd go && go build ./... && echo "✅ build"
+	@cd go && go test ./... -count=1 2>&1 | tail -1 && echo "✅ tests"
+	@test -z "$$(git status --porcelain)" && echo "✅ clean" || \
+	 (echo "❌ dirty tree"; git status --short; exit 1)
