@@ -655,6 +655,68 @@ targets:
     origin: manual
     discovered: 2026-04-27
     achieved: 2026-04-27
+  T33:
+    name: Homebrew formula declares runtime tool deps and sets service-block PATH so the launchd-spawned sawmill daemon resolves formatters and LSP servers without manual setup
+    status: achieved
+    value: 0.0
+    cost: 0.0
+    acceptance:
+    - Formula's `service do` block sets `environment_variables PATH:` to `"/opt/homebrew/bin:/opt/homebrew/sbin:#{Dir.home}/.cargo/bin:#{Dir.home}/.local/bin:#{Dir.home}/.py/bin:#{Dir.home}/go/bin:/usr/bin:/bin:/usr/sbin:/sbin"`
+    - 'Formula declares `depends_on` for every brew-installable runtime tool: `gh`, `llvm` (provides `clang-format` and `clangd`), `prettier`, `ruff`, plus `mermaid-cli` if used elsewhere'
+    - '`brew services restart sawmill` followed by Rust, Python, C++, TypeScript, and Go formatting and LSP-driven find-references operations all succeed with no manual PATH workaround'
+    - rustfmt, gopls, rust-analyzer remain valid PATH expectations (not added to depends_on; live in `~/.cargo/bin` and `~/go/bin` which the service-block PATH covers)
+    context: |-
+      Background: launchd-spawned MCP daemons (started via `brew services`) inherit a minimal PATH (`/usr/bin:/bin:/usr/sbin:/sbin`). Any external tool the daemon shells out to that lives in `/opt/homebrew/bin`, `~/.cargo/bin`, `~/.local/bin`, `~/.py/bin`, or `~/go/bin` fails to resolve at runtime. Spyder hit this first (with pmd3) and is already fixed via a different mechanism (bundled binary). The cross-repo fix design decision was made in ~/think on 2026-04-27.
+
+      Design decision — fix at the Homebrew formula's `service` block, NOT:
+      - in code (per-server PATH augmentation): touches N codebases, buries the fix far from where the daemon's environment is configured.
+      - via global `launchctl setenv PATH`: pollutes user-domain environment for every GUI app.
+      - via wrapper script: `brew services` is what spawns the daemon, not Claude Code, so wrapping the launch belongs in the formula.
+
+      Reasons the formula's `service` block is correct:
+      - Per-daemon scope, no collateral on other apps.
+      - `brew services` regenerates the launchd plist from the formula on every install/upgrade/restart, so the fix survives upgrades automatically.
+      - No code change in the server.
+      - `depends_on` makes `brew install sawmill` self-sufficient.
+
+      Audit findings for sawmill (from ~/think investigation 2026-04-27):
+      - `go/adapters/rust_lang.go:44` — calls `rustfmt` (via rustup, in `~/.cargo/bin`; NOT in Homebrew)
+      - `go/adapters/python.go:42` — calls `ruff` (homebrew)
+      - `go/adapters/cpp.go:45` — calls `clang-format` (comes with homebrew `llvm`)
+      - `go/adapters/typescript.go:44` — calls `prettier` (homebrew) — verify which formatter is actually invoked; if it's `biome`, depends_on `biome` instead
+      - `go/adapters/go_lang.go:44` — calls `gofmt` (Go toolchain, in `/opt/homebrew/bin/go` or `~/go/bin`; covered by service-block PATH, no depends_on needed since Go is itself the build dep)
+      - `go/lspclient/lspclient.go:82`, `go/lspclient/pool.go:41` — spawns LSP servers: `gopls` (~/go/bin), `clangd` (comes with `llvm` formula), `rust-analyzer` (~/.cargo/bin via rustup)
+      - `go/mcp/multi_root_pr.go:288,302` — calls `gh` (homebrew)
+      - `go/mcp/multi_root_pr.go:203,216` — calls `git` (in /usr/bin, fine)
+
+      Tools available in Homebrew (verified 2026-04-27): `gh`, `llvm` (gives clang-format AND clangd in one dep), `prettier`, `biome`, `ruff`, `mermaid-cli`. Add to `depends_on` for whichever the daemon actually invokes.
+
+      Tools NOT in Homebrew, kept as service-block-PATH expectations: `rustfmt` (rustup-installed in `~/.cargo/bin`), `gopls` (`go install` puts it in `~/go/bin`), `rust-analyzer` (rustup, `~/.cargo/bin`), `gofmt` (ships with Go toolchain).
+
+      The service-block PATH covers all those locations, so they resolve at runtime without `depends_on`. They're the user's responsibility to install — that's correct given they're language-toolchain-coupled (rustup/go install).
+
+      No avoidance/diagnostic code in sawmill needs deletion (no equivalent of mnemo's `diagnose.go:106` was found in the audit). Verify before finishing.
+
+      Formula shape (template):
+      ```ruby
+      depends_on "gh"
+      depends_on "llvm"  # clang-format + clangd
+      depends_on "prettier"  # or biome — verify which the daemon invokes
+      depends_on "ruff"
+
+      service do
+        run [opt_bin/"sawmill"]
+        environment_variables PATH: "/opt/homebrew/bin:/opt/homebrew/sbin:#{Dir.home}/.cargo/bin:#{Dir.home}/.local/bin:#{Dir.home}/.py/bin:#{Dir.home}/go/bin:/usr/bin:/bin:/usr/sbin:/sbin"
+        keep_alive true
+        log_path var/"log/sawmill.log"
+        error_log_path var/"log/sawmill.log"
+      end
+      ```
+
+      Sibling targets exist on mnemo and vellum repos with the same design context. If a shared PATH constant is later defined in the tap, refactor to reference it.
+    origin: forked-from spyder PATH-bug investigation in ~/think on 2026-04-27
+    discovered: 2026-04-27
+    achieved: 2026-04-27
   T4:
     name: CST node tree is stored in SQLite — in-memory CSTs are transient parse artifacts only
     status: achieved
