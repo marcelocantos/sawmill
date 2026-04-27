@@ -25,6 +25,7 @@ import (
 	"github.com/marcelocantos/sawmill/gitrepo"
 	"github.com/marcelocantos/sawmill/jsengine"
 	"github.com/marcelocantos/sawmill/lspclient"
+	"github.com/marcelocantos/sawmill/merge"
 	"github.com/marcelocantos/sawmill/model"
 	"github.com/marcelocantos/sawmill/bisect"
 	"github.com/marcelocantos/sawmill/rewrite"
@@ -4279,4 +4280,105 @@ func (h *Handler) handleGitSemanticBisect(args map[string]any) (string, bool, er
 		return fmt.Sprintf("marshalling result: %v", err), true, nil
 	}
 	return string(out), false, nil
+}
+
+// ---- merge_three_way ---------------------------------------------------------
+
+// mergeThreeWayResponse is the JSON shape returned by merge_three_way.
+type mergeThreeWayResponse struct {
+	Merged    string           `json:"merged"`
+	Conflicts []merge.Conflict `json:"conflicts"`
+	Stats     merge.Stats      `json:"stats"`
+	Clean     bool             `json:"clean"`
+}
+
+// handleMergeThreeWay performs an AST-aware three-way merge between three
+// blobs. Each side may be supplied as inline content or as a file path.
+//
+// The tool is stateless — it does not require a parsed model and works
+// without an active project root. Callers (rebase bots, multi-root PR
+// flows) can invoke it before binding a session via parse().
+func (h *Handler) handleMergeThreeWay(args map[string]any) (string, bool, error) {
+	base, err := loadMergeSide(args, "base")
+	if err != nil {
+		return err.Error(), true, nil
+	}
+	ours, err := loadMergeSide(args, "ours")
+	if err != nil {
+		return err.Error(), true, nil
+	}
+	theirs, err := loadMergeSide(args, "theirs")
+	if err != nil {
+		return err.Error(), true, nil
+	}
+
+	pathHint := optString(args, "path")
+	if pathHint == "" {
+		pathHint = optString(args, "ours_path")
+	}
+
+	language := optString(args, "language")
+	adapter, err := pickMergeAdapter(language, pathHint)
+	if err != nil {
+		return err.Error(), true, nil
+	}
+
+	style := optString(args, "marker_style")
+	res, err := merge.Merge(base, ours, theirs, adapter, merge.Options{Path: pathHint, Style: style})
+	if err != nil {
+		return fmt.Sprintf("merge: %v", err), true, nil
+	}
+
+	resp := mergeThreeWayResponse{
+		Merged:    string(res.Merged),
+		Conflicts: res.Conflicts,
+		Stats:     res.Stats,
+		Clean:     len(res.Conflicts) == 0,
+	}
+	out, err := json.MarshalIndent(resp, "", "  ")
+	if err != nil {
+		return fmt.Sprintf("marshalling result: %v", err), true, nil
+	}
+	return string(out), false, nil
+}
+
+// loadMergeSide returns the bytes for one side of a merge given args
+// containing either "<side>_content" (inline) or "<side>_path" (file).
+// At least one must be provided.
+func loadMergeSide(args map[string]any, side string) ([]byte, error) {
+	if v, ok := args[side+"_content"].(string); ok {
+		return []byte(v), nil
+	}
+	if p, ok := args[side+"_path"].(string); ok && p != "" {
+		b, err := os.ReadFile(p)
+		if err != nil {
+			return nil, fmt.Errorf("reading %s_path %q: %v", side, p, err)
+		}
+		return b, nil
+	}
+	return nil, fmt.Errorf("either %s_content or %s_path is required", side, side)
+}
+
+// pickMergeAdapter resolves a language adapter from an explicit language
+// hint (preferred) or from a file path's extension.
+func pickMergeAdapter(language, path string) (adapters.LanguageAdapter, error) {
+	if language != "" {
+		a := adapters.ForExtension(language)
+		if a == nil {
+			return nil, fmt.Errorf("unknown language %q", language)
+		}
+		return a, nil
+	}
+	if path == "" {
+		return nil, fmt.Errorf("specify language or supply path/ours_path with a recognised extension")
+	}
+	ext := strings.TrimPrefix(filepath.Ext(path), ".")
+	if ext == "" {
+		return nil, fmt.Errorf("no extension on path %q; supply language", path)
+	}
+	a := adapters.ForExtension(ext)
+	if a == nil {
+		return nil, fmt.Errorf("no adapter for extension %q", ext)
+	}
+	return a, nil
 }

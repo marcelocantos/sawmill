@@ -462,6 +462,19 @@ targets:
     origin: forked-from mnemo disconnect investigation 2026-04-26
     discovered: 2026-04-26
     achieved: 2026-04-26
+  T29:
+    name: AST merge for Python and Go
+    status: achieved
+    value: 0.0
+    cost: 0.0
+    acceptance:
+    - merge package with three-way Merge function
+    - Python and Go adapters
+    - residual conflicts as git markers
+    context: Git textual three-way merge produces conflicts on edits that do not actually overlap structurally. Sawmill has structural-diff machinery in semdiff and per-language adapters; this target adds the three-way merge engine that replays edits as AST operations against a common ancestor and only emits a residual conflict when operations touch the same node. Python and Go adapters first; TypeScript, Rust and C++ are follow-on.
+    origin: manual
+    discovered: 2026-04-27
+    achieved: 2026-04-27
   T3:
     name: Diagnostic-driven automatic fixes
     status: achieved
@@ -597,6 +610,51 @@ targets:
     origin: manual
     discovered: 2026-04-19
     achieved: 2026-04-19
+  T30:
+    name: git mergetool driver shipped
+    status: achieved
+    value: 0.0
+    cost: 0.0
+    acceptance:
+    - sawmill merge subcommand accepts --base --local --remote --output
+    - documented gitconfig snippet registers it as mergetool
+    - manual run after a conflicted git merge resolves commuting cases and leaves residual text conflicts
+    - exit codes follow git mergetool conventions (0 fully resolved, nonzero residual)
+    depends_on:
+    - T29
+    origin: manual
+    discovered: 2026-04-27
+    achieved: 2026-04-27
+  T31:
+    name: git low-level merge driver shipped
+    status: achieved
+    value: 0.0
+    cost: 0.0
+    acceptance:
+    - sawmill merge-driver subcommand accepts %O %A %B %P positional args per git driver protocol
+    - writes merged result in place to %A and exits 0 on full resolution, nonzero on residual
+    - documented gitattributes pattern wires it up per language (e.g. *.py merge=sawmill)
+    - 'verified end-to-end: git merge of branches with non-overlapping AST edits produces zero conflict markers'
+    depends_on:
+    - T29
+    origin: manual
+    discovered: 2026-04-27
+    achieved: 2026-04-27
+  T32:
+    name: MCP merge_three_way tool exposed
+    status: achieved
+    value: 0.0
+    cost: 0.0
+    acceptance:
+    - mcp__sawmill__merge_three_way tool registered in mcp/server.go
+    - accepts base/ours/theirs as content or path plus language hint
+    - returns merged content plus structured residual conflicts (path, range, kind)
+    - agent can chain it with apply_multi_root_pr for rebase-bot workflows
+    depends_on:
+    - T29
+    origin: manual
+    discovered: 2026-04-27
+    achieved: 2026-04-27
   T4:
     name: CST node tree is stored in SQLite — in-memory CSTs are transient parse artifacts only
     status: achieved
