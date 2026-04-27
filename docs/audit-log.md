@@ -59,3 +59,11 @@ maintenance activities. Append-only — newest entries at the bottom.
 
 - **Commit**: `a462f4a`
 - **Outcome**: Released v0.11.0 (darwin-arm64, linux-amd64, linux-arm64). Tool count 54 → 56. Multi-repo orchestration lands end-to-end: 🎯T5.1 `transform_multi_root` (apply transforms across N project roots in one call) and 🎯T27 `apply_multi_root_pr` (per-repo branches, commits, pushes, and PRs via `git`/`gh`, with per-repo error isolation and idempotency on existing branches/PRs). 🎯T7.0 swapped tree-sitter to the pure-Go `gotreesitter` runtime (no CGo). 🎯T28 added `WithHeartbeatInterval(30s)` to the streamable-HTTP MCP server so idle Claude Code sessions no longer surface `MCP error -32000: Connection closed` after ~3 minutes. STABILITY.md snapshot bumped to v0.11.0; README and agents-guide gained a Multi-repo orchestration section. Homebrew formula updated.
+
+## 2026-04-27 — /release v0.12.0
+
+- **Commit**: `pending`
+- **Outcome**: Released v0.12.0 (darwin-arm64, linux-amd64, linux-arm64). Tool count 56 → 57. AST-aware three-way merge lands end-to-end across four targets: 🎯T29 `go/merge` engine (declaration-level matching, commute algebra, pure-Go diff3 fallback) covering Python and Go; 🎯T30 `sawmill merge` CLI subcommand (git mergetool driver); 🎯T31 `sawmill merge-driver` CLI subcommand (git low-level driver per gitattributes(5)); 🎯T32 `merge_three_way` MCP tool (stateless, agent-callable). Real `git merge` smoke verified: parallel-method-add merges produce zero conflict markers. 🎯T33 hardened the Homebrew formula: every brew-installable runtime tool the daemon shells out to is now a `depends_on` (`gh`, `llvm`, `prettier`, `pyright`, `ruff`, `typescript-language-server`), and the service block sets a complete PATH so launchd-spawned daemons resolve toolchain-coupled tools (`rustfmt`, `rust-analyzer`, `gopls`, `gofmt`) without `launchctl setenv PATH`. README, agents-guide, and STABILITY.md (snapshot bumped to v0.12.0) refreshed. Homebrew formula updated.
+- **Deferred**:
+  - Rename detection (delete-then-add of a declaration with unchanged body) — deferred from 🎯T29 acceptance; rename-vs-body case currently produces a textual conflict.
+  - TypeScript / Rust / C++ adapter coverage for the merge engine — fall through to whole-file diff3 today.

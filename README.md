@@ -34,6 +34,10 @@ changes that preserve formatting, comments, and whitespace.
   imported, which symbols are used, and public API exposure
 - **Type migration**: Rewrite construction patterns, field access, and
   type names across a codebase with a pattern language
+- **AST-aware merge**: Three-way merge that resolves edits which don't
+  overlap structurally (parallel method additions, parallel imports,
+  format vs logic). Drops in as a `git mergetool` / merge driver for
+  Python and Go.
 
 ## Quick start
 
@@ -129,7 +133,7 @@ AI Agent ──HTTP──▶ sawmill serve (HTTP MCP server, port 8765)
                        │    ├─ Store (SQLite)
                        │    └─ Watcher (fsnotify)
                        ├─ GitIndex (lazy AST snapshots per commit)
-                       └─ MCP Server (56 tools, streamable HTTP)
+                       └─ MCP Server (57 tools, streamable HTTP)
 ```
 
 - `sawmill serve` is the HTTP MCP server, listening on `127.0.0.1:8765`
@@ -142,7 +146,7 @@ AI Agent ──HTTP──▶ sawmill serve (HTTP MCP server, port 8765)
 
 ## MCP tools
 
-56 tools, grouped by purpose. Every transform returns a diff preview;
+57 tools, grouped by purpose. Every transform returns a diff preview;
 call `apply` to write changes, `undo` to revert.
 
 **Discovery & navigation**
@@ -214,6 +218,12 @@ call `apply` to write changes, `undo` to revert.
 | `transform_multi_root` | Apply an ordered list of transforms across multiple project roots in one call; returns per-root diff bundles |
 | `apply_multi_root_pr` | Take per-root diff bundles, create per-repo feature branches, commit, push, and open PRs via `git`/`gh`; per-repo errors don't abort siblings |
 
+**Merge**
+
+| Tool | Description |
+|---|---|
+| `merge_three_way` | AST-aware three-way merge of (base, ours, theirs); resolves edits that don't overlap structurally (parallel method additions, parallel imports, format vs logic) and falls back to git-style conflict markers only on true body conflicts. Stateless — does not require `parse` first. |
+
 **Application**
 
 | Tool | Description |
@@ -224,13 +234,49 @@ call `apply` to write changes, `undo` to revert.
 
 ## Supported languages
 
-| Language | Parsing | Formatting |
-|---|---|---|
-| Python | Yes | autopep8 |
-| TypeScript | Yes | — |
-| Rust | Yes | rustfmt |
-| Go | Yes | gofmt |
-| C/C++ | Yes | clang-format |
+| Language | Parsing | Formatting | AST merge |
+|---|---|---|---|
+| Python | Yes | `ruff format` | Yes |
+| TypeScript | Yes | `prettier` | — |
+| Rust | Yes | `rustfmt` | — |
+| Go | Yes | `gofmt` | Yes |
+| C/C++ | Yes | `clang-format` | — |
+
+## Git merge integration
+
+The `sawmill` binary ships two subcommands that drop into git's standard
+merge plumbing. Both share the AST-aware engine and emit standard
+git-style conflict markers for any residual hunks.
+
+**As a `git mergetool`** — interactive, opt-in:
+
+```ini
+# ~/.gitconfig
+[mergetool "sawmill"]
+    cmd = sawmill merge --base "$BASE" --local "$LOCAL" --remote "$REMOTE" --output "$MERGED"
+```
+
+Then run `git mergetool` after a conflicted merge.
+
+**As a low-level merge driver** — automatic, gated by file pattern:
+
+```ini
+# ~/.gitconfig
+[merge "sawmill"]
+    name = AST-aware merge
+    driver = sawmill merge-driver %O %A %B %P
+```
+
+```gitattributes
+# .gitattributes
+*.py merge=sawmill
+*.go merge=sawmill
+```
+
+With this in place, `git merge`, `git rebase`, and `git cherry-pick`
+silently resolve commuting AST edits (parallel method additions,
+parallel imports, etc.) and only surface text conflicts when two sides
+edit the same declaration body.
 
 ## For AI agents
 

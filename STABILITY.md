@@ -9,7 +9,7 @@ pre-1.0 period exists to get these right.
 
 ## Interaction surface catalogue
 
-Snapshot as of v0.11.0. 240 public surface items.
+Snapshot as of v0.12.0. 250 public surface items.
 
 ### CLI
 
@@ -20,8 +20,10 @@ Snapshot as of v0.11.0. 240 public surface items.
 | `sawmill --help` | Usage | **Stable** |
 | `sawmill --help-agent` | Agent guide | **Stable** |
 | `--addr HOST:PORT` (serve) | string, default `127.0.0.1:8765` | **Stable** |
+| `sawmill merge --base --local --remote --output [--language] [--marker-style]` | git mergetool driver | **Needs review** — new in v0.12.0; CLI shape may settle after real-world mergetool use |
+| `sawmill merge-driver %O %A %B %P` | git low-level merge driver | **Needs review** — new in v0.12.0; positional contract follows gitattributes(5) but error/exit semantics may evolve |
 
-### MCP tools (56 tools, 165 parameters)
+### MCP tools (57 tools, 174 parameters)
 
 | Tool | Required params | Optional params | Stability |
 |---|---|---|---|
@@ -81,6 +83,7 @@ Snapshot as of v0.11.0. 240 public surface items.
 | `learn_from_observation` | `pre_diagnostics` | `post_diagnostics` | **Needs review** — heuristic regex generalisation may need refinement |
 | `seed_fixes` | — | — | **Stable** |
 | `auto_fix` | `file` | `max_iterations`, `dry_run` | **Needs review** — convergence loop semantics (cycle detection, termination conditions) may evolve |
+| `merge_three_way` | (one of `base_content`/`base_path`, `ours_content`/`ours_path`, `theirs_content`/`theirs_path`) | `language`, `path`, `marker_style` | **Needs review** — new in v0.12.0; AST-aware three-way merge for Python and Go (other languages fall through to whole-file diff3); rename detection deferred |
 
 ### Configuration conventions
 
@@ -138,6 +141,14 @@ Snapshot as of v0.11.0. 240 public surface items.
   `gotreesitter` runtime (🎯T7.0). Existing tests pass, but watch for
   parser regressions in real-world codebases (especially
   large/edge-case grammars) before treating the swap as fully settled.
+- **AST merge engine maturity**: v0.12.0 ships `merge_three_way` plus
+  `sawmill merge` and `sawmill merge-driver` for Python and Go only.
+  TypeScript, Rust, and C++ adapters still need declaration extractors
+  and per-language algebra. Rename detection (delete-then-add of a
+  declaration with an unchanged body) is deferred — the rename-vs-body
+  case currently produces a textual conflict instead of replaying the
+  rename. Soak across real merges and add the missing language
+  coverage before promoting to **Stable**.
 
 ## Out of scope for 1.0
 

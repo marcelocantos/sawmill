@@ -200,6 +200,24 @@ replaces any unapplied pending changes.
 | `transform_multi_root` | Run an ordered list of transforms across multiple project roots in a single call; returns per-root diff bundles. Does not modify any session's pending state | `roots` (JSON array of absolute paths), `transforms` (JSON array, same shape as `transform_batch`), `format` |
 | `apply_multi_root_pr` | Take per-root `{root, diff}` bundles (typically from `transform_multi_root`), create per-repo feature branches, commit, push, and open PRs via `git`/`gh`. Per-repo errors do not abort siblings; idempotent on existing branches/PRs | `bundles`, `branch_template`, `title_template`, `body_template`, `commit_message` (templates support `{root}` and `{repo}` placeholders) |
 
+### Merge
+
+| Tool | Purpose | Key params |
+|---|---|---|
+| `merge_three_way` | AST-aware three-way merge of (base, ours, theirs). Edits that touch disjoint declarations always commute (parallel method additions, parallel imports, format vs logic). True body conflicts fall through to git-style markers. **Stateless** — does not require `parse` first; safe to call before binding the session | one of `base_content`/`base_path`, one of `ours_content`/`ours_path`, one of `theirs_content`/`theirs_path`, optional `language` (`py`/`go`/...), optional `path` (used in conflict labels and adapter inference), optional `marker_style` (`diff3` default, or `merge`) |
+
+Returns JSON `{merged, conflicts: [...], stats, clean}`. AST-level
+resolution covers Python and Go today; other languages fall through to
+a whole-file diff3.
+
+The same engine ships as two CLI subcommands for direct git
+integration — see the README's "Git merge integration" section.
+`sawmill merge` plugs in as a `git mergetool` driver; `sawmill
+merge-driver` plugs in as a `[merge "sawmill"] driver = ...` entry
+gated by `.gitattributes`. Both are useful in agent rebase/PR
+workflows: chain `merge_three_way` with `apply_multi_root_pr` for
+fully-automated cross-repo rebases.
+
 ### Application
 
 | Tool | Purpose | Key params |
