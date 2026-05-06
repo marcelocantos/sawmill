@@ -54,31 +54,19 @@ type Forest struct {
 	Files []*ParsedFile
 }
 
-// skipDirs lists directory names that are always skipped during a walk.
-var skipDirs = map[string]bool{
-	"node_modules": true,
-	"target":       true,
-	"__pycache__":  true,
-	".git":         true,
-	".svn":         true,
-	".hg":          true,
-	"vendor":       true,
-	"dist":         true,
-	"build":        true,
-	".idea":        true,
-	".vscode":      true,
-}
-
-func shouldSkipDir(name string) bool {
-	if strings.HasPrefix(name, ".") {
-		return true
-	}
-	return skipDirs[name]
-}
+// SkipFn decides whether to skip a directory during a walk. Returns true to
+// skip. A nil SkipFn skips nothing.
+type SkipFn func(absPath string) bool
 
 // FromPath parses all recognised source files under path (file or directory).
-// Directory walks skip hidden directories and well-known build/dependency dirs.
+// All directories are walked. Callers that want to skip directories should
+// use FromPathSkip with a SkipFn (e.g. backed by scope.Classifier.ShouldSkipDir).
 func FromPath(path string) (*Forest, error) {
+	return FromPathSkip(path, nil)
+}
+
+// FromPathSkip is FromPath with a directory-skip predicate.
+func FromPathSkip(path string, skip SkipFn) (*Forest, error) {
 	var files []*ParsedFile
 
 	info, err := os.Stat(path)
@@ -102,7 +90,7 @@ func FromPath(path string) (*Forest, error) {
 			return walkErr
 		}
 		if d.IsDir() {
-			if shouldSkipDir(d.Name()) {
+			if p != path && skip != nil && skip(p) {
 				return filepath.SkipDir
 			}
 			return nil

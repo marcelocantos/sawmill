@@ -24,7 +24,7 @@ func TestFileUpsertAndCheck(t *testing.T) {
 
 	mtime := time.Date(2026, 4, 6, 12, 0, 0, 123456789, time.UTC)
 
-	if err := s.UpsertFile("src/main.go", "go", mtime, "abc123", []byte("package main")); err != nil {
+	if err := s.UpsertFile("src/main.go", "go", mtime, "abc123", []byte("package main"), "owned"); err != nil {
 		t.Fatal(err)
 	}
 
@@ -60,8 +60,8 @@ func TestFileRemoveAndTracked(t *testing.T) {
 	s := openTestStore(t)
 
 	mtime := time.Now()
-	s.UpsertFile("a.go", "go", mtime, "h1", nil)
-	s.UpsertFile("b.go", "go", mtime, "h2", nil)
+	s.UpsertFile("a.go", "go", mtime, "h1", nil, "owned")
+	s.UpsertFile("b.go", "go", mtime, "h2", nil, "owned")
 
 	files, err := s.TrackedFiles()
 	if err != nil {
@@ -88,7 +88,7 @@ func TestSymbolsCRUD(t *testing.T) {
 	s := openTestStore(t)
 
 	mtime := time.Now()
-	s.UpsertFile("lib.py", "python", mtime, "h1", nil)
+	s.UpsertFile("lib.py", "python", mtime, "h1", nil, "owned")
 
 	symbols := []SymbolRecord{
 		{Name: "compute", Kind: "function", FilePath: "lib.py", StartLine: 1, StartCol: 1, EndLine: 2, EndCol: 8, StartByte: 0, EndByte: 20},
@@ -150,7 +150,7 @@ func TestSymbolsCascadeDelete(t *testing.T) {
 	s := openTestStore(t)
 
 	mtime := time.Now()
-	s.UpsertFile("lib.py", "python", mtime, "h1", nil)
+	s.UpsertFile("lib.py", "python", mtime, "h1", nil, "owned")
 	s.UpdateSymbols("lib.py", []SymbolRecord{
 		{Name: "foo", Kind: "function", FilePath: "lib.py", StartLine: 1, StartCol: 1, EndLine: 1, EndCol: 1},
 	})
@@ -267,7 +267,7 @@ func TestSymbolUpdateReplacesOld(t *testing.T) {
 	s := openTestStore(t)
 
 	mtime := time.Now()
-	s.UpsertFile("lib.py", "python", mtime, "h1", nil)
+	s.UpsertFile("lib.py", "python", mtime, "h1", nil, "owned")
 
 	// First set.
 	s.UpdateSymbols("lib.py", []SymbolRecord{

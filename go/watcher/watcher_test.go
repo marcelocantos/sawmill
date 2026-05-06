@@ -9,8 +9,20 @@ import (
 	"testing"
 	"time"
 
+	"github.com/marcelocantos/sawmill/scope"
 	"github.com/marcelocantos/sawmill/watcher"
 )
+
+// newTestClassifier builds a default classifier rooted at dir. Tests use this
+// to feed Watch its required classifier argument.
+func newTestClassifier(t *testing.T, dir string) *scope.Classifier {
+	t.Helper()
+	c, err := scope.New(dir)
+	if err != nil {
+		t.Fatalf("scope.New: %v", err)
+	}
+	return c
+}
 
 const eventTimeout = 2 * time.Second
 
@@ -36,7 +48,7 @@ func receiveEvent(t *testing.T, ch <-chan watcher.FileEvent, match func(watcher.
 
 func TestWatchDetectsNewFile(t *testing.T) {
 	dir := t.TempDir()
-	w, events, err := watcher.Watch(dir)
+	w, events, err := watcher.Watch(dir, newTestClassifier(t, dir))
 	if err != nil {
 		t.Fatalf("Watch: %v", err)
 	}
@@ -62,7 +74,7 @@ func TestWatchDetectsModification(t *testing.T) {
 		t.Fatalf("WriteFile initial: %v", err)
 	}
 
-	w, events, err := watcher.Watch(dir)
+	w, events, err := watcher.Watch(dir, newTestClassifier(t, dir))
 	if err != nil {
 		t.Fatalf("Watch: %v", err)
 	}
@@ -90,7 +102,7 @@ func TestWatchDetectsRemoval(t *testing.T) {
 		t.Fatalf("WriteFile: %v", err)
 	}
 
-	w, events, err := watcher.Watch(dir)
+	w, events, err := watcher.Watch(dir, newTestClassifier(t, dir))
 	if err != nil {
 		t.Fatalf("Watch: %v", err)
 	}
@@ -118,7 +130,7 @@ func TestDebouncing(t *testing.T) {
 		t.Fatalf("WriteFile initial: %v", err)
 	}
 
-	w, events, err := watcher.Watch(dir)
+	w, events, err := watcher.Watch(dir, newTestClassifier(t, dir))
 	if err != nil {
 		t.Fatalf("Watch: %v", err)
 	}

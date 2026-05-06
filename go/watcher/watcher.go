@@ -12,6 +12,8 @@ import (
 	"time"
 
 	"github.com/fsnotify/fsnotify"
+
+	"github.com/marcelocantos/sawmill/scope"
 )
 
 // EventKind describes the type of file system change.
@@ -33,30 +35,22 @@ type FileEvent struct {
 // path are collapsed into one.
 const debounceDuration = 100 * time.Millisecond
 
-// skipDirs is the set of directory names that are never watched.
-var skipDirs = map[string]bool{
-	".git":         true,
-	"target":       true,
-	"node_modules": true,
-	".svn":         true,
-	".hg":          true,
-	"dist":         true,
-	"build":        true,
-	"__pycache__":  true,
-	"vendor":       true,
-}
-
 // Watcher watches a directory tree for file changes.
 type Watcher struct {
-	fw     *fsnotify.Watcher
-	done   chan struct{}
-	closed sync.Once
+	fw         *fsnotify.Watcher
+	done       chan struct{}
+	closed     sync.Once
+	classifier *scope.Classifier
 }
 
-// Watch starts watching root and all non-skipped subdirectories.
+// Watch starts watching root and all non-ignored subdirectories. The
+// classifier decides which directories to watch and which to skip; library
+// and owned dirs are watched, ignored dirs are not. classifier must not be
+// nil.
+//
 // It returns a Watcher and a channel that receives debounced FileEvents.
 // The caller must call Close when done to release resources.
-func Watch(root string) (*Watcher, <-chan FileEvent, error) {
+func Watch(root string, classifier *scope.Classifier) (*Watcher, <-chan FileEvent, error) {
 	absRoot, err := filepath.Abs(root)
 	if err != nil {
 		return nil, nil, err
@@ -71,16 +65,15 @@ func Watch(root string) (*Watcher, <-chan FileEvent, error) {
 		return nil, nil, err
 	}
 
+	w := &Watcher{fw: fw, done: make(chan struct{}), classifier: classifier}
+
 	// Add root and all subdirectories recursively.
-	if err := addDirsRecursive(fw, absRoot); err != nil {
+	if err := w.addDirsRecursive(absRoot); err != nil {
 		fw.Close()
 		return nil, nil, err
 	}
 
 	events := make(chan FileEvent, 64)
-	done := make(chan struct{})
-
-	w := &Watcher{fw: fw, done: done}
 	go w.run(events)
 
 	return w, events, nil
@@ -163,7 +156,7 @@ func (w *Watcher) run(out chan<- FileEvent) {
 				kind = Created
 				// If a new directory is created, start watching it.
 				if info, err := os.Stat(ev.Name); err == nil && info.IsDir() {
-					_ = addDirsRecursive(w.fw, ev.Name)
+					_ = w.addDirsRecursive(ev.Name)
 					continue
 				}
 			case ev.Has(fsnotify.Write) || ev.Has(fsnotify.Chmod):
@@ -174,7 +167,7 @@ func (w *Watcher) run(out chan<- FileEvent) {
 				continue
 			}
 
-			if !isRelevant(ev.Name) {
+			if !w.isRelevant(ev.Name) {
 				continue
 			}
 
@@ -200,8 +193,10 @@ func (w *Watcher) run(out chan<- FileEvent) {
 	}
 }
 
-// addDirsRecursive adds dir and all non-skipped subdirectories to fw.
-func addDirsRecursive(fw *fsnotify.Watcher, dir string) error {
+// addDirsRecursive adds dir and all non-ignored subdirectories to fw.
+// Ignored directories per the classifier are skipped; library and owned dirs
+// are watched alike (the indexer decides what to do with their files).
+func (w *Watcher) addDirsRecursive(dir string) error {
 	return filepath.WalkDir(dir, func(path string, d os.DirEntry, err error) error {
 		if err != nil {
 			return nil // skip unreadable entries
@@ -209,32 +204,20 @@ func addDirsRecursive(fw *fsnotify.Watcher, dir string) error {
 		if !d.IsDir() {
 			return nil
 		}
-		name := d.Name()
-		if shouldSkip(name) {
+		if w.classifier != nil && w.classifier.ShouldSkipDir(path) {
 			return filepath.SkipDir
 		}
-		return fw.Add(path)
+		return w.fw.Add(path)
 	})
 }
 
-// shouldSkip reports whether a directory name should be skipped.
-func shouldSkip(name string) bool {
-	if strings.HasPrefix(name, ".") {
-		return true
+// isRelevant reports whether a file change should be forwarded. Hidden files
+// and files in ignored directories are dropped.
+func (w *Watcher) isRelevant(path string) bool {
+	if w.classifier != nil && w.classifier.Classify(path, false) == scope.Ignored {
+		return false
 	}
-	return skipDirs[name]
-}
-
-// isRelevant reports whether the path points to a file we care about:
-// not inside a skipped directory and not a hidden file.
-func isRelevant(path string) bool {
-	for _, component := range strings.Split(filepath.ToSlash(path), "/") {
-		if shouldSkip(component) {
-			return false
-		}
-	}
-	base := filepath.Base(path)
-	if strings.HasPrefix(base, ".") {
+	if strings.HasPrefix(filepath.Base(path), ".") {
 		return false
 	}
 	return true

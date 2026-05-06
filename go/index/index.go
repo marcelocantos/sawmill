@@ -36,19 +36,48 @@ type Symbol struct {
 	NameEndByte   uint
 }
 
-// ExtractSymbols runs function_def, type_def, import, and call queries against
-// the file and returns all symbols found.
+// Mode controls which symbol queries the extractor runs against a file.
+type Mode int
+
+const (
+	// FullMode extracts declarations, imports, and call sites — the default
+	// for project-owned source.
+	FullMode Mode = iota
+
+	// APIOnlyMode extracts only the public-facing API surface: declarations
+	// (functions, types, methods, fields), and imports. Call sites are
+	// skipped. Used for library-scope files where the call graph is not
+	// useful and dominates the index size.
+	APIOnlyMode
+)
+
+// ExtractSymbols runs the default (full) symbol extraction against a parsed
+// file and returns all symbols found.
 func ExtractSymbols(file *forest.ParsedFile) []Symbol {
-	return ExtractSymbolsFromParts(file.OriginalSource, file.Tree, file.Adapter, file.Path)
+	return ExtractSymbolsFromPartsMode(file.OriginalSource, file.Tree, file.Adapter, file.Path, FullMode)
 }
 
-// ExtractSymbolsFromParts is the decomposed form of ExtractSymbols that accepts
-// raw source, tree, adapter, and path. Use this with FileAccessor.WithTree.
+// ExtractSymbolsFromParts is the decomposed form of ExtractSymbols that
+// accepts raw source, tree, adapter, and path. Runs in FullMode. Retained for
+// callers that don't need to switch modes.
 func ExtractSymbolsFromParts(
 	source []byte,
 	tree *tree_sitter.Tree,
 	adapter adapters.LanguageAdapter,
 	filePath string,
+) []Symbol {
+	return ExtractSymbolsFromPartsMode(source, tree, adapter, filePath, FullMode)
+}
+
+// ExtractSymbolsFromPartsMode is the full form of the extractor: caller picks
+// the mode. APIOnlyMode skips call-expression queries and emits methods and
+// fields in addition to top-level decls.
+func ExtractSymbolsFromPartsMode(
+	source []byte,
+	tree *tree_sitter.Tree,
+	adapter adapters.LanguageAdapter,
+	filePath string,
+	mode Mode,
 ) []Symbol {
 	var symbols []Symbol
 
@@ -62,15 +91,25 @@ func ExtractSymbolsFromParts(
 		extractFromParts(source, tree, adapter, "import", q, filePath, &symbols)
 	}
 
-	if q := adapter.CallExprQuery(); q != "" {
-		extractFromParts(source, tree, adapter, "call", q, filePath, &symbols)
+	switch mode {
+	case FullMode:
+		if q := adapter.CallExprQuery(); q != "" {
+			extractFromParts(source, tree, adapter, "call", q, filePath, &symbols)
+		}
+	case APIOnlyMode:
+		if q := adapter.MethodQuery(); q != "" {
+			extractFromParts(source, tree, adapter, "method", q, filePath, &symbols)
+		}
+		if q := adapter.FieldQuery(); q != "" {
+			extractFromParts(source, tree, adapter, "field", q, filePath, &symbols)
+		}
 	}
 
 	return symbols
 }
 
 // wholeCaptureNames are the "whole node" capture names checked in order.
-var wholeCaptureNames = []string{"func", "call", "type_def", "import"}
+var wholeCaptureNames = []string{"func", "call", "type_def", "import", "method", "field"}
 
 // extractWithQuery runs a single query against file and appends discovered
 // symbols to *out.

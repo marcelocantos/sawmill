@@ -9,6 +9,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"os"
 	"strings"
 	"time"
 
@@ -99,30 +100,19 @@ func (s *Store) init() error {
 		return fmt.Errorf("initialising store schema: %w", err)
 	}
 
-	// Migration: add source column if it doesn't exist yet.
-	var hasSource bool
-	rows, err := s.db.Query("PRAGMA table_info(files)")
+	// Migrations: add columns introduced after the initial schema.
+	have, err := s.fileColumns()
 	if err != nil {
-		return fmt.Errorf("checking files schema: %w", err)
+		return err
 	}
-	for rows.Next() {
-		var cid int
-		var name, typ string
-		var notnull int
-		var dflt sql.NullString
-		var pk int
-		if err := rows.Scan(&cid, &name, &typ, &notnull, &dflt, &pk); err != nil {
-			rows.Close()
-			return fmt.Errorf("scanning table_info: %w", err)
-		}
-		if name == "source" {
-			hasSource = true
-		}
-	}
-	rows.Close()
-	if !hasSource {
+	if !have["source"] {
 		if _, err := s.db.Exec("ALTER TABLE files ADD COLUMN source BLOB"); err != nil {
 			return fmt.Errorf("adding source column: %w", err)
+		}
+	}
+	if !have["scope"] {
+		if _, err := s.db.Exec(`ALTER TABLE files ADD COLUMN scope TEXT NOT NULL DEFAULT 'owned'`); err != nil {
+			return fmt.Errorf("adding scope column: %w", err)
 		}
 	}
 
@@ -193,6 +183,28 @@ func splitMtime(t time.Time) (int64, int64) {
 	return t.Unix(), int64(t.Nanosecond())
 }
 
+// fileColumns returns the set of column names currently on the files table.
+func (s *Store) fileColumns() (map[string]bool, error) {
+	rows, err := s.db.Query("PRAGMA table_info(files)")
+	if err != nil {
+		return nil, fmt.Errorf("checking files schema: %w", err)
+	}
+	defer rows.Close()
+	cols := make(map[string]bool)
+	for rows.Next() {
+		var cid int
+		var name, typ string
+		var notnull int
+		var dflt sql.NullString
+		var pk int
+		if err := rows.Scan(&cid, &name, &typ, &notnull, &dflt, &pk); err != nil {
+			return nil, fmt.Errorf("scanning table_info: %w", err)
+		}
+		cols[name] = true
+	}
+	return cols, rows.Err()
+}
+
 // --- Files ---
 
 // CheckFile checks if a file is cached and up-to-date. Returns the stored
@@ -213,19 +225,26 @@ func (s *Store) CheckFile(path string, mtime time.Time) (string, error) {
 	return hash, nil
 }
 
-// UpsertFile records a parsed file's metadata and source bytes.
-func (s *Store) UpsertFile(path, language string, mtime time.Time, contentHash string, source []byte) error {
+// UpsertFile records a parsed file's metadata and source bytes. scope is one
+// of "owned", "library", or "ignored" (use scope.Kind.String()). For library
+// scope, callers should pass nil source — it will be re-read from disk via
+// the FileAccessor on demand.
+func (s *Store) UpsertFile(path, language string, mtime time.Time, contentHash string, source []byte, scope string) error {
+	if scope == "" {
+		scope = "owned"
+	}
 	secs, nanos := splitMtime(mtime)
 	_, err := s.db.Exec(
-		`INSERT INTO files (path, language, mtime_secs, mtime_nanos, content_hash, source)
-		 VALUES (?, ?, ?, ?, ?, ?)
+		`INSERT INTO files (path, language, mtime_secs, mtime_nanos, content_hash, source, scope)
+		 VALUES (?, ?, ?, ?, ?, ?, ?)
 		 ON CONFLICT(path) DO UPDATE SET
 			language = excluded.language,
 			mtime_secs = excluded.mtime_secs,
 			mtime_nanos = excluded.mtime_nanos,
 			content_hash = excluded.content_hash,
-			source = excluded.source`,
-		path, language, secs, nanos, contentHash, source,
+			source = excluded.source,
+			scope = excluded.scope`,
+		path, language, secs, nanos, contentHash, source, scope,
 	)
 	if err != nil {
 		return fmt.Errorf("upserting file %s: %w", path, err)
@@ -233,17 +252,42 @@ func (s *Store) UpsertFile(path, language string, mtime time.Time, contentHash s
 	return nil
 }
 
-// ReadSource returns the stored source bytes for a file.
+// FileScope returns the stored scope for a file ("owned", "library", or
+// "ignored"). Returns "" if the file is not tracked.
+func (s *Store) FileScope(path string) (string, error) {
+	var scope string
+	err := s.db.QueryRow("SELECT scope FROM files WHERE path = ?", path).Scan(&scope)
+	if err == sql.ErrNoRows {
+		return "", nil
+	}
+	if err != nil {
+		return "", fmt.Errorf("reading scope for %s: %w", path, err)
+	}
+	return scope, nil
+}
+
+// ReadSource returns the stored source bytes for a file. For library-scope
+// files (where source is intentionally not cached), the bytes are re-read
+// from disk on demand.
 func (s *Store) ReadSource(path string) ([]byte, error) {
 	var source []byte
-	err := s.db.QueryRow("SELECT source FROM files WHERE path = ?", path).Scan(&source)
+	var scope string
+	err := s.db.QueryRow("SELECT source, scope FROM files WHERE path = ?", path).Scan(&source, &scope)
 	if err == sql.ErrNoRows {
 		return nil, fmt.Errorf("file %s not found in store", path)
 	}
 	if err != nil {
 		return nil, fmt.Errorf("reading source for %s: %w", path, err)
 	}
-	return source, nil
+	if source != nil {
+		return source, nil
+	}
+	// Library-scope (or legacy) row with no cached source — read from disk.
+	disk, err := os.ReadFile(path)
+	if err != nil {
+		return nil, fmt.Errorf("reading library source %s from disk: %w", path, err)
+	}
+	return disk, nil
 }
 
 // FileLanguage returns the stored language extension for a file.
@@ -377,6 +421,57 @@ func (s *Store) UpdateSymbols(filePath string, symbols []SymbolRecord) error {
 	}
 
 	return tx.Commit()
+}
+
+// FindSymbolsInScopes is FindSymbols restricted to files whose scope is in
+// the given set. An empty set means no scope filter.
+func (s *Store) FindSymbolsInScopes(name, kind string, scopes []string) ([]SymbolRecord, error) {
+	if len(scopes) == 0 {
+		return s.FindSymbols(name, kind)
+	}
+
+	var queryName string
+	var useLike bool
+	if prefix, ok := strings.CutSuffix(name, "*"); ok {
+		escaped := strings.NewReplacer(`\`, `\\`, `%`, `\%`, `_`, `\_`).Replace(prefix)
+		queryName = escaped + "%"
+		useLike = true
+	} else {
+		queryName = name
+	}
+
+	placeholders := strings.TrimRight(strings.Repeat("?,", len(scopes)), ",")
+	args := []any{queryName}
+	if kind != "" {
+		args = append(args, kind)
+	}
+	for _, sc := range scopes {
+		args = append(args, sc)
+	}
+
+	nameOp := "= ?"
+	if useLike {
+		nameOp = `LIKE ? ESCAPE '\'`
+	}
+	kindClause := ""
+	if kind != "" {
+		kindClause = " AND s.kind = ?"
+	}
+
+	q := fmt.Sprintf(`
+		SELECT s.name, s.kind, s.file_path, s.start_line, s.start_col, s.end_line, s.end_col,
+		       s.start_byte, s.end_byte
+		  FROM symbols s
+		  JOIN files   f ON f.path = s.file_path
+		 WHERE s.name %s%s
+		   AND f.scope IN (%s)`, nameOp, kindClause, placeholders)
+
+	rows, err := s.db.Query(q, args...)
+	if err != nil {
+		return nil, fmt.Errorf("finding scoped symbols %q: %w", name, err)
+	}
+	defer rows.Close()
+	return scanSymbolRows(rows)
 }
 
 // FindSymbols finds symbols by name (exact or prefix match if name ends with
