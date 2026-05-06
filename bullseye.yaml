@@ -717,6 +717,27 @@ targets:
     origin: forked-from spyder PATH-bug investigation in ~/think on 2026-04-27
     discovered: 2026-04-27
     achieved: 2026-04-27
+  T34:
+    name: Sawmill classifies indexed files into owned/library/ignored scopes
+    status: converging
+    value: 0.0
+    cost: 0.0
+    showcase: true
+    acceptance:
+    - files table has scope column populated at index time
+    - walker honours gitignore when a .git directory is present
+    - Unity build dirs added to ignored defaults
+    - vendor dirs classified as library
+    - project scopes.yaml can override classification per glob
+    - library-scope files produce no call symbols
+    - library-scope files store NULL source
+    - library-scope indexing captures exported decls including methods and fields
+    - find_references excludes library hits by default; include_libraries flag opens them up
+    - fresh re-index of Unity tree produces a DB under 100 MB
+    - tests cover classification and gitignore plumbing
+    context: 'Unity project store grew to 6.3 GB because the walker descended into IL2CPP build output and indexed every call expression in 5,800 generated C++ files. 99.8 pct of files were build artefacts; 77 pct of symbol rows were call references. Three skipDirs lists across forest, model, watcher are out of sync, miss vendor and build dirs, and ignore gitignore. Library code gets the same heavy indexing as owned source despite being read-only. Three-tier scope model: owned (full index, source cached), library (public API only, no call sites, source re-read from disk on demand), ignored (not walked). Classification = hardcoded defaults plus project-level scopes.yaml override plus gitignore. find_references defaults to owned only with opt-in for library.'
+    origin: forked 2026-05-04 store-size investigation; Unity DB hit 6.3 GB
+    discovered: 2026-05-06
   T4:
     name: CST node tree is stored in SQLite — in-memory CSTs are transient parse artifacts only
     status: achieved
