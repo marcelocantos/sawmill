@@ -9,7 +9,7 @@ pre-1.0 period exists to get these right.
 
 ## Interaction surface catalogue
 
-Snapshot as of v0.12.0. 250 public surface items.
+Snapshot as of v0.13.0. 251 public surface items.
 
 ### CLI
 
@@ -32,7 +32,7 @@ Snapshot as of v0.12.0. 250 public surface items.
 | `rename_file` | `from`, `to` | `format` | **Stable** |
 | `query` | — | `kind`, `name`, `file`, `raw_query`, `capture`, `path`, `format` | **Stable** |
 | `find_symbol` | `symbol` | `kind` | **Stable** |
-| `find_references` | `symbol` | — | **Stable** |
+| `find_references` | `symbol` | `include_libraries` | **Stable** — `include_libraries` (default `false`) is new in v0.13.0; default behaviour now restricts hits to owned-scope files |
 | `dependency_usage` | `package` | `path` | **Stable** |
 | `transform` | — | `path`, `kind`, `name`, `file`, `raw_query`, `capture`, `action`, `code`, `before`, `after`, `transform_fn`, `format` | **Stable** |
 | `transform_batch` | `transforms` | `path`, `format` | **Needs review** — `transforms` is a JSON string, not a native array |
@@ -149,6 +149,15 @@ Snapshot as of v0.12.0. 250 public surface items.
   case currently produces a textual conflict instead of replaying the
   rename. Soak across real merges and add the missing language
   coverage before promoting to **Stable**.
+- **Scope classifier defaults**: v0.13.0 introduces three-tier indexing
+  scopes (owned/library/ignored) driven by `scope.Classifier`. The
+  hardcoded library and ignored basename lists, plus the
+  `.sawmill/scopes.yaml` override format, are new and may need
+  adjustment as more ecosystems are encountered. Library-scope indexing
+  currently emits all decl-kind symbols (functions, types, methods,
+  fields) without filtering for language-specific public/exported
+  visibility — heuristic public-only filters per language are deferred
+  until a clear convention emerges across all five adapters.
 
 ## Out of scope for 1.0
 

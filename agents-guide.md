@@ -528,3 +528,17 @@ for v in violations:
   removing a dependency, call `dependency_usage` to see every import
   site, which symbols are used, and whether the dependency leaks into
   public APIs.
+
+- **Indexing scopes (owned/library/ignored).** Sawmill classifies each
+  file into one of three scopes at index time. Owned files (project
+  source tracked by git) are fully indexed including call sites.
+  Library files (under `node_modules/`, `vendor/`, `third_party/`,
+  `Pods/`, `deps/`, etc.) are indexed at the API surface only —
+  declarations, types, methods, fields — without call sites, and
+  their source is not cached. Ignored files (build outputs like
+  `Library/`, `Builds/`, `il2cppOutput/`, `target/`, `dist/`, hidden
+  dirs, gitignored non-source) are not walked. `find_references`
+  defaults to owned-scope hits only; pass `include_libraries: true`
+  to widen the search. Override defaults per project with
+  `.sawmill/scopes.yaml` (sections: `owned`, `library`, `ignored`,
+  each a list of gitignore-style globs).
