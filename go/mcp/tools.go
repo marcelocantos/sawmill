@@ -340,6 +340,7 @@ func (h *Handler) handleFindReferences(args map[string]any) (string, bool, error
 	if err != nil {
 		return err.Error(), true, nil
 	}
+	includeLibraries := optBool(args, "include_libraries")
 
 	h.mu.Lock()
 	defer h.mu.Unlock()
@@ -349,7 +350,16 @@ func (h *Handler) handleFindReferences(args map[string]any) (string, bool, error
 		return err.Error(), true, nil
 	}
 
-	records, err := m.FindSymbols(symbol, "call")
+	// Library files have no call symbols (they're indexed in API-only mode),
+	// so the scope filter is implicitly satisfied — we restrict to "owned"
+	// files explicitly to make the contract clear and to remain robust if a
+	// library file's classification ever changes.
+	scopes := []string{"owned"}
+	if includeLibraries {
+		scopes = append(scopes, "library")
+	}
+
+	records, err := m.FindSymbolsInScopes(symbol, "call", scopes)
 	if err != nil {
 		return fmt.Sprintf("finding references: %v", err), true, nil
 	}

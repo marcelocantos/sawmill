@@ -347,10 +347,13 @@ func Definitions() []mcpgo.Tool {
 
 		// find_references
 		mcpgo.NewTool("find_references",
-			mcpgo.WithDescription("Find all call sites for a symbol."),
+			mcpgo.WithDescription("Find all call sites for a symbol. By default this restricts results to owned (project-local) source — vendored/external library files are indexed in API-only mode and never carry call symbols. Pass include_libraries=true to widen the search to any library files that happen to have call symbols (legacy stores from before the scope split, mostly)."),
 			mcpgo.WithString("symbol",
 				mcpgo.Required(),
 				mcpgo.Description("Symbol name to search for call sites"),
+			),
+			mcpgo.WithBoolean("include_libraries",
+				mcpgo.Description("If true, also return call sites from library-scope files. Default false."),
 			),
 		),
 

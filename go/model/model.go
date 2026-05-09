@@ -28,6 +28,7 @@ import (
 	"github.com/marcelocantos/sawmill/index"
 	"github.com/marcelocantos/sawmill/lspclient"
 	"github.com/marcelocantos/sawmill/paths"
+	"github.com/marcelocantos/sawmill/scope"
 	"github.com/marcelocantos/sawmill/store"
 	"github.com/marcelocantos/sawmill/watcher"
 )
@@ -47,6 +48,8 @@ type CodebaseModel struct {
 	Cache *forest.TreeCache
 	// GitIndex is the lazy git commit indexer (nil if the root is not a git repo).
 	GitIndex *gitindex.Indexer
+	// Scope classifies files as owned/library/ignored.
+	Scope *scope.Classifier
 
 	// forest is only set for ephemeral models (no manager goroutine).
 	forest *forest.Forest
@@ -85,12 +88,18 @@ func Load(root string) (*CodebaseModel, error) {
 		return nil, err
 	}
 
-	if err := incrementalParse(absRoot, s); err != nil {
+	classifier, err := scope.New(absRoot)
+	if err != nil {
+		s.Close()
+		return nil, fmt.Errorf("building scope classifier: %w", err)
+	}
+
+	if err := incrementalParse(absRoot, s, classifier); err != nil {
 		s.Close()
 		return nil, err
 	}
 
-	w, events, err := watcher.Watch(absRoot)
+	w, events, err := watcher.Watch(absRoot, classifier)
 	if err != nil {
 		s.Close()
 		return nil, fmt.Errorf("starting watcher: %w", err)
@@ -101,6 +110,7 @@ func Load(root string) (*CodebaseModel, error) {
 		Store:   s,
 		LSP:     lspclient.NewPool(),
 		Cache:   forest.NewTreeCache(forest.DefaultCacheSize),
+		Scope:   classifier,
 		w:       w,
 		events:  events,
 		notify:  make(chan []string, 16),
@@ -152,19 +162,46 @@ func LoadEphemeral(root string) (*CodebaseModel, error) {
 		return nil, err
 	}
 
-	f, err := forest.FromPath(absRoot)
+	classifier, err := scope.New(absRoot)
+	if err != nil {
+		s.Close()
+		return nil, fmt.Errorf("building scope classifier: %w", err)
+	}
+
+	f, err := forest.FromPathSkip(absRoot, classifier.ShouldSkipDir)
 	if err != nil {
 		s.Close()
 		return nil, err
 	}
 
 	for _, file := range f.Files {
-		symbols := index.ExtractSymbols(file)
+		fileScope := classifier.Classify(file.Path, false)
+		if fileScope == scope.Ignored {
+			continue
+		}
+		mode := index.FullMode
+		var stored []byte = file.OriginalSource
+		if fileScope == scope.Library {
+			mode = index.APIOnlyMode
+			stored = nil
+		}
+		ext := strings.TrimPrefix(filepath.Ext(file.Path), ".")
+		// Ephemeral models still need files rows so the symbols FK is satisfied.
+		// Use a zero mtime + empty hash; nothing depends on either for the
+		// in-memory case.
+		if err := s.UpsertFile(file.Path, ext, time.Time{}, "", stored, fileScope.String()); err != nil {
+			s.Close()
+			return nil, fmt.Errorf("upserting file %s: %w", file.Path, err)
+		}
+		symbols := index.ExtractSymbolsFromPartsMode(file.OriginalSource, file.Tree, file.Adapter, file.Path, mode)
 		records := symbolsToRecords(symbols, file.Path)
-		_ = s.UpdateSymbols(file.Path, records)
+		if err := s.UpdateSymbols(file.Path, records); err != nil {
+			s.Close()
+			return nil, fmt.Errorf("indexing %s: %w", file.Path, err)
+		}
 	}
 
-	return &CodebaseModel{Root: absRoot, Store: s, LSP: lspclient.NewPool(), Cache: forest.NewTreeCache(forest.DefaultCacheSize), forest: f}, nil
+	return &CodebaseModel{Root: absRoot, Store: s, LSP: lspclient.NewPool(), Cache: forest.NewTreeCache(forest.DefaultCacheSize), Scope: classifier, forest: f}, nil
 }
 
 // Close stops the manager goroutine, the file watcher, LSP clients, the git
@@ -289,6 +326,11 @@ func (m *CodebaseModel) FindSymbols(name, kind string) ([]store.SymbolRecord, er
 	return m.Store.FindSymbols(name, kind)
 }
 
+// FindSymbolsInScopes is FindSymbols restricted to the given scopes.
+func (m *CodebaseModel) FindSymbolsInScopes(name, kind string, scopes []string) ([]store.SymbolRecord, error) {
+	return m.Store.FindSymbolsInScopes(name, kind, scopes)
+}
+
 // --- Manager goroutine ---
 
 // runManager is the event loop that owns all mutable forest state. It
@@ -345,6 +387,14 @@ func (m *CodebaseModel) parseAndIndexFile(path string) {
 		return
 	}
 
+	fileScope := scope.Owned
+	if m.Scope != nil {
+		fileScope = m.Scope.Classify(path, false)
+	}
+	if fileScope == scope.Ignored {
+		return
+	}
+
 	source, err := os.ReadFile(path)
 	if err != nil {
 		return
@@ -364,26 +414,40 @@ func (m *CodebaseModel) parseAndIndexFile(path string) {
 	}
 	defer tree.Close()
 
-	symbols := index.ExtractSymbolsFromParts(source, tree, adapter, path)
+	mode := index.FullMode
+	var stored []byte = source
+	if fileScope == scope.Library {
+		mode = index.APIOnlyMode
+		stored = nil // re-read from disk on demand
+	}
+
+	symbols := index.ExtractSymbolsFromPartsMode(source, tree, adapter, path, mode)
 	records := symbolsToRecords(symbols, path)
 
-	_ = m.Store.UpsertFile(path, ext, mtime, contentHash, source)
+	_ = m.Store.UpsertFile(path, ext, mtime, contentHash, stored, fileScope.String())
 	_ = m.Store.UpdateSymbols(path, records)
 }
 
 // --- Static helpers ---
 
 // incrementalParse walks root, parses changed files, and populates the store.
-// Trees are parsed only to extract symbols, then discarded.
-func incrementalParse(root string, s *store.Store) error {
+// Trees are parsed only to extract symbols, then discarded. Files are
+// classified via scope.Classifier; ignored dirs are skipped, library files
+// are indexed in API-only mode without source caching.
+func incrementalParse(root string, s *store.Store, classifier *scope.Classifier) error {
 	return filepath.WalkDir(root, func(path string, d os.DirEntry, walkErr error) error {
 		if walkErr != nil {
 			return walkErr
 		}
 		if d.IsDir() {
-			if shouldSkipDir(d.Name()) {
+			if path != root && classifier.ShouldSkipDir(path) {
 				return filepath.SkipDir
 			}
+			return nil
+		}
+
+		fileScope := classifier.Classify(path, false)
+		if fileScope == scope.Ignored {
 			return nil
 		}
 
@@ -421,29 +485,22 @@ func incrementalParse(root string, s *store.Store) error {
 			return nil // skip unparseable files
 		}
 
-		symbols := index.ExtractSymbolsFromParts(source, tree, adapter, path)
+		mode := index.FullMode
+		var stored []byte = source
+		if fileScope == scope.Library {
+			mode = index.APIOnlyMode
+			stored = nil
+		}
+
+		symbols := index.ExtractSymbolsFromPartsMode(source, tree, adapter, path, mode)
 		tree.Close()
 
 		records := symbolsToRecords(symbols, path)
-		_ = s.UpsertFile(path, ext, mtime, contentHash, source)
+		_ = s.UpsertFile(path, ext, mtime, contentHash, stored, fileScope.String())
 		_ = s.UpdateSymbols(path, records)
 
 		return nil
 	})
-}
-
-var skipDirs = map[string]bool{
-	"node_modules": true, "target": true, "__pycache__": true,
-	".git": true, ".svn": true, ".hg": true,
-	"vendor": true, "dist": true, "build": true,
-	".idea": true, ".vscode": true,
-}
-
-func shouldSkipDir(name string) bool {
-	if strings.HasPrefix(name, ".") {
-		return true
-	}
-	return skipDirs[name]
 }
 
 func hashBytes(data []byte) string {
