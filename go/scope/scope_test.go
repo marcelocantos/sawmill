@@ -4,10 +4,12 @@
 package scope_test
 
 import (
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/marcelocantos/sawmill/scope"
 )
@@ -182,6 +184,56 @@ func TestLibraryBeatsGitignore(t *testing.T) {
 	got := c.Classify(filepath.Join(root, "node_modules/leftpad/index.js"), false)
 	if got != scope.Library {
 		t.Errorf("gitignored node_modules entry classified as %s; want library", got)
+	}
+}
+
+// TestNewDoesNotRecurseIntoTree is a regression check on the scope.New()
+// gitignore loader. The first cut used go-git's gitignore.ReadPatterns,
+// which recursively descends the entire tree to collect every nested
+// .gitignore — that blocked Load for tens of minutes on a Unity-sized
+// repo before the indexing walker even started. New() must read only
+// the top-level .gitignore (and .git/info/exclude); it must complete
+// quickly regardless of tree depth or width.
+func TestNewDoesNotRecurseIntoTree(t *testing.T) {
+	root := t.TempDir()
+
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skipf("git not on PATH: %v", err)
+	}
+	cmd := exec.Command("git", "init", "--quiet")
+	cmd.Dir = root
+	if err := cmd.Run(); err != nil {
+		t.Fatalf("git init: %v", err)
+	}
+
+	// Build a wide+deep tree the recursive loader would choke on.
+	// 10 top-level branches × 10 mid × 10 leaf = 1000 dirs, each with a
+	// .gitignore the recursive loader would have parsed eagerly.
+	for i := range 10 {
+		for j := range 10 {
+			for k := range 10 {
+				dir := filepath.Join(root, fmt.Sprintf("a%d", i), fmt.Sprintf("b%d", j), fmt.Sprintf("c%d", k))
+				if err := os.MkdirAll(dir, 0o755); err != nil {
+					t.Fatalf("MkdirAll %s: %v", dir, err)
+				}
+				if err := os.WriteFile(filepath.Join(dir, ".gitignore"), []byte("*.tmp\n"), 0o644); err != nil {
+					t.Fatalf("WriteFile %s/.gitignore: %v", dir, err)
+				}
+			}
+		}
+	}
+
+	start := time.Now()
+	if _, err := scope.New(root); err != nil {
+		t.Fatalf("scope.New: %v", err)
+	}
+	elapsed := time.Since(start)
+
+	// scope.New should be fast even with 1000+ nested .gitignore files,
+	// because it must not descend into the tree. 500ms is generous; a
+	// recursive implementation on this tree would run in seconds.
+	if elapsed > 500*time.Millisecond {
+		t.Errorf("scope.New took %v on a 1000-dir tree; recursion regression likely", elapsed)
 	}
 }
 
