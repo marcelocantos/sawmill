@@ -18,12 +18,12 @@
 package scope
 
 import (
+	"bufio"
 	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
 
-	"github.com/go-git/go-billy/v5/osfs"
 	"github.com/go-git/go-git/v5/plumbing/format/gitignore"
 	"gopkg.in/yaml.v3"
 )
@@ -182,16 +182,49 @@ func (c *Classifier) loadGitignore() error {
 		// Not a git repo (or .git inaccessible); skip gitignore consultation.
 		return nil
 	}
-	fs := osfs.New(c.root)
-	patterns, err := gitignore.ReadPatterns(fs, nil)
-	if err != nil {
-		return err
-	}
+
+	// Read only the top-level .gitignore and .git/info/exclude. We deliberately
+	// do NOT use go-git's gitignore.ReadPatterns: that variant recursively
+	// descends the entire tree to collect every nested .gitignore file before
+	// the indexing walker even starts, which on a Unity-sized project blocks
+	// Load for tens of minutes. Most real-world projects have a single
+	// top-level .gitignore that is sufficient to identify ignored build dirs;
+	// nested .gitignore files (e.g. inside a vendored library) are rarely
+	// load-bearing for sawmill's classification — and any project that needs
+	// finer control can override via .sawmill/scopes.yaml.
+	var patterns []gitignore.Pattern
+	patterns = append(patterns, readGitignoreFile(filepath.Join(c.root, ".gitignore"), nil)...)
+	patterns = append(patterns, readGitignoreFile(filepath.Join(c.root, ".git", "info", "exclude"), nil)...)
 	if len(patterns) == 0 {
 		return nil
 	}
 	c.matcher = gitignore.NewMatcher(patterns)
 	return nil
+}
+
+// readGitignoreFile parses a gitignore-format file at path, returning its
+// patterns. Missing files are not an error — they return nil. base is the
+// pattern's base path (nil = repo root).
+func readGitignoreFile(path string, base []string) []gitignore.Pattern {
+	f, err := os.Open(path)
+	if err != nil {
+		return nil
+	}
+	defer f.Close()
+
+	var patterns []gitignore.Pattern
+	scanner := bufio.NewScanner(f)
+	for scanner.Scan() {
+		line := scanner.Text()
+		if strings.HasPrefix(line, "#") {
+			continue
+		}
+		if strings.TrimSpace(line) == "" {
+			continue
+		}
+		patterns = append(patterns, gitignore.ParsePattern(line, base))
+	}
+	return patterns
 }
 
 // Classify returns the scope for absPath. isDir indicates whether the path
