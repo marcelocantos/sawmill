@@ -58,6 +58,21 @@ func optBool(args map[string]any, key string) bool {
 	return v
 }
 
+// optInt returns the int argument named key, or 0 if absent. JSON numbers
+// arrive as float64; integer-valued bool/string conversions are not
+// attempted.
+func optInt(args map[string]any, key string) int {
+	switch v := args[key].(type) {
+	case float64:
+		return int(v)
+	case int:
+		return v
+	case int64:
+		return int(v)
+	}
+	return 0
+}
+
 // ptr returns a pointer to s, or nil if s == "".
 func ptr(s string) *string {
 	if s == "" {

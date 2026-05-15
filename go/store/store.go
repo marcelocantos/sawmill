@@ -27,6 +27,12 @@ type SymbolRecord struct {
 	EndCol    int
 	StartByte int
 	EndByte   int
+
+	// Evidence is a lowercased, space-padded token bag (" tok1 tok2 ")
+	// derived from the symbol's identifier, path, doc/comment text, and
+	// in-body literals. Used by find_by_concept. Empty for callers that
+	// don't compute it.
+	Evidence string
 }
 
 // Recipe is a saved transformation recipe.
@@ -171,11 +177,53 @@ func (s *Store) init() error {
 			action_json TEXT NOT NULL,
 			confidence TEXT NOT NULL DEFAULT 'suggest'
 		);
+
+		CREATE TABLE IF NOT EXISTS concepts (
+			name TEXT PRIMARY KEY,
+			description TEXT NOT NULL DEFAULT '',
+			aliases_json TEXT NOT NULL DEFAULT '[]'
+		);
 	`)
 	if err != nil {
 		return fmt.Errorf("initialising store schema: %w", err)
 	}
+
+	// Symbol-level evidence column: lowercased, space-padded token bag used
+	// by find_by_concept. Empty for rows from pre-concept-search store
+	// versions until those files are re-indexed (mtime/hash bump).
+	haveSym, err := s.symbolColumns()
+	if err != nil {
+		return err
+	}
+	if !haveSym["evidence"] {
+		if _, err := s.db.Exec(`ALTER TABLE symbols ADD COLUMN evidence TEXT NOT NULL DEFAULT ''`); err != nil {
+			return fmt.Errorf("adding evidence column: %w", err)
+		}
+	}
 	return nil
+}
+
+// symbolColumns returns the set of column names currently on the symbols
+// table. Used to gate migrations that add new columns.
+func (s *Store) symbolColumns() (map[string]bool, error) {
+	rows, err := s.db.Query("PRAGMA table_info(symbols)")
+	if err != nil {
+		return nil, fmt.Errorf("checking symbols schema: %w", err)
+	}
+	defer rows.Close()
+	cols := make(map[string]bool)
+	for rows.Next() {
+		var cid int
+		var name, typ string
+		var notnull int
+		var dflt sql.NullString
+		var pk int
+		if err := rows.Scan(&cid, &name, &typ, &notnull, &dflt, &pk); err != nil {
+			return nil, fmt.Errorf("scanning table_info: %w", err)
+		}
+		cols[name] = true
+	}
+	return cols, rows.Err()
 }
 
 // splitMtime splits a time.Time into (unix_secs, nanos) for storage.
@@ -402,8 +450,8 @@ func (s *Store) UpdateSymbols(filePath string, symbols []SymbolRecord) error {
 
 	stmt, err := tx.Prepare(
 		`INSERT INTO symbols
-		 (name, kind, file_path, start_line, start_col, end_line, end_col, start_byte, end_byte)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		 (name, kind, file_path, start_line, start_col, end_line, end_col, start_byte, end_byte, evidence)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 	)
 	if err != nil {
 		return fmt.Errorf("preparing symbol insert: %w", err)
@@ -414,7 +462,7 @@ func (s *Store) UpdateSymbols(filePath string, symbols []SymbolRecord) error {
 		if _, err := stmt.Exec(
 			sym.Name, sym.Kind, filePath,
 			sym.StartLine, sym.StartCol, sym.EndLine, sym.EndCol,
-			sym.StartByte, sym.EndByte,
+			sym.StartByte, sym.EndByte, sym.Evidence,
 		); err != nil {
 			return fmt.Errorf("inserting symbol %q for %s: %w", sym.Name, filePath, err)
 		}

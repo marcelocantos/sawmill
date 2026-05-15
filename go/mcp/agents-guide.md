@@ -94,6 +94,7 @@ replaces any unapplied pending changes.
 | `query` | Structural search by node kind | `kind` ("function", "class", "call", "import"), `name` (glob), `file` |
 | `find_symbol` | Find definitions by name | `symbol` |
 | `find_references` | Find usages by name | `symbol` |
+| `find_by_concept` | Concept-level search — expands a free-text query (e.g. "swipe", "retry", "auth") via stored + built-in concept dictionaries, then ranks symbols by alias hits across name, path, and body tokens. Reach for it when grep would be a multi-round walk. | `query`, `limit`, `scope`, `format` |
 
 ### Transforms
 
@@ -115,6 +116,9 @@ replaces any unapplied pending changes.
 | `instantiate` | Create code from a taught recipe | `recipe`, `params` |
 | `teach_convention` | Define an enforceable project rule | `name`, `check_program` |
 | `check_conventions` | Scan for convention violations | `path` |
+| `teach_concept` | Save a concept entry — a name plus an alias list that `find_by_concept` expands during search. Shadows the built-in concept of the same name. | `name`, `aliases`, `description` |
+| `list_concepts` | List taught concepts plus unshadowed built-in concepts | -- |
+| `delete_concept` | Delete a taught concept (built-ins cannot be deleted, only shadowed) | `name` |
 | `list_recipes` | List all taught recipes | -- |
 | `list_conventions` | List all taught conventions | -- |
 
