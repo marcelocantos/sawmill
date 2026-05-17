@@ -727,7 +727,7 @@ targets:
     achieved: 2026-05-09
   T35:
     name: Sawmill answers concept-level code queries — find_by_concept returns AST-anchored symbol matches expanded via a project-extensible concept dictionary
-    status: converging
+    status: achieved
     value: 13.0
     cost: 8.0
     acceptance:
@@ -753,10 +753,11 @@ targets:
     - agent-ergonomics
     origin: manual
     discovered: 2026-05-14
+    achieved: 2026-05-17
   T36:
     name: find_by_concept resolves real-world concept queries from the grep-audit corpus in a single call, with measurable reduction in observed grep-and-read cycles
     kind: verify
-    status: identified
+    status: achieved
     value: 0.0
     cost: 0.0
     acceptance:
@@ -773,6 +774,7 @@ targets:
     - verify
     origin: manual
     discovered: 2026-05-14
+    achieved: 2026-05-17
   T4:
     name: CST node tree is stored in SQLite — in-memory CSTs are transient parse artifacts only
     status: achieved
