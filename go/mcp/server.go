@@ -223,6 +223,14 @@ func (h *Handler) Call(name string, args map[string]any) (string, bool, error) {
 		return h.handleApplyMultiRootPR(args)
 	case "merge_three_way":
 		return h.handleMergeThreeWay(args)
+	case "teach_concept":
+		return h.handleTeachConcept(args)
+	case "list_concepts":
+		return h.handleListConcepts(args)
+	case "delete_concept":
+		return h.handleDeleteConcept(args)
+	case "find_by_concept":
+		return h.handleFindByConcept(args)
 	default:
 		return "", false, fmt.Errorf("unknown tool: %s", name)
 	}
@@ -1124,6 +1132,56 @@ All predicates accept an optional "file" key to restrict evaluation to one path.
 			mcpgo.WithString("bad",
 				mcpgo.Required(),
 				mcpgo.Description("Bad ref — commit where the predicate has its unexpected value (must be a descendant of good)"),
+			),
+		),
+
+		// teach_concept
+		mcpgo.NewTool("teach_concept",
+			mcpgo.WithDescription(`Save a named concept entry: a label plus a list of alias terms that should expand into search hits during find_by_concept. Example: name="swipe", aliases=["swipe","gesture","fling","pan","UISwipeGestureRecognizer","GestureDetector"]. Stored concepts shadow built-ins of the same name. Aliases are lowercased and deduplicated on save.`),
+			mcpgo.WithString("name",
+				mcpgo.Required(),
+				mcpgo.Description("Concept name (used as the query lookup key and as one of the aliases)"),
+			),
+			mcpgo.WithString("aliases",
+				mcpgo.Required(),
+				mcpgo.Description(`JSON array of alias terms. Each is lowercased; tokens shorter than two characters are dropped. Include platform-specific type names that mean the same thing (e.g. "UISwipeGestureRecognizer", "PanGestureHandler" for "swipe").`),
+			),
+			mcpgo.WithString("description",
+				mcpgo.Description("Human-readable description of what the concept covers"),
+			),
+		),
+
+		// list_concepts
+		mcpgo.NewTool("list_concepts",
+			mcpgo.WithDescription("List all stored concept entries plus the built-in concepts that aren't shadowed by a stored entry of the same name."),
+		),
+
+		// delete_concept
+		mcpgo.NewTool("delete_concept",
+			mcpgo.WithDescription("Delete a stored concept by name. Built-ins cannot be deleted; teach a same-named concept to override one."),
+			mcpgo.WithString("name",
+				mcpgo.Required(),
+				mcpgo.Description("Concept name to delete"),
+			),
+		),
+
+		// find_by_concept
+		mcpgo.NewTool("find_by_concept",
+			mcpgo.WithDescription(`Concept-level code search. The query is expanded via the stored + built-in concept dictionaries: each whitespace-separated word is looked up as a concept name (e.g. "swipe" → swipe / gesture / fling / pan / UISwipeGestureRecognizer / ...) and unrecognised words fall through as their own aliases. Symbols are ranked by how many distinct aliases hit their evidence (identifier tokens + path tokens + body text); name-token hits score higher than body-only hits.
+
+This is the tool to reach for when grep would be a 3-round walk: "find swipe handling", "where do we retry on transient failures", "anything auth-related". For exact symbol lookup use find_symbol; for call sites use find_references; for raw regex use the platform's grep.`),
+			mcpgo.WithString("query",
+				mcpgo.Required(),
+				mcpgo.Description(`Free-text concept query. Examples: "swipe", "retry logic", "auth header", "logging".`),
+			),
+			mcpgo.WithNumber("limit",
+				mcpgo.Description("Cap on returned matches after ranking. Default: 20."),
+			),
+			mcpgo.WithString("scope",
+				mcpgo.Description(`Scope filter: "owned" (default, project-local), "all" (include library and ignored), "owned+library", "library". Library/ignored code is excluded by default to keep results focused on the user's codebase.`),
+			),
+			mcpgo.WithString("format",
+				mcpgo.Description(`Output format: "text" (default, human-readable) or "json" (structured array of match objects with score and matched_aliases).`),
 			),
 		),
 

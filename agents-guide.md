@@ -120,6 +120,7 @@ replaces any unapplied pending changes.
 | `query` | Structural search by node kind | `kind` ("function", "class", "call", "import"), `name` (glob), `file` |
 | `find_symbol` | Find definitions by name | `symbol` |
 | `find_references` | Find usages by name | `symbol` |
+| `find_by_concept` | Concept-level search — expands a free-text query (e.g. "swipe", "retry", "auth") through stored + built-in concept dictionaries, then ranks symbols by alias hits across name, path, and body tokens. Use when grep would be a multi-round walk; for exact lookup use `find_symbol`. | `query`, `limit`, `scope`, `format` |
 | `dependency_usage` | Analyse package imports, symbols used, public API exposure | `package` |
 
 ### Transforms
@@ -160,6 +161,9 @@ replaces any unapplied pending changes.
 | `check_equivalences` | Scan the codebase for matches of any equivalence's non-preferred side; reports as violations | `path` |
 | `list_equivalences` | List all saved equivalence pairs | -- |
 | `delete_equivalence` | Delete a saved equivalence by name | `name` |
+| `teach_concept` | Save a concept entry — a name plus an alias list that `find_by_concept` expands during search. Shadows the built-in concept of the same name. | `name`, `aliases`, `description` |
+| `list_concepts` | List taught concepts plus the built-in concepts that aren't shadowed | -- |
+| `delete_concept` | Delete a taught concept by name (built-ins cannot be deleted, only shadowed) | `name` |
 | `list_recipes` | List all taught recipes | -- |
 | `list_conventions` | List all taught conventions | -- |
 
