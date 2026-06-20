@@ -13,10 +13,10 @@ jobs:
       run:
         working-directory: go
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
         with:
           fetch-depth: 0  # gitindex tests walk real commit history
-      - uses: actions/setup-go@v5
+      - uses: actions/setup-go@v6
         with:
           go-version-file: go/go.mod
           cache-dependency-path: go/go.sum
