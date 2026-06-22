@@ -6,8 +6,10 @@ package model_test
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
+	"github.com/marcelocantos/sawmill/forest"
 	"github.com/marcelocantos/sawmill/model"
 )
 
@@ -153,5 +155,80 @@ func Target() {}
 	// have no call symbols.
 	if _, err := m.FindSymbolsInScopes("Target", "call", []string{"owned", "library"}); err != nil {
 		t.Fatalf("FindSymbolsInScopes(owned+library): %v", err)
+	}
+}
+
+// TestParseGuardSkipsOversizedFile asserts a file above forest.MaxFileSize
+// is not indexed even when its extension is recognised.
+func TestParseGuardSkipsOversizedFile(t *testing.T) {
+	root := t.TempDir()
+
+	var b strings.Builder
+	b.WriteString("package big\n")
+	for b.Len() <= forest.MaxFileSize {
+		b.WriteString("var x int\n")
+	}
+	writeFile(t, root, "big.go", b.String())
+	// Companion file so the package is non-empty for the walker.
+	writeFile(t, root, "small.go", "package big\nfunc F() {}\n")
+
+	m, err := model.LoadEphemeral(root)
+	if err != nil {
+		t.Fatalf("LoadEphemeral: %v", err)
+	}
+	defer m.Close()
+
+	bigSyms, err := m.Store.SymbolsInFile(filepath.Join(root, "big.go"))
+	if err != nil {
+		t.Fatalf("SymbolsInFile(big): %v", err)
+	}
+	if len(bigSyms) != 0 {
+		t.Errorf("oversized file produced %d symbol(s); want 0", len(bigSyms))
+	}
+
+	smallSyms, err := m.Store.SymbolsInFile(filepath.Join(root, "small.go"))
+	if err != nil {
+		t.Fatalf("SymbolsInFile(small): %v", err)
+	}
+	if len(smallSyms) == 0 {
+		t.Errorf("normal-sized companion file produced 0 symbols; guard over-triggered")
+	}
+}
+
+// TestParseGuardSkipsMinifiedFile asserts a file with average line length
+// above forest.MaxAvgLineLength is not indexed — the canonical bundled-JS
+// minified case.
+func TestParseGuardSkipsMinifiedFile(t *testing.T) {
+	root := t.TempDir()
+
+	var b strings.Builder
+	b.WriteString("export const x = [")
+	for b.Len() <= forest.MaxAvgLineLength*2 {
+		b.WriteString("1,")
+	}
+	b.WriteString("];\n")
+	writeFile(t, root, "min.ts", b.String())
+	writeFile(t, root, "normal.ts", "export function F() {}\n")
+
+	m, err := model.LoadEphemeral(root)
+	if err != nil {
+		t.Fatalf("LoadEphemeral: %v", err)
+	}
+	defer m.Close()
+
+	minSyms, err := m.Store.SymbolsInFile(filepath.Join(root, "min.ts"))
+	if err != nil {
+		t.Fatalf("SymbolsInFile(min): %v", err)
+	}
+	if len(minSyms) != 0 {
+		t.Errorf("minified file produced %d symbol(s); want 0", len(minSyms))
+	}
+
+	normalSyms, err := m.Store.SymbolsInFile(filepath.Join(root, "normal.ts"))
+	if err != nil {
+		t.Fatalf("SymbolsInFile(normal): %v", err)
+	}
+	if len(normalSyms) == 0 {
+		t.Errorf("normal TS companion file produced 0 symbols; guard over-triggered")
 	}
 }
