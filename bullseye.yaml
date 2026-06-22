@@ -740,6 +740,25 @@ targets:
     origin: forked 2026-05-04 store-size investigation; Unity DB hit 6.3 GB
     discovered: 2026-05-06
     achieved: 2026-05-09
+  T37:
+    name: Sawmill skips minified and oversized files before invoking tree-sitter
+    status: achieved
+    value: 0.0
+    cost: 0.0
+    acceptance:
+    - parseAndIndexFile rejects files larger than a size threshold without calling forest.ParseSource
+    - parseAndIndexFile rejects files whose average line length exceeds a threshold (minified-bundle heuristic) without calling forest.ParseSource
+    - Thresholds are exported package-level constants, not magic numbers
+    - Tests in go/model cover both rejection paths and assert tree-sitter is not invoked
+    - make bullseye stays green
+    context: Diagnosis from 2026-06-22 — a long-running sawmill serve PID was pegged at 99.5% CPU, stuck in github.com/odvcencio/gotreesitter retryFullParseWithDFA → mergeStacksWithScratch on minified SvelteKit bundle files. Tree-sitter's GLR retry path degenerates pathologically on minified JS (long expression chains, packed identifiers, no whitespace). A cheap pre-parse guard in parseAndIndexFile prevents the manager goroutine from ever handing such files to the parser.
+    tags:
+    - performance
+    - robustness
+    - tree-sitter
+    origin: manual
+    discovered: 2026-06-22
+    achieved: 2026-06-22
   T4:
     name: CST node tree is stored in SQLite — in-memory CSTs are transient parse artifacts only
     status: achieved
