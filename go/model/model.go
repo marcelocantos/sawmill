@@ -407,6 +407,10 @@ func (m *CodebaseModel) parseAndIndexFile(path string) {
 	mtime := info.ModTime()
 	contentHash := hashBytes(source)
 
+	if !forest.ShouldParse(source) {
+		return
+	}
+
 	// Parse to extract symbols, then discard the tree.
 	tree, err := forest.ParseSource(source, adapter)
 	if err != nil || tree == nil {
@@ -476,6 +480,10 @@ func incrementalParse(root string, s *store.Store, classifier *scope.Classifier)
 		storedHash, _ := s.CheckFile(path, mtime)
 		if storedHash == contentHash && storedHash != "" {
 			// File unchanged — source is already in the store.
+			return nil
+		}
+
+		if !forest.ShouldParse(source) {
 			return nil
 		}
 
