@@ -98,6 +98,10 @@ func Load(root string) (*CodebaseModel, error) {
 		s.Close()
 		return nil, err
 	}
+	if err := s.RecomputeImportance(); err != nil {
+		s.Close()
+		return nil, fmt.Errorf("computing importance: %w", err)
+	}
 
 	w, events, err := watcher.Watch(absRoot, classifier)
 	if err != nil {
@@ -204,6 +208,13 @@ func LoadEphemeral(root string) (*CodebaseModel, error) {
 			s.Close()
 			return nil, fmt.Errorf("indexing refs %s: %w", file.Path, err)
 		}
+	}
+
+	// One PageRank pass after batch indexing rather than per-file — same result,
+	// orders of magnitude less work on a fresh load.
+	if err := s.RecomputeImportance(); err != nil {
+		s.Close()
+		return nil, fmt.Errorf("computing importance: %w", err)
 	}
 
 	return &CodebaseModel{Root: absRoot, Store: s, LSP: lspclient.NewPool(), Cache: forest.NewTreeCache(forest.DefaultCacheSize), Scope: classifier, forest: f}, nil
@@ -351,6 +362,11 @@ func (m *CodebaseModel) ExpandReverse(symbol, symbolKind, edgeKind string) ([]st
 	return m.Store.ExpandReverse(symbol, symbolKind, edgeKind)
 }
 
+// CentralSymbols returns the top-N most central symbols by PageRank.
+func (m *CodebaseModel) CentralSymbols(pathGlob, kind string, limit int) ([]store.CentralSymbol, error) {
+	return m.Store.CentralSymbols(pathGlob, kind, limit)
+}
+
 // --- Manager goroutine ---
 
 // runManager is the event loop that owns all mutable forest state. It
@@ -452,6 +468,7 @@ func (m *CodebaseModel) parseAndIndexFile(path string) {
 	_ = m.Store.UpsertFile(path, ext, mtime, contentHash, stored, fileScope.String())
 	_ = m.Store.UpdateSymbols(path, records)
 	_ = m.Store.UpdateRefs(path, edgesToRecords(edges))
+	_ = m.Store.RecomputeImportance()
 }
 
 // --- Static helpers ---
@@ -533,6 +550,8 @@ func incrementalParse(root string, s *store.Store, classifier *scope.Classifier)
 
 		return nil
 	})
+	// PageRank is run by the caller after the full walk completes (see Load);
+	// doing it here would re-run on every file touched by an incremental pass.
 }
 
 func hashBytes(data []byte) string {

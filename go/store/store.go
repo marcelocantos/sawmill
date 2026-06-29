@@ -156,6 +156,18 @@ func (s *Store) init() error {
 		}
 	}
 
+	// symbols.importance is added by 🎯T38.3. CREATE TABLE below initialises
+	// it for new schemas; ALTER TABLE migrates existing ones.
+	haveSym, err := s.columns("symbols")
+	if err != nil {
+		return err
+	}
+	if len(haveSym) > 0 && !haveSym["importance"] {
+		if _, err := s.db.Exec(`ALTER TABLE symbols ADD COLUMN importance REAL NOT NULL DEFAULT 0`); err != nil {
+			return fmt.Errorf("adding importance column: %w", err)
+		}
+	}
+
 	_, err = s.db.Exec(`
 
 		CREATE TABLE IF NOT EXISTS symbols (
@@ -168,12 +180,14 @@ func (s *Store) init() error {
 			end_line INTEGER NOT NULL,
 			end_col INTEGER NOT NULL,
 			start_byte INTEGER NOT NULL,
-			end_byte INTEGER NOT NULL
+			end_byte INTEGER NOT NULL,
+			importance REAL NOT NULL DEFAULT 0
 		);
 
 		CREATE INDEX IF NOT EXISTS idx_symbols_name ON symbols(name);
 		CREATE INDEX IF NOT EXISTS idx_symbols_file ON symbols(file_path);
 		CREATE INDEX IF NOT EXISTS idx_symbols_kind ON symbols(kind);
+		CREATE INDEX IF NOT EXISTS idx_symbols_importance ON symbols(importance DESC);
 
 		CREATE INDEX IF NOT EXISTS idx_files_language ON files(language);
 
@@ -251,9 +265,15 @@ func splitMtime(t time.Time) (int64, int64) {
 
 // fileColumns returns the set of column names currently on the files table.
 func (s *Store) fileColumns() (map[string]bool, error) {
-	rows, err := s.db.Query("PRAGMA table_info(files)")
+	return s.columns("files")
+}
+
+// columns returns the set of column names on the named table, or an empty
+// map if the table does not exist yet.
+func (s *Store) columns(table string) (map[string]bool, error) {
+	rows, err := s.db.Query(fmt.Sprintf("PRAGMA table_info(%s)", table))
 	if err != nil {
-		return nil, fmt.Errorf("checking files schema: %w", err)
+		return nil, fmt.Errorf("checking %s schema: %w", table, err)
 	}
 	defer rows.Close()
 	cols := make(map[string]bool)
@@ -264,7 +284,7 @@ func (s *Store) fileColumns() (map[string]bool, error) {
 		var dflt sql.NullString
 		var pk int
 		if err := rows.Scan(&cid, &name, &typ, &notnull, &dflt, &pk); err != nil {
-			return nil, fmt.Errorf("scanning table_info: %w", err)
+			return nil, fmt.Errorf("scanning table_info(%s): %w", table, err)
 		}
 		cols[name] = true
 	}
@@ -689,16 +709,20 @@ func (s *Store) SearchCode(query, kind, pathGlob string, limit int) ([]SearchHit
 		limit = 50
 	}
 	q := strings.Builder{}
+	// Combined ranking: BM25 (lower is better) minus a small importance
+	// premium (higher is better), so PageRank only matters as a tie-breaker
+	// among similarly-scored FTS hits.
+	const importanceWeight = 0.5
 	q.WriteString(`
 		SELECT s.id, s.name, s.kind, s.file_path,
 		       s.start_line, s.start_col, s.end_line, s.end_col,
 		       s.start_byte, s.end_byte,
 		       fts.signature, fts.doc,
-		       bm25(symbols_fts)
+		       bm25(symbols_fts) - ? * s.importance AS rank
 		  FROM symbols_fts fts
 		  JOIN symbols s ON s.id = fts.rowid
 		 WHERE symbols_fts MATCH ?`)
-	args := []any{expandFTSQuery(query)}
+	args := []any{importanceWeight, expandFTSQuery(query)}
 	if kind != "" {
 		q.WriteString(" AND s.kind = ?")
 		args = append(args, kind)
@@ -707,7 +731,7 @@ func (s *Store) SearchCode(query, kind, pathGlob string, limit int) ([]SearchHit
 		q.WriteString(" AND s.file_path GLOB ?")
 		args = append(args, pathGlob)
 	}
-	q.WriteString(" ORDER BY bm25(symbols_fts) ASC LIMIT ?")
+	q.WriteString(" ORDER BY rank ASC LIMIT ?")
 	args = append(args, limit)
 
 	rows, err := s.db.Query(q.String(), args...)

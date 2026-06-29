@@ -544,6 +544,42 @@ func TestSearchCode(t *testing.T) {
 	}
 }
 
+func TestCentralSymbols(t *testing.T) {
+	h := testHandler(t, map[string]string{
+		"main.go": `package main
+
+func helper() {}
+
+func a() { helper() }
+func b() { helper() }
+func c() { helper() }
+
+func main() { a(); b(); c() }
+`,
+	})
+
+	text, isErr, err := h.handleCentralSymbols(map[string]any{"limit": 5})
+	if err != nil || isErr {
+		t.Fatalf("central_symbols: err=%v isErr=%v text=%s", err, isErr, text)
+	}
+	if !strings.Contains(text, "helper") {
+		t.Errorf("expected helper to be among central symbols, got: %s", text)
+	}
+
+	// helper should be ranked above main because three functions call it.
+	helperPos := strings.Index(text, "helper")
+	mainPos := strings.Index(text, "main")
+	if helperPos == -1 || helperPos > mainPos {
+		t.Errorf("expected helper to rank above main, got:\n%s", text)
+	}
+
+	// JSON format.
+	text, _, _ = h.handleCentralSymbols(map[string]any{"format": "json", "limit": 3})
+	if !strings.Contains(text, `"importance"`) {
+		t.Errorf("expected JSON with importance field, got: %s", text)
+	}
+}
+
 func TestGraphExpand(t *testing.T) {
 	h := testHandler(t, map[string]string{
 		"main.go": `package main

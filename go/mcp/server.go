@@ -123,6 +123,8 @@ func (h *Handler) Call(name string, args map[string]any) (string, bool, error) {
 		return h.handleSearchCode(args)
 	case "graph_expand":
 		return h.handleGraphExpand(args)
+	case "central_symbols":
+		return h.handleCentralSymbols(args)
 	case "find_references":
 		return h.handleFindReferences(args)
 	case "transform":
@@ -346,6 +348,23 @@ func Definitions() []mcpgo.Tool {
 			),
 			mcpgo.WithString("kind",
 				mcpgo.Description("Optional kind filter (function, type, call, …)"),
+			),
+		),
+
+		// central_symbols
+		mcpgo.NewTool("central_symbols",
+			mcpgo.WithDescription("Return the load-bearing symbols of the codebase, ranked by a weighted PageRank over the symbol reference graph (call edges weighted highest, then type uses, then imports). Useful for orienting yourself in an unfamiliar repo or scoping a refactor to the symbols most depended on. Filterable by kind and path glob."),
+			mcpgo.WithString("path_glob",
+				mcpgo.Description("Optional SQL GLOB pattern restricting results by file path (e.g. 'go/mcp/*')"),
+			),
+			mcpgo.WithString("kind",
+				mcpgo.Description("Optional symbol-kind filter (function, type, method, ...)"),
+			),
+			mcpgo.WithNumber("limit",
+				mcpgo.Description("Maximum number of symbols to return (default 20)"),
+			),
+			mcpgo.WithString("format",
+				mcpgo.Description("Output format: \"text\" (default) or \"json\""),
 			),
 		),
 
