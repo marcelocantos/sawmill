@@ -121,6 +121,8 @@ func (h *Handler) Call(name string, args map[string]any) (string, bool, error) {
 		return h.handleFindSymbol(args)
 	case "search_code":
 		return h.handleSearchCode(args)
+	case "graph_expand":
+		return h.handleGraphExpand(args)
 	case "find_references":
 		return h.handleFindReferences(args)
 	case "transform":
@@ -344,6 +346,27 @@ func Definitions() []mcpgo.Tool {
 			),
 			mcpgo.WithString("kind",
 				mcpgo.Description("Optional kind filter (function, type, call, …)"),
+			),
+		),
+
+		// graph_expand
+		mcpgo.NewTool("graph_expand",
+			mcpgo.WithDescription("Walk the symbol reference graph. direction=\"forward\" returns edges leaving the named symbol (who does X call / what types does X use / what does X import). direction=\"reverse\" returns edges that point AT the symbol (who calls X / who uses type X). Edges have provenance: every hit lists src, dst, edge kind, and the source location, so the agent can chase the result back to code."),
+			mcpgo.WithString("symbol",
+				mcpgo.Required(),
+				mcpgo.Description("Symbol name to expand around"),
+			),
+			mcpgo.WithString("direction",
+				mcpgo.Description("\"forward\" (out-edges, default) or \"reverse\" (in-edges)"),
+			),
+			mcpgo.WithString("edge_kind",
+				mcpgo.Description("Optional edge-kind filter: call, type_use, or import_use"),
+			),
+			mcpgo.WithString("symbol_kind",
+				mcpgo.Description("Optional symbol-kind filter applied to the symbol parameter (function, type, method, …)"),
+			),
+			mcpgo.WithString("format",
+				mcpgo.Description("Output format: \"text\" (default) or \"json\""),
 			),
 		),
 

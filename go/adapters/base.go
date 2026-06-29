@@ -25,6 +25,10 @@ func (b *baseAdapter) LSPLanguageID() string { return "" }
 // FieldQuery returns an empty string (no field query).
 func (b *baseAdapter) FieldQuery() string { return "" }
 
+// TypeUseQuery returns an empty string. Adapters that want to emit type-use
+// edges to the references table override this.
+func (b *baseAdapter) TypeUseQuery() string { return "" }
+
 // MethodQuery returns an empty string (no method query).
 func (b *baseAdapter) MethodQuery() string { return "" }
 

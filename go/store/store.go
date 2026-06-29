@@ -43,6 +43,32 @@ type SearchHit struct {
 	Score float64 // bm25 score; lower is better
 }
 
+// EdgeRecord is one outgoing reference to record in the symbol_refs table.
+// Source resolution (which function contains the edge) happens inside
+// UpdateRefs by byte containment, so callers don't supply it.
+type EdgeRecord struct {
+	Kind      string // "call" | "type_use" | "import_use"
+	DstName   string
+	StartByte int
+	EndByte   int
+	StartLine int
+	StartCol  int
+}
+
+// GraphEdge is one row from a graph_expand traversal — a directed edge with
+// resolved endpoints.
+type GraphEdge struct {
+	Kind      string
+	SrcName   string // empty if the edge originates outside any function
+	SrcKind   string
+	SrcFile   string
+	DstName   string
+	DstKind   string // empty if unresolved
+	DstFile   string // empty if unresolved
+	StartLine int
+	StartCol  int
+}
+
 // Recipe is a saved transformation recipe.
 type Recipe struct {
 	Name        string
@@ -195,6 +221,22 @@ func (s *Store) init() error {
 			tokenize = 'unicode61 remove_diacritics 2',
 			prefix   = '2 3 4 5 6'
 		);
+
+		CREATE TABLE IF NOT EXISTS symbol_refs (
+			id            INTEGER PRIMARY KEY,
+			src_symbol_id INTEGER REFERENCES symbols(id) ON DELETE CASCADE,
+			src_file_path TEXT NOT NULL REFERENCES files(path) ON DELETE CASCADE,
+			dst_name      TEXT NOT NULL,
+			kind          TEXT NOT NULL,
+			start_byte    INTEGER NOT NULL,
+			end_byte      INTEGER NOT NULL,
+			start_line    INTEGER NOT NULL,
+			start_col     INTEGER NOT NULL
+		);
+
+		CREATE INDEX IF NOT EXISTS idx_refs_src       ON symbol_refs(src_symbol_id, kind);
+		CREATE INDEX IF NOT EXISTS idx_refs_dst_name  ON symbol_refs(dst_name, kind);
+		CREATE INDEX IF NOT EXISTS idx_refs_file      ON symbol_refs(src_file_path);
 	`)
 	if err != nil {
 		return fmt.Errorf("initialising store schema: %w", err)
@@ -479,6 +521,161 @@ func (s *Store) UpdateSymbols(filePath string, symbols []SymbolRecord) error {
 	}
 
 	return tx.Commit()
+}
+
+// UpdateRefs clears and re-inserts the outgoing references for filePath.
+// src_symbol_id is computed by smallest-byte-containment against the file's
+// function and method symbols; edges originating outside any function (e.g.
+// top-level imports) carry a NULL src_symbol_id.
+func (s *Store) UpdateRefs(filePath string, edges []EdgeRecord) error {
+	tx, err := s.db.Begin()
+	if err != nil {
+		return fmt.Errorf("beginning ref transaction: %w", err)
+	}
+	defer tx.Rollback() //nolint:errcheck
+
+	if _, err := tx.Exec(`DELETE FROM symbol_refs WHERE src_file_path = ?`, filePath); err != nil {
+		return fmt.Errorf("clearing refs for %s: %w", filePath, err)
+	}
+
+	if len(edges) == 0 {
+		return tx.Commit()
+	}
+
+	// Load enclosing-candidate symbols once per file. Sorted by extent ASC so
+	// the smallest enclosing match wins.
+	type container struct {
+		id        int64
+		startByte int
+		endByte   int
+	}
+	rows, err := tx.Query(
+		`SELECT id, start_byte, end_byte
+		   FROM symbols
+		  WHERE file_path = ? AND kind IN ('function','method')
+		  ORDER BY (end_byte - start_byte) ASC`,
+		filePath,
+	)
+	if err != nil {
+		return fmt.Errorf("loading containers for %s: %w", filePath, err)
+	}
+	var containers []container
+	for rows.Next() {
+		var c container
+		if err := rows.Scan(&c.id, &c.startByte, &c.endByte); err != nil {
+			rows.Close()
+			return fmt.Errorf("scanning container: %w", err)
+		}
+		containers = append(containers, c)
+	}
+	rows.Close()
+
+	stmt, err := tx.Prepare(`INSERT INTO symbol_refs
+		(src_symbol_id, src_file_path, dst_name, kind, start_byte, end_byte, start_line, start_col)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?)`)
+	if err != nil {
+		return fmt.Errorf("preparing ref insert: %w", err)
+	}
+	defer stmt.Close()
+
+	for _, e := range edges {
+		var srcID sql.NullInt64
+		for _, c := range containers {
+			if c.startByte <= e.StartByte && e.EndByte <= c.endByte {
+				srcID = sql.NullInt64{Int64: c.id, Valid: true}
+				break
+			}
+		}
+		if _, err := stmt.Exec(
+			srcID, filePath, e.DstName, e.Kind,
+			e.StartByte, e.EndByte, e.StartLine, e.StartCol,
+		); err != nil {
+			return fmt.Errorf("inserting ref (%s -> %s) for %s: %w", e.Kind, e.DstName, filePath, err)
+		}
+	}
+
+	return tx.Commit()
+}
+
+// ExpandForward returns the edges leaving any symbol that matches the given
+// name (and optionally kind). Destination symbols are resolved by name-join
+// at query time; unresolved edges still appear with empty DstFile / DstKind.
+func (s *Store) ExpandForward(srcName, srcKind string, edgeKind string) ([]GraphEdge, error) {
+	q := strings.Builder{}
+	q.WriteString(`
+		SELECT
+		  COALESCE(src.name, ''), COALESCE(src.kind, ''), r.src_file_path,
+		  r.kind, r.dst_name,
+		  COALESCE(dst.kind, ''), COALESCE(dst.file_path, ''),
+		  r.start_line, r.start_col
+		FROM symbol_refs r
+		LEFT JOIN symbols src ON src.id = r.src_symbol_id
+		LEFT JOIN symbols dst
+		       ON dst.name = r.dst_name
+		      AND dst.kind IN ('function','method','type')
+		WHERE src.name = ?`)
+	args := []any{srcName}
+	if srcKind != "" {
+		q.WriteString(" AND src.kind = ?")
+		args = append(args, srcKind)
+	}
+	if edgeKind != "" {
+		q.WriteString(" AND r.kind = ?")
+		args = append(args, edgeKind)
+	}
+	q.WriteString(" ORDER BY r.id")
+	return scanGraphEdges(s.db, q.String(), args)
+}
+
+// ExpandReverse returns edges pointing AT a symbol with the given name (and
+// optionally kind). This is the "who references X" direction.
+func (s *Store) ExpandReverse(dstName, dstKind string, edgeKind string) ([]GraphEdge, error) {
+	q := strings.Builder{}
+	q.WriteString(`
+		SELECT
+		  COALESCE(src.name, ''), COALESCE(src.kind, ''), r.src_file_path,
+		  r.kind, r.dst_name,
+		  COALESCE(dst.kind, ''), COALESCE(dst.file_path, ''),
+		  r.start_line, r.start_col
+		FROM symbol_refs r
+		LEFT JOIN symbols src ON src.id = r.src_symbol_id
+		LEFT JOIN symbols dst
+		       ON dst.name = r.dst_name
+		      AND dst.kind IN ('function','method','type')
+		WHERE r.dst_name = ?`)
+	args := []any{dstName}
+	if dstKind != "" {
+		q.WriteString(" AND (dst.kind = ? OR dst.kind IS NULL)")
+		args = append(args, dstKind)
+	}
+	if edgeKind != "" {
+		q.WriteString(" AND r.kind = ?")
+		args = append(args, edgeKind)
+	}
+	q.WriteString(" ORDER BY r.id")
+	return scanGraphEdges(s.db, q.String(), args)
+}
+
+func scanGraphEdges(db *sql.DB, query string, args []any) ([]GraphEdge, error) {
+	rows, err := db.Query(query, args...)
+	if err != nil {
+		return nil, fmt.Errorf("graph expand: %w", err)
+	}
+	defer rows.Close()
+	var out []GraphEdge
+	for rows.Next() {
+		var e GraphEdge
+		if err := rows.Scan(
+			&e.SrcName, &e.SrcKind, &e.SrcFile,
+			&e.Kind, &e.DstName,
+			&e.DstKind, &e.DstFile,
+			&e.StartLine, &e.StartCol,
+		); err != nil {
+			return nil, fmt.Errorf("scanning graph edge: %w", err)
+		}
+		out = append(out, e)
+	}
+	return out, rows.Err()
 }
 
 // SearchCode runs a full-text search over the discovery index and returns

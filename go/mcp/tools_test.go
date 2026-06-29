@@ -544,6 +544,70 @@ func TestSearchCode(t *testing.T) {
 	}
 }
 
+func TestGraphExpand(t *testing.T) {
+	h := testHandler(t, map[string]string{
+		"main.go": `package main
+
+type Config struct{}
+
+func parse(c Config) error { return nil }
+
+func main() {
+	var c Config
+	parse(c)
+	parse(c)
+}
+`,
+	})
+
+	// Forward expansion of main should show the call edges.
+	text, isErr, err := h.handleGraphExpand(map[string]any{
+		"symbol":    "main",
+		"direction": "forward",
+		"edge_kind": "call",
+	})
+	if err != nil || isErr {
+		t.Fatalf("graph_expand forward: err=%v isErr=%v text=%s", err, isErr, text)
+	}
+	if !strings.Contains(text, "parse") {
+		t.Errorf("expected forward expand to mention parse, got: %s", text)
+	}
+
+	// Reverse expansion of parse should show main as the caller (twice).
+	text, _, _ = h.handleGraphExpand(map[string]any{
+		"symbol":    "parse",
+		"direction": "reverse",
+		"edge_kind": "call",
+	})
+	if !strings.Contains(text, "main") {
+		t.Errorf("expected reverse expand to mention main, got: %s", text)
+	}
+	if !strings.Contains(text, "2 reverse") {
+		t.Errorf("expected 2 reverse edges, got: %s", text)
+	}
+
+	// Type-use: parse should have a type_use edge to Config.
+	text, _, _ = h.handleGraphExpand(map[string]any{
+		"symbol":    "parse",
+		"direction": "forward",
+		"edge_kind": "type_use",
+	})
+	if !strings.Contains(text, "Config") {
+		t.Errorf("expected type_use edge to Config, got: %s", text)
+	}
+
+	// JSON format.
+	text, _, _ = h.handleGraphExpand(map[string]any{
+		"symbol":    "parse",
+		"direction": "reverse",
+		"edge_kind": "call",
+		"format":    "json",
+	})
+	if !strings.Contains(text, `"dst":"parse"`) {
+		t.Errorf("expected JSON with dst=parse, got: %s", text)
+	}
+}
+
 func TestFindReferences(t *testing.T) {
 	h := testHandler(t, map[string]string{
 		"main.py": "def helper():\n    pass\n\nhelper()\nhelper()\n",

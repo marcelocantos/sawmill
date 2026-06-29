@@ -199,6 +199,11 @@ func LoadEphemeral(root string) (*CodebaseModel, error) {
 			s.Close()
 			return nil, fmt.Errorf("indexing %s: %w", file.Path, err)
 		}
+		edges := index.ExtractEdgesFromParts(file.OriginalSource, file.Tree, file.Adapter, mode)
+		if err := s.UpdateRefs(file.Path, edgesToRecords(edges)); err != nil {
+			s.Close()
+			return nil, fmt.Errorf("indexing refs %s: %w", file.Path, err)
+		}
 	}
 
 	return &CodebaseModel{Root: absRoot, Store: s, LSP: lspclient.NewPool(), Cache: forest.NewTreeCache(forest.DefaultCacheSize), Scope: classifier, forest: f}, nil
@@ -336,6 +341,16 @@ func (m *CodebaseModel) SearchCode(query, kind, pathGlob string, limit int) ([]s
 	return m.Store.SearchCode(query, kind, pathGlob, limit)
 }
 
+// ExpandForward returns outgoing edges from the named symbol.
+func (m *CodebaseModel) ExpandForward(symbol, symbolKind, edgeKind string) ([]store.GraphEdge, error) {
+	return m.Store.ExpandForward(symbol, symbolKind, edgeKind)
+}
+
+// ExpandReverse returns incoming edges that point at the named symbol.
+func (m *CodebaseModel) ExpandReverse(symbol, symbolKind, edgeKind string) ([]store.GraphEdge, error) {
+	return m.Store.ExpandReverse(symbol, symbolKind, edgeKind)
+}
+
 // --- Manager goroutine ---
 
 // runManager is the event loop that owns all mutable forest state. It
@@ -432,9 +447,11 @@ func (m *CodebaseModel) parseAndIndexFile(path string) {
 
 	symbols := index.ExtractSymbolsFromPartsMode(source, tree, adapter, path, mode)
 	records := symbolsToRecords(symbols, path)
+	edges := index.ExtractEdgesFromParts(source, tree, adapter, mode)
 
 	_ = m.Store.UpsertFile(path, ext, mtime, contentHash, stored, fileScope.String())
 	_ = m.Store.UpdateSymbols(path, records)
+	_ = m.Store.UpdateRefs(path, edgesToRecords(edges))
 }
 
 // --- Static helpers ---
@@ -506,11 +523,13 @@ func incrementalParse(root string, s *store.Store, classifier *scope.Classifier)
 		}
 
 		symbols := index.ExtractSymbolsFromPartsMode(source, tree, adapter, path, mode)
+		edges := index.ExtractEdgesFromParts(source, tree, adapter, mode)
 		tree.Close()
 
 		records := symbolsToRecords(symbols, path)
 		_ = s.UpsertFile(path, ext, mtime, contentHash, stored, fileScope.String())
 		_ = s.UpdateSymbols(path, records)
+		_ = s.UpdateRefs(path, edgesToRecords(edges))
 
 		return nil
 	})
@@ -519,6 +538,24 @@ func incrementalParse(root string, s *store.Store, classifier *scope.Classifier)
 func hashBytes(data []byte) string {
 	h := sha256.Sum256(data)
 	return hex.EncodeToString(h[:])
+}
+
+func edgesToRecords(edges []index.Edge) []store.EdgeRecord {
+	if len(edges) == 0 {
+		return nil
+	}
+	records := make([]store.EdgeRecord, len(edges))
+	for i, e := range edges {
+		records[i] = store.EdgeRecord{
+			Kind:      e.Kind,
+			DstName:   e.DstName,
+			StartByte: int(e.StartByte),
+			EndByte:   int(e.EndByte),
+			StartLine: e.StartLine,
+			StartCol:  e.StartCol,
+		}
+	}
+	return records
 }
 
 func symbolsToRecords(symbols []index.Symbol, filePath string) []store.SymbolRecord {
