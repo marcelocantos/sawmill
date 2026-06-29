@@ -127,6 +127,8 @@ func (h *Handler) Call(name string, args map[string]any) (string, bool, error) {
 		return h.handleGraphExpand(args)
 	case "central_symbols":
 		return h.handleCentralSymbols(args)
+	case "index_status":
+		return h.handleIndexStatus(args)
 	case "find_references":
 		return h.handleFindReferences(args)
 	case "transform":
@@ -353,6 +355,14 @@ func Definitions() []mcpgo.Tool {
 			),
 		),
 
+		// index_status
+		mcpgo.NewTool("index_status",
+			mcpgo.WithDescription("Report the current state of Sawmill's discovery indexes — symbol / FTS / vector counts, PageRank coverage, and (if the summariser is enabled) per-prompt summary coverage with running cost and failure totals. Useful when you suspect a tier is missing data (e.g. semantic_search returns no vec hits because the embedder isn't running)."),
+			mcpgo.WithString("format",
+				mcpgo.Description("Output format: \"text\" (default) or \"json\""),
+			),
+		),
+
 		// central_symbols
 		mcpgo.NewTool("central_symbols",
 			mcpgo.WithDescription("Return the load-bearing symbols of the codebase, ranked by a weighted PageRank over the symbol reference graph (call edges weighted highest, then type uses, then imports). Useful for orienting yourself in an unfamiliar repo or scoping a refactor to the symbols most depended on. Filterable by kind and path glob."),
@@ -372,7 +382,7 @@ func Definitions() []mcpgo.Tool {
 
 		// graph_expand
 		mcpgo.NewTool("graph_expand",
-			mcpgo.WithDescription("Walk the symbol reference graph. direction=\"forward\" returns edges leaving the named symbol (who does X call / what types does X use / what does X import). direction=\"reverse\" returns edges that point AT the symbol (who calls X / who uses type X). Edges have provenance: every hit lists src, dst, edge kind, and the source location, so the agent can chase the result back to code."),
+			mcpgo.WithDescription("Walk the symbol reference graph. direction=\"forward\" returns edges leaving the named symbol (who does X call / what types does X use / what does X import). direction=\"reverse\" returns edges that point AT the symbol (who calls X / who uses type X). Edges have provenance: every hit lists src, dst, edge kind, and the source location, so the agent can chase the result back to code. source picks which graph: syntactic (Tree-sitter captures, the default), semantic (LLM-extracted kg_edges with confidence scores), or both."),
 			mcpgo.WithString("symbol",
 				mcpgo.Required(),
 				mcpgo.Description("Symbol name to expand around"),
@@ -381,10 +391,13 @@ func Definitions() []mcpgo.Tool {
 				mcpgo.Description("\"forward\" (out-edges, default) or \"reverse\" (in-edges)"),
 			),
 			mcpgo.WithString("edge_kind",
-				mcpgo.Description("Optional edge-kind filter: call, type_use, or import_use"),
+				mcpgo.Description("Optional edge-kind filter. Syntactic: call, type_use, import_use. Semantic: calls, reads, writes, throws, returns."),
 			),
 			mcpgo.WithString("symbol_kind",
 				mcpgo.Description("Optional symbol-kind filter applied to the symbol parameter (function, type, method, …)"),
+			),
+			mcpgo.WithString("source",
+				mcpgo.Description("Which graph to walk: \"syntactic\" (default — Tree-sitter), \"semantic\" (LLM kg_edges), or \"both\" (union with provenance)."),
 			),
 			mcpgo.WithString("format",
 				mcpgo.Description("Output format: \"text\" (default) or \"json\""),

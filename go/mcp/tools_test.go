@@ -544,6 +544,72 @@ func TestSearchCode(t *testing.T) {
 	}
 }
 
+func TestIndexStatus(t *testing.T) {
+	h := testHandler(t, map[string]string{
+		"main.go": "package main\nfunc main() {}\n",
+	})
+
+	text, isErr, err := h.handleIndexStatus(nil)
+	if err != nil || isErr {
+		t.Fatalf("index_status: err=%v isErr=%v text=%s", err, isErr, text)
+	}
+	if !strings.Contains(text, "files") {
+		t.Errorf("expected 'files' in status, got: %s", text)
+	}
+	if !strings.Contains(text, "summary prompt") {
+		t.Errorf("expected summary prompt line in status, got: %s", text)
+	}
+
+	text, _, _ = h.handleIndexStatus(map[string]any{"format": "json"})
+	if !strings.Contains(text, `"summary_prompt_id"`) {
+		t.Errorf("expected JSON summary_prompt_id key, got: %s", text)
+	}
+}
+
+func TestGraphExpandSourceParam(t *testing.T) {
+	h := testHandler(t, map[string]string{
+		"main.go": `package main
+
+type Config struct{}
+
+func parse(c Config) error { return nil }
+
+func main() {
+	parse(Config{})
+}
+`,
+	})
+
+	// syntactic (default) — Tree-sitter call edges exist.
+	text, _, _ := h.handleGraphExpand(map[string]any{
+		"symbol":    "parse",
+		"direction": "reverse",
+	})
+	if !strings.Contains(text, "main") {
+		t.Errorf("syntactic reverse expand should mention main, got: %s", text)
+	}
+
+	// semantic only — no kg_edges have been written, so this should return
+	// no edges without error.
+	text, isErr, err := h.handleGraphExpand(map[string]any{
+		"symbol":    "parse",
+		"direction": "reverse",
+		"source":    "semantic",
+	})
+	if err != nil || isErr {
+		t.Fatalf("semantic graph_expand: err=%v isErr=%v text=%s", err, isErr, text)
+	}
+
+	// invalid source should error cleanly.
+	_, isErr, _ = h.handleGraphExpand(map[string]any{
+		"symbol": "parse",
+		"source": "garbage",
+	})
+	if !isErr {
+		t.Error("expected invalid source to return isErr=true")
+	}
+}
+
 func TestSemanticSearchWithoutEmbedder(t *testing.T) {
 	// Without SAWMILL_EMBED_MODEL set, the embedder is nil and semantic_search
 	// should degrade cleanly to BM25 + graph — i.e. behave like search_code

@@ -122,8 +122,9 @@ replaces any unapplied pending changes.
 | `find_references` | Find usages by name | `symbol` |
 | `search_code` | Full-text search over symbol name, signature, and leading doc; bare terms are auto-prefix-expanded and camelCase/snake_case subwords are individually searchable | `query`, `kind`, `path_glob`, `limit` |
 | `semantic_search` | Natural-language hybrid search fusing BM25, vector cosine, and 1-hop graph expansion via reciprocal-rank-fusion; each hit shows `why` (which signals fired) | `query`, `kind`, `path_glob`, `limit` |
-| `graph_expand` | Walk the symbol reference graph (forward/reverse) over call, type-use, and import-use edges | `symbol`, `direction`, `edge_kind`, `symbol_kind` |
+| `graph_expand` | Walk the symbol reference graph (forward/reverse) over call, type-use, and import-use edges; pass `source` to switch between the syntactic Tree-sitter graph (default) and the LLM-extracted knowledge graph | `symbol`, `direction`, `edge_kind`, `symbol_kind`, `source` |
 | `central_symbols` | Rank load-bearing symbols by weighted PageRank over the reference graph | `path_glob`, `kind`, `limit` |
+| `index_status` | Per-tier status snapshot: file/vector/summary counts, prompt id, running cost, failure totals | `format` |
 | `dependency_usage` | Analyse package imports, symbols used, public API exposure | `package` |
 
 The discovery tools are the load-bearing way to find code: use
@@ -139,6 +140,16 @@ environment (e.g. `SAWMILL_EMBED_MODEL=nomic-embed-text` with Ollama
 running locally). Without it, `semantic_search` still works but
 silently drops the vector signal — results are then BM25 + graph only,
 the same fusion just missing one input.
+
+The semantic graph (`graph_expand source=semantic|both`) is populated
+by an opt-in background summariser. Enable it with
+`SAWMILL_SUMMARISE=1` (and optionally `SAWMILL_SUMMARY_MODEL=haiku` /
+`SAWMILL_SUMMARY_COST_CAP_USD=2.00`). One-line LLM summaries land in
+`symbol_summaries` and typed edges land in `kg_edges` (`reads`,
+`writes`, `calls`, `throws`, `returns`). Watch progress, running cost,
+and failures with `index_status`. Summaries also feed `semantic_search`
+— matches that fire from the summary index show `summary` in their
+`why` field.
 
 ### Transforms
 

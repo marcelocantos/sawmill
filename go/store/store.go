@@ -262,6 +262,58 @@ func (s *Store) init() error {
 		);
 
 		CREATE INDEX IF NOT EXISTS idx_symbol_vecs_model ON symbol_vecs(model_id);
+
+		-- 🎯T40: LLM-distilled per-symbol summaries.
+		CREATE TABLE IF NOT EXISTS symbol_summaries (
+			symbol_id    INTEGER PRIMARY KEY REFERENCES symbols(id) ON DELETE CASCADE,
+			summary      TEXT NOT NULL,
+			prompt_id    TEXT NOT NULL,
+			model_id     TEXT NOT NULL DEFAULT '',
+			cost_usd     REAL NOT NULL DEFAULT 0,
+			tokens       INTEGER NOT NULL DEFAULT 0,
+			generated_at INTEGER NOT NULL
+		);
+		CREATE INDEX IF NOT EXISTS idx_summaries_prompt ON symbol_summaries(prompt_id);
+
+		-- 🎯T40: LLM-extracted typed knowledge-graph edges (distinct from the
+		-- syntactic symbol_refs table — these come from a model and carry
+		-- confidence + prompt_id provenance).
+		CREATE TABLE IF NOT EXISTS kg_edges (
+			id            INTEGER PRIMARY KEY,
+			src_symbol_id INTEGER NOT NULL REFERENCES symbols(id) ON DELETE CASCADE,
+			dst_name      TEXT NOT NULL,
+			kind          TEXT NOT NULL,
+			confidence    REAL NOT NULL DEFAULT 0,
+			prompt_id     TEXT NOT NULL
+		);
+		CREATE INDEX IF NOT EXISTS idx_kg_src      ON kg_edges(src_symbol_id, kind);
+		CREATE INDEX IF NOT EXISTS idx_kg_dst_name ON kg_edges(dst_name, kind);
+
+		-- 🎯T40: typed failure log so we don't silently drop summarisation
+		-- attempts that fail (parse errors, API errors, cost-cap aborts).
+		CREATE TABLE IF NOT EXISTS summary_failures (
+			id           INTEGER PRIMARY KEY,
+			symbol_id    INTEGER REFERENCES symbols(id) ON DELETE CASCADE,
+			prompt_id    TEXT NOT NULL,
+			reason       TEXT NOT NULL,
+			occurred_at  INTEGER NOT NULL,
+			retry_count  INTEGER NOT NULL DEFAULT 0
+		);
+		CREATE INDEX IF NOT EXISTS idx_summary_failures_sym ON summary_failures(symbol_id);
+
+		-- 🎯T40: vectors for LLM-distilled summaries. Mirrors symbol_vecs but
+		-- keyed independently so a symbol can carry both a body embedding
+		-- (semantic search over identifiers / signatures / leading docs) and
+		-- a summary embedding (semantic search over the model summary). The
+		-- retriever fires distinct provenance values when each contributes.
+		CREATE TABLE IF NOT EXISTS symbol_summary_vecs (
+			symbol_id INTEGER PRIMARY KEY REFERENCES symbols(id) ON DELETE CASCADE,
+			vec       BLOB NOT NULL,
+			body_hash TEXT NOT NULL,
+			model_id  TEXT NOT NULL,
+			dim       INTEGER NOT NULL
+		);
+		CREATE INDEX IF NOT EXISTS idx_summary_vecs_model ON symbol_summary_vecs(model_id);
 	`)
 	if err != nil {
 		return fmt.Errorf("initialising store schema: %w", err)

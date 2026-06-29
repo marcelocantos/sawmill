@@ -433,6 +433,72 @@ func (h *Handler) handleSearchCode(args map[string]any) (string, bool, error) {
 	return sb.String(), false, nil
 }
 
+// ---- index_status ---------------------------------------------------------
+
+func (h *Handler) handleIndexStatus(args map[string]any) (string, bool, error) {
+	format := optString(args, "format")
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	m, err := h.requireModel()
+	if err != nil {
+		return err.Error(), true, nil
+	}
+
+	type tierJSON struct {
+		FileCount        int     `json:"files"`
+		EmbedderModel    string  `json:"embedder_model,omitempty"`
+		VectorCount      int     `json:"vectors"`
+		SummaryPromptID  string  `json:"summary_prompt_id,omitempty"`
+		SummariesCurrent int     `json:"summaries_current"`
+		SummariesStale   int     `json:"summaries_stale"`
+		SummariesCost    float64 `json:"summaries_cost_usd"`
+		SummaryFailures  int     `json:"summary_failures"`
+		KGEdges          int     `json:"kg_edges"`
+	}
+
+	out := tierJSON{}
+	out.FileCount, _ = m.Store.FileCount()
+	if m.Embedder != nil {
+		out.EmbedderModel = m.Embedder.ModelID()
+		out.VectorCount, _ = m.Store.EmbeddingCount(m.Embedder.ModelID())
+	}
+	out.SummaryPromptID = summaryPromptID()
+	if status, err := m.Store.SummaryStatusForPrompt(summaryPromptID()); err == nil {
+		out.SummariesCurrent = status.SummariesCurrent
+		out.SummariesStale = status.SummariesStale
+		out.SummariesCost = status.TotalCostUSD
+		out.SummaryFailures = status.Failures
+		out.KGEdges = status.KGEdges
+	}
+
+	if format == "json" {
+		b, err := json.Marshal(out)
+		if err != nil {
+			return fmt.Sprintf("marshalling index_status: %v", err), true, nil
+		}
+		return string(b), false, nil
+	}
+
+	var sb strings.Builder
+	fmt.Fprintf(&sb, "Index status:\n")
+	fmt.Fprintf(&sb, "  files            %d\n", out.FileCount)
+	if out.EmbedderModel != "" {
+		fmt.Fprintf(&sb, "  embedder         %s (%d vectors)\n", out.EmbedderModel, out.VectorCount)
+	} else {
+		fmt.Fprintf(&sb, "  embedder         disabled (set SAWMILL_EMBED_MODEL to enable)\n")
+	}
+	fmt.Fprintf(&sb, "  summary prompt   %s\n", out.SummaryPromptID)
+	fmt.Fprintf(&sb, "  summaries        %d current, %d stale, %d failed   $%.4f spent\n",
+		out.SummariesCurrent, out.SummariesStale, out.SummaryFailures, out.SummariesCost)
+	fmt.Fprintf(&sb, "  kg_edges         %d\n", out.KGEdges)
+	return sb.String(), false, nil
+}
+
+// summaryPromptID exposes the summary package's PromptID without importing
+// it from mcp (which would create an import cycle via model). It's just a
+// constant copy kept in sync manually.
+func summaryPromptID() string { return "v1" }
+
 // ---- semantic_search ------------------------------------------------------
 
 func (h *Handler) handleSemanticSearch(args map[string]any) (string, bool, error) {
@@ -593,6 +659,15 @@ func (h *Handler) handleGraphExpand(args map[string]any) (string, bool, error) {
 	}
 	edgeKind := optString(args, "edge_kind")
 	symbolKind := optString(args, "symbol_kind")
+	source := optString(args, "source")
+	if source == "" {
+		source = "syntactic"
+	}
+	switch source {
+	case "syntactic", "semantic", "both":
+	default:
+		return fmt.Sprintf("source must be \"syntactic\", \"semantic\", or \"both\", got %q", source), true, nil
+	}
 	format := optString(args, "format")
 
 	h.mu.Lock()
@@ -603,18 +678,10 @@ func (h *Handler) handleGraphExpand(args map[string]any) (string, bool, error) {
 		return err.Error(), true, nil
 	}
 
-	var (
-		edges []store.GraphEdge
-		gerr  error
-	)
-	switch direction {
-	case "forward":
-		edges, gerr = m.ExpandForward(symbol, symbolKind, edgeKind)
-	case "reverse":
-		edges, gerr = m.ExpandReverse(symbol, symbolKind, edgeKind)
-	default:
+	if direction != "forward" && direction != "reverse" {
 		return fmt.Sprintf("direction must be \"forward\" or \"reverse\", got %q", direction), true, nil
 	}
+	edges, gerr := m.ExpandGraph(symbol, symbolKind, edgeKind, direction, source)
 	if gerr != nil {
 		return fmt.Sprintf("graph_expand: %v", gerr), true, nil
 	}

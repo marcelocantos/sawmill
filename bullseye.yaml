@@ -909,7 +909,7 @@ targets:
     achieved: 2026-04-10
   T40:
     name: Sawmill stores LLM-distilled symbol summaries and typed knowledge-graph edges, generated via claudia
-    status: identified
+    status: achieved
     value: 0.0
     cost: 0.0
     acceptance:
@@ -924,9 +924,10 @@ targets:
     - T39
     origin: manual
     discovered: 2026-06-29
+    achieved: 2026-06-29
   T40.1:
     name: A bounded claudia-driven summariser writes versioned one-line summaries per symbol
-    status: identified
+    status: achieved
     value: 0.0
     cost: 0.0
     acceptance:
@@ -939,9 +940,10 @@ targets:
     - T40
     origin: manual
     discovered: 2026-06-29
+    achieved: 2026-06-29
   T40.2:
     name: LLM-extracted typed edges {reads, writes, calls, throws, returns} populate the knowledge graph
-    status: identified
+    status: achieved
     value: 0.0
     cost: 0.0
     acceptance:
@@ -954,6 +956,7 @@ targets:
     - T40.1
     origin: manual
     discovered: 2026-06-29
+    achieved: 2026-06-29
   T5:
     name: Sawmill supports coordinated transforms across multiple repositories
     status: achieved
