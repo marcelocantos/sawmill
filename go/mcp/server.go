@@ -119,6 +119,8 @@ func (h *Handler) Call(name string, args map[string]any) (string, bool, error) {
 		return h.handleQuery(args)
 	case "find_symbol":
 		return h.handleFindSymbol(args)
+	case "search_code":
+		return h.handleSearchCode(args)
 	case "find_references":
 		return h.handleFindReferences(args)
 	case "transform":
@@ -342,6 +344,27 @@ func Definitions() []mcpgo.Tool {
 			),
 			mcpgo.WithString("kind",
 				mcpgo.Description("Optional kind filter (function, type, call, …)"),
+			),
+		),
+
+		// search_code
+		mcpgo.NewTool("search_code",
+			mcpgo.WithDescription("Full-text search over the symbol discovery index — name, signature, and leading doc/comments. Bare terms are auto-expanded as prefix matches and camelCase/snake_case subwords are individually searchable (so 'parse' matches both 'Parser' and 'parseConnection'). For advanced control pass FTS5 syntax directly (quoted phrases, AND/OR/NOT, prefix*). Returns ranked hits with file:line ranges, kind, and matching signature/doc snippets."),
+			mcpgo.WithString("query",
+				mcpgo.Required(),
+				mcpgo.Description("Search expression. Plain words are auto-expanded to prefix matches; use FTS5 syntax for precise queries."),
+			),
+			mcpgo.WithString("kind",
+				mcpgo.Description("Optional kind filter (function, type, method, field, import, call)"),
+			),
+			mcpgo.WithString("path_glob",
+				mcpgo.Description("Optional SQL GLOB pattern restricting results by file path (e.g. 'go/mcp/*')"),
+			),
+			mcpgo.WithNumber("limit",
+				mcpgo.Description("Maximum number of hits to return (default 50)"),
+			),
+			mcpgo.WithString("format",
+				mcpgo.Description("Output format: \"text\" (default) or \"json\""),
 			),
 		),
 

@@ -506,6 +506,44 @@ func TestFindSymbol(t *testing.T) {
 	}
 }
 
+func TestSearchCode(t *testing.T) {
+	h := testHandler(t, map[string]string{
+		"main.py": "# Parse a DSN-style connection string.\n# Returns a Connection object.\ndef parse_connection(s):\n    pass\n\ndef helper():\n    pass\n",
+	})
+
+	// Bare term -> prefix expansion; "parse" must match "parse_connection".
+	text, isError, err := h.handleSearchCode(map[string]any{
+		"query": "parse",
+	})
+	if err != nil || isError {
+		t.Fatalf("handleSearchCode error: err=%v isError=%v text=%s", err, isError, text)
+	}
+	if !strings.Contains(text, "parse_connection") {
+		t.Errorf("expected parse_connection in output, got: %s", text)
+	}
+
+	// Doc text matches.
+	text, _, _ = h.handleSearchCode(map[string]any{"query": "DSN"})
+	if !strings.Contains(text, "parse_connection") {
+		t.Errorf("expected doc match for DSN, got: %s", text)
+	}
+
+	// JSON output.
+	text, _, _ = h.handleSearchCode(map[string]any{
+		"query":  "parse",
+		"format": "json",
+	})
+	if !strings.Contains(text, `"name":"parse_connection"`) {
+		t.Errorf("expected JSON containing parse_connection, got: %s", text)
+	}
+
+	// Empty hit set is reported as text.
+	text, _, _ = h.handleSearchCode(map[string]any{"query": "nonexistent_unique_term"})
+	if !strings.Contains(text, "No hits") {
+		t.Errorf("expected 'No hits' message, got: %s", text)
+	}
+}
+
 func TestFindReferences(t *testing.T) {
 	h := testHandler(t, map[string]string{
 		"main.py": "def helper():\n    pass\n\nhelper()\nhelper()\n",

@@ -27,6 +27,20 @@ type SymbolRecord struct {
 	EndCol    int
 	StartByte int
 	EndByte   int
+
+	// Signature is the first line of the declaration's source. Used for the
+	// discovery FTS index; not stored in the symbols table itself.
+	Signature string
+
+	// Doc is the leading line-comment block above the declaration, with the
+	// comment prefix stripped. Used for the discovery FTS index.
+	Doc string
+}
+
+// SearchHit is one ranked result from SearchCode.
+type SearchHit struct {
+	SymbolRecord
+	Score float64 // bm25 score; lower is better
 }
 
 // Recipe is a saved transformation recipe.
@@ -170,6 +184,16 @@ func (s *Store) init() error {
 			diagnostic_regex TEXT NOT NULL,
 			action_json TEXT NOT NULL,
 			confidence TEXT NOT NULL DEFAULT 'suggest'
+		);
+
+		CREATE VIRTUAL TABLE IF NOT EXISTS symbols_fts USING fts5(
+			name,
+			signature,
+			doc,
+			kind      UNINDEXED,
+			file_path UNINDEXED,
+			tokenize = 'unicode61 remove_diacritics 2',
+			prefix   = '2 3 4 5 6'
 		);
 	`)
 	if err != nil {
@@ -388,7 +412,9 @@ func (s *Store) TrackedFilesWithMeta() ([]TrackedFileRecord, error) {
 
 // --- Symbols ---
 
-// UpdateSymbols clears and re-inserts symbols for a file.
+// UpdateSymbols clears and re-inserts symbols for a file, keeping the FTS
+// index in sync. The FTS rowid is aligned with symbols.id so search results
+// can be joined back to symbol rows cheaply.
 func (s *Store) UpdateSymbols(filePath string, symbols []SymbolRecord) error {
 	tx, err := s.db.Begin()
 	if err != nil {
@@ -396,11 +422,19 @@ func (s *Store) UpdateSymbols(filePath string, symbols []SymbolRecord) error {
 	}
 	defer tx.Rollback() //nolint:errcheck
 
+	// Delete FTS rows for this file's symbols BEFORE the symbols themselves —
+	// the symbols.id values are needed to identify the matching FTS rowids.
+	if _, err := tx.Exec(
+		`DELETE FROM symbols_fts WHERE rowid IN (SELECT id FROM symbols WHERE file_path = ?)`,
+		filePath,
+	); err != nil {
+		return fmt.Errorf("clearing FTS for %s: %w", filePath, err)
+	}
 	if _, err := tx.Exec("DELETE FROM symbols WHERE file_path = ?", filePath); err != nil {
 		return fmt.Errorf("clearing symbols for %s: %w", filePath, err)
 	}
 
-	stmt, err := tx.Prepare(
+	insertSym, err := tx.Prepare(
 		`INSERT INTO symbols
 		 (name, kind, file_path, start_line, start_col, end_line, end_col, start_byte, end_byte)
 		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
@@ -408,19 +442,108 @@ func (s *Store) UpdateSymbols(filePath string, symbols []SymbolRecord) error {
 	if err != nil {
 		return fmt.Errorf("preparing symbol insert: %w", err)
 	}
-	defer stmt.Close()
+	defer insertSym.Close()
+
+	insertFTS, err := tx.Prepare(
+		`INSERT INTO symbols_fts (rowid, name, signature, doc, kind, file_path)
+		 VALUES (?, ?, ?, ?, ?, ?)`,
+	)
+	if err != nil {
+		return fmt.Errorf("preparing FTS insert: %w", err)
+	}
+	defer insertFTS.Close()
 
 	for _, sym := range symbols {
-		if _, err := stmt.Exec(
+		res, err := insertSym.Exec(
 			sym.Name, sym.Kind, filePath,
 			sym.StartLine, sym.StartCol, sym.EndLine, sym.EndCol,
 			sym.StartByte, sym.EndByte,
-		); err != nil {
+		)
+		if err != nil {
 			return fmt.Errorf("inserting symbol %q for %s: %w", sym.Name, filePath, err)
+		}
+		id, err := res.LastInsertId()
+		if err != nil {
+			return fmt.Errorf("reading last insert id: %w", err)
+		}
+		if _, err := insertFTS.Exec(
+			id,
+			splitIdentifier(sym.Name),
+			sym.Signature,
+			sym.Doc,
+			sym.Kind,
+			filePath,
+		); err != nil {
+			return fmt.Errorf("inserting FTS row for %q in %s: %w", sym.Name, filePath, err)
 		}
 	}
 
 	return tx.Commit()
+}
+
+// SearchCode runs a full-text search over the discovery index and returns
+// ranked hits. query is an FTS5 MATCH expression — callers may pass a plain
+// word list ("parse connection") or use FTS5 operators directly. kind, if
+// non-empty, restricts results to that symbol kind. pathGlob, if non-empty,
+// restricts by SQL GLOB on file_path. limit caps the number of returned hits;
+// pass <=0 for an internal default.
+func (s *Store) SearchCode(query, kind, pathGlob string, limit int) ([]SearchHit, error) {
+	if limit <= 0 {
+		limit = 50
+	}
+	q := strings.Builder{}
+	q.WriteString(`
+		SELECT s.id, s.name, s.kind, s.file_path,
+		       s.start_line, s.start_col, s.end_line, s.end_col,
+		       s.start_byte, s.end_byte,
+		       fts.signature, fts.doc,
+		       bm25(symbols_fts)
+		  FROM symbols_fts fts
+		  JOIN symbols s ON s.id = fts.rowid
+		 WHERE symbols_fts MATCH ?`)
+	args := []any{expandFTSQuery(query)}
+	if kind != "" {
+		q.WriteString(" AND s.kind = ?")
+		args = append(args, kind)
+	}
+	if pathGlob != "" {
+		q.WriteString(" AND s.file_path GLOB ?")
+		args = append(args, pathGlob)
+	}
+	q.WriteString(" ORDER BY bm25(symbols_fts) ASC LIMIT ?")
+	args = append(args, limit)
+
+	rows, err := s.db.Query(q.String(), args...)
+	if err != nil {
+		return nil, fmt.Errorf("search_code (%q): %w", query, err)
+	}
+	defer rows.Close()
+
+	var hits []SearchHit
+	for rows.Next() {
+		var (
+			id     int64
+			hit    SearchHit
+			rec    SymbolRecord
+			sig    sql.NullString
+			doc    sql.NullString
+			scoreD sql.NullFloat64
+		)
+		if err := rows.Scan(
+			&id, &rec.Name, &rec.Kind, &rec.FilePath,
+			&rec.StartLine, &rec.StartCol, &rec.EndLine, &rec.EndCol,
+			&rec.StartByte, &rec.EndByte,
+			&sig, &doc, &scoreD,
+		); err != nil {
+			return nil, fmt.Errorf("scanning search hit: %w", err)
+		}
+		rec.Signature = sig.String
+		rec.Doc = doc.String
+		hit.SymbolRecord = rec
+		hit.Score = scoreD.Float64
+		hits = append(hits, hit)
+	}
+	return hits, rows.Err()
 }
 
 // FindSymbolsInScopes is FindSymbols restricted to files whose scope is in

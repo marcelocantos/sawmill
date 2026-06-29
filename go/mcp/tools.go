@@ -58,6 +58,20 @@ func optBool(args map[string]any, key string) bool {
 	return v
 }
 
+// optInt returns the int argument named key, or 0 if absent / not numeric.
+// MCP JSON delivers numbers as float64; we accept ints too for completeness.
+func optInt(args map[string]any, key string) int {
+	switch v := args[key].(type) {
+	case float64:
+		return int(v)
+	case int:
+		return v
+	case int64:
+		return int(v)
+	}
+	return 0
+}
+
 // ptr returns a pointer to s, or nil if s == "".
 func ptr(s string) *string {
 	if s == "" {
@@ -329,6 +343,92 @@ func (h *Handler) handleFindSymbol(args map[string]any) (string, bool, error) {
 	fmt.Fprintf(&sb, "%d occurrence(s) of %q:\n", len(records), symbol)
 	for _, r := range records {
 		fmt.Fprintf(&sb, "  %s:%d  [%s] %s\n", r.FilePath, r.StartLine, r.Kind, r.Name)
+	}
+	return sb.String(), false, nil
+}
+
+// ---- search_code ----------------------------------------------------------
+
+func (h *Handler) handleSearchCode(args map[string]any) (string, bool, error) {
+	query, err := requireString(args, "query")
+	if err != nil {
+		return err.Error(), true, nil
+	}
+	kind := optString(args, "kind")
+	pathGlob := optString(args, "path_glob")
+	limit := optInt(args, "limit")
+	format := optString(args, "format")
+
+	h.mu.Lock()
+	defer h.mu.Unlock()
+
+	m, err := h.requireModel()
+	if err != nil {
+		return err.Error(), true, nil
+	}
+
+	hits, err := m.SearchCode(query, kind, pathGlob, limit)
+	if err != nil {
+		return fmt.Sprintf("search_code: %v", err), true, nil
+	}
+
+	if format == "json" {
+		type jsonHit struct {
+			File      string  `json:"file"`
+			Line      int     `json:"line"`
+			Column    int     `json:"column"`
+			EndLine   int     `json:"end_line"`
+			EndCol    int     `json:"end_col"`
+			StartByte int     `json:"start_byte"`
+			EndByte   int     `json:"end_byte"`
+			Name      string  `json:"name"`
+			Kind      string  `json:"kind"`
+			Signature string  `json:"signature,omitempty"`
+			Doc       string  `json:"doc,omitempty"`
+			Score     float64 `json:"score"`
+		}
+		out := make([]jsonHit, 0, len(hits))
+		for _, h := range hits {
+			out = append(out, jsonHit{
+				File:      h.FilePath,
+				Line:      h.StartLine,
+				Column:    h.StartCol,
+				EndLine:   h.EndLine,
+				EndCol:    h.EndCol,
+				StartByte: h.StartByte,
+				EndByte:   h.EndByte,
+				Name:      h.Name,
+				Kind:      h.Kind,
+				Signature: h.Signature,
+				Doc:       h.Doc,
+				Score:     h.Score,
+			})
+		}
+		b, err := json.Marshal(out)
+		if err != nil {
+			return fmt.Sprintf("marshalling search_code result: %v", err), true, nil
+		}
+		return string(b), false, nil
+	}
+
+	if len(hits) == 0 {
+		return fmt.Sprintf("No hits for %q.", query), false, nil
+	}
+
+	var sb strings.Builder
+	fmt.Fprintf(&sb, "%d hit(s) for %q:\n", len(hits), query)
+	for _, h := range hits {
+		fmt.Fprintf(&sb, "  %s:%d  [%s] %s\n", h.FilePath, h.StartLine, h.Kind, h.Name)
+		if h.Signature != "" {
+			fmt.Fprintf(&sb, "    %s\n", h.Signature)
+		}
+		if h.Doc != "" {
+			doc := h.Doc
+			if len(doc) > 160 {
+				doc = doc[:160] + "…"
+			}
+			fmt.Fprintf(&sb, "    doc: %s\n", doc)
+		}
 	}
 	return sb.String(), false, nil
 }

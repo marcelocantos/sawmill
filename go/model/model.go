@@ -331,6 +331,11 @@ func (m *CodebaseModel) FindSymbolsInScopes(name, kind string, scopes []string) 
 	return m.Store.FindSymbolsInScopes(name, kind, scopes)
 }
 
+// SearchCode delegates to the underlying store's FTS-backed search.
+func (m *CodebaseModel) SearchCode(query, kind, pathGlob string, limit int) ([]store.SearchHit, error) {
+	return m.Store.SearchCode(query, kind, pathGlob, limit)
+}
+
 // --- Manager goroutine ---
 
 // runManager is the event loop that owns all mutable forest state. It
@@ -529,6 +534,8 @@ func symbolsToRecords(symbols []index.Symbol, filePath string) []store.SymbolRec
 			EndCol:    s.EndCol,
 			StartByte: int(s.StartByte),
 			EndByte:   int(s.EndByte),
+			Signature: s.Signature,
+			Doc:       s.Doc,
 		}
 	}
 	return records
