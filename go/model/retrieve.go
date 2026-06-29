@@ -47,23 +47,21 @@ func (m *CodebaseModel) SemanticSearch(ctx context.Context, query, kind, pathGlo
 		bmHits = nil
 	}
 
-	// Signal 2: cosine over the in-memory vector index. Skipped if no
+	// Signal 2 / 2b: cosine over the in-memory vector indexes. Skipped if no
 	// embedder is configured.
-	var vecHits []store.SearchHit
+	var vecHits, summaryHits []store.SearchHit
 	if m.Embedder != nil {
-		vecHits, err = m.cosineSearch(ctx, query, kind, pathGlob, candidateLimit)
-		if err != nil {
-			// Don't fail the whole search — log via score=0 fallback.
-			vecHits = nil
-		}
+		vecHits, _ = m.cosineSearchOnIndex(ctx, query, kind, pathGlob, candidateLimit, false)
+		summaryHits, _ = m.cosineSearchOnIndex(ctx, query, kind, pathGlob, candidateLimit, true)
 	}
 
 	// Map each symbol id to its rank in each signal (1-based).
 	type signalRanks struct {
-		bm25  int
-		vec   int
-		graph int
-		rec   store.SymbolRecord
+		bm25    int
+		vec     int
+		summary int
+		graph   int
+		rec     store.SymbolRecord
 	}
 	ranks := map[int64]*signalRanks{}
 	upsert := func(id int64, rec store.SymbolRecord) *signalRanks {
@@ -82,6 +80,10 @@ func (m *CodebaseModel) SemanticSearch(ctx context.Context, query, kind, pathGlo
 	for i, h := range vecHits {
 		r := upsert(h.ID, h.SymbolRecord)
 		r.vec = i + 1
+	}
+	for i, h := range summaryHits {
+		r := upsert(h.ID, h.SymbolRecord)
+		r.summary = i + 1
 	}
 
 	// Signal 3: graph expand. For every BM25/vec hit that's a function/type,
@@ -126,6 +128,10 @@ func (m *CodebaseModel) SemanticSearch(ctx context.Context, query, kind, pathGlo
 			score += 1.0 / (rrfK + float64(r.vec))
 			why = append(why, "vec")
 		}
+		if r.summary > 0 {
+			score += 1.0 / (rrfK + float64(r.summary))
+			why = append(why, "summary")
+		}
 		if r.graph > 0 {
 			score += 1.0 / (rrfK + float64(r.graph))
 			why = append(why, "graph")
@@ -155,16 +161,22 @@ func (m *CodebaseModel) SemanticSearch(ctx context.Context, query, kind, pathGlo
 	return fused, nil
 }
 
-// cosineSearch ranks symbols by cosine similarity between the query
-// embedding and the stored symbol vectors. Optional kind/pathGlob filters
+// cosineSearchOnIndex ranks symbols by cosine similarity between the query
+// embedding and either the body-vector index (useSummary=false) or the
+// summary-vector index (useSummary=true). Optional kind/pathGlob filters
 // are applied AFTER ranking (so the filter doesn't accidentally shrink the
 // candidate pool and lose recall).
-func (m *CodebaseModel) cosineSearch(ctx context.Context, query, kind, pathGlob string, limit int) ([]store.SearchHit, error) {
+func (m *CodebaseModel) cosineSearchOnIndex(ctx context.Context, query, kind, pathGlob string, limit int, useSummary bool) ([]store.SearchHit, error) {
 	if m.Embedder == nil {
 		return nil, nil
 	}
 	m.vecsMu.RLock()
-	vecs := m.Vecs
+	var vecs map[int64][]float32
+	if useSummary {
+		vecs = m.SummaryVecs
+	} else {
+		vecs = m.Vecs
+	}
 	m.vecsMu.RUnlock()
 	if len(vecs) == 0 {
 		return nil, nil

@@ -58,12 +58,15 @@ type CodebaseModel struct {
 	// semantic-search tier (FTS and graph tiers still work).
 	Embedder embed.Embedder
 
-	// vecsMu guards Vecs.
+	// vecsMu guards Vecs and SummaryVecs.
 	vecsMu sync.RWMutex
-	// Vecs is the in-memory map of symbol_id -> embedding vector for the
-	// current Embedder.ModelID(). Refreshed by reloadVecs(). nil if no
-	// embedder is configured.
+	// Vecs is the in-memory map of symbol_id -> body embedding for the
+	// current Embedder.ModelID(). nil if no embedder is configured.
 	Vecs map[int64][]float32
+	// SummaryVecs is the in-memory map of symbol_id -> summary embedding
+	// for the current Embedder.ModelID(). Populated as LLM summaries land;
+	// nil if no embedder or no summaries yet.
+	SummaryVecs map[int64][]float32
 
 	// forest is only set for ephemeral models (no manager goroutine).
 	forest *forest.Forest
@@ -120,7 +123,7 @@ func Load(root string) (*CodebaseModel, error) {
 	// Optional semantic-search tier. Configured via SAWMILL_EMBED_MODEL env;
 	// nil if unset — the store and graph tiers carry on regardless.
 	emb := EmbedderFromEnv()
-	var vecs map[int64][]float32
+	var vecs, summaryVecs map[int64][]float32
 	if emb != nil {
 		ctx := context.Background()
 		if _, err := EmbedAll(ctx, s, emb); err != nil {
@@ -133,7 +136,19 @@ func Load(root string) (*CodebaseModel, error) {
 				vecs = loaded
 			}
 		}
+		// Summary vectors are populated by the summariser; load whatever's
+		// already on disk so previous sessions' work is searchable
+		// immediately.
+		if loaded, err := s.LoadSummaryEmbeddings(emb.ModelID()); err == nil {
+			summaryVecs = loaded
+		}
 	}
+
+	// Optional summariser tier. Disabled by default — only enabled when the
+	// user sets SAWMILL_SUMMARISE=1. Runs in the background so Load returns
+	// immediately and other tiers stay responsive while summaries trickle
+	// in.
+	summCfg := SummaryConfigFromEnv()
 
 	w, events, err := watcher.Watch(absRoot, classifier)
 	if err != nil {
@@ -142,18 +157,19 @@ func Load(root string) (*CodebaseModel, error) {
 	}
 
 	m := &CodebaseModel{
-		Root:     absRoot,
-		Store:    s,
-		LSP:      lspclient.NewPool(),
-		Cache:    forest.NewTreeCache(forest.DefaultCacheSize),
-		Scope:    classifier,
-		Embedder: emb,
-		Vecs:     vecs,
-		w:        w,
-		events:   events,
-		notify:   make(chan []string, 16),
-		done:     make(chan struct{}),
-		stopped:  make(chan struct{}),
+		Root:        absRoot,
+		Store:       s,
+		LSP:         lspclient.NewPool(),
+		Cache:       forest.NewTreeCache(forest.DefaultCacheSize),
+		Scope:       classifier,
+		Embedder:    emb,
+		Vecs:        vecs,
+		SummaryVecs: summaryVecs,
+		w:           w,
+		events:      events,
+		notify:      make(chan []string, 16),
+		done:        make(chan struct{}),
+		stopped:     make(chan struct{}),
 	}
 
 	// Open the git index if this directory is inside a git repo. Index HEAD in
@@ -165,6 +181,10 @@ func Load(root string) (*CodebaseModel, error) {
 				log.Printf("sawmill: git index HEAD: %v", err)
 			}
 		}()
+	}
+
+	if summCfg.Enabled {
+		m.runSummariserBackground(summCfg)
 	}
 
 	go m.runManager()
@@ -394,6 +414,50 @@ func (m *CodebaseModel) ExpandForward(symbol, symbolKind, edgeKind string) ([]st
 // ExpandReverse returns incoming edges that point at the named symbol.
 func (m *CodebaseModel) ExpandReverse(symbol, symbolKind, edgeKind string) ([]store.GraphEdge, error) {
 	return m.Store.ExpandReverse(symbol, symbolKind, edgeKind)
+}
+
+// ExpandGraph picks between the syntactic (Tree-sitter) reference graph and
+// the semantic (LLM-extracted) knowledge graph. source must be one of
+// "syntactic" (default), "semantic", or "both". For "both" the syntactic
+// edges come first, then the semantic edges; the caller can read e.Kind to
+// tell them apart (kg edges use kinds "calls"/"reads"/"writes"/"throws"/
+// "returns"; syntactic edges use "call"/"type_use"/"import_use").
+func (m *CodebaseModel) ExpandGraph(symbol, symbolKind, edgeKind, direction, source string) ([]store.GraphEdge, error) {
+	if direction == "" {
+		direction = "forward"
+	}
+	if source == "" {
+		source = "syntactic"
+	}
+	var (
+		out []store.GraphEdge
+		err error
+	)
+	if source == "syntactic" || source == "both" {
+		var part []store.GraphEdge
+		if direction == "forward" {
+			part, err = m.Store.ExpandForward(symbol, symbolKind, edgeKind)
+		} else {
+			part, err = m.Store.ExpandReverse(symbol, symbolKind, edgeKind)
+		}
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, part...)
+	}
+	if source == "semantic" || source == "both" {
+		var part []store.GraphEdge
+		if direction == "forward" {
+			part, err = m.Store.ExpandKGForward(symbol, edgeKind)
+		} else {
+			part, err = m.Store.ExpandKGReverse(symbol, edgeKind)
+		}
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, part...)
+	}
+	return out, nil
 }
 
 // CentralSymbols returns the top-N most central symbols by PageRank.

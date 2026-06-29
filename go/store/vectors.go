@@ -154,6 +154,53 @@ func (s *Store) LoadEmbeddings(modelID string) (map[int64][]float32, error) {
 	return out, rows.Err()
 }
 
+// UpsertSummaryEmbedding writes the summary-vector for a symbol. Replaces
+// any prior row.
+func (s *Store) UpsertSummaryEmbedding(symbolID int64, vec []float32, bodyHash, modelID string) error {
+	if len(vec) == 0 {
+		return fmt.Errorf("UpsertSummaryEmbedding: empty vector for symbol %d", symbolID)
+	}
+	blob := encodeVec(vec)
+	_, err := s.db.Exec(
+		`INSERT INTO symbol_summary_vecs (symbol_id, vec, body_hash, model_id, dim)
+		 VALUES (?, ?, ?, ?, ?)
+		 ON CONFLICT(symbol_id) DO UPDATE SET
+			vec = excluded.vec,
+			body_hash = excluded.body_hash,
+			model_id = excluded.model_id,
+			dim = excluded.dim`,
+		symbolID, blob, bodyHash, modelID, len(vec),
+	)
+	if err != nil {
+		return fmt.Errorf("upserting summary vector for symbol %d: %w", symbolID, err)
+	}
+	return nil
+}
+
+// LoadSummaryEmbeddings returns every stored summary-vector for modelID,
+// keyed by symbol id. Used to populate the in-memory summary-vector index.
+func (s *Store) LoadSummaryEmbeddings(modelID string) (map[int64][]float32, error) {
+	rows, err := s.db.Query(
+		`SELECT symbol_id, vec, dim FROM symbol_summary_vecs WHERE model_id = ?`,
+		modelID,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("loading summary embeddings: %w", err)
+	}
+	defer rows.Close()
+	out := make(map[int64][]float32)
+	for rows.Next() {
+		var id int64
+		var blob []byte
+		var dim int
+		if err := rows.Scan(&id, &blob, &dim); err != nil {
+			return nil, fmt.Errorf("scanning summary embedding: %w", err)
+		}
+		out[id] = decodeVec(blob, dim)
+	}
+	return out, rows.Err()
+}
+
 // DeleteEmbeddingsForModel removes every vector belonging to a model id.
 // Used when the user changes embedding models — old vectors are no longer
 // comparable and must be regenerated.
