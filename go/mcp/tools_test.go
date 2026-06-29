@@ -544,6 +544,26 @@ func TestSearchCode(t *testing.T) {
 	}
 }
 
+func TestSemanticSearchWithoutEmbedder(t *testing.T) {
+	// Without SAWMILL_EMBED_MODEL set, the embedder is nil and semantic_search
+	// should degrade cleanly to BM25 + graph — i.e. behave like search_code
+	// for a single-word query.
+	h := testHandler(t, map[string]string{
+		"main.py": "# Parse a DSN-style connection string.\ndef parse_connection(s):\n    pass\n",
+	})
+
+	text, isErr, err := h.handleSemanticSearch(map[string]any{"query": "parse"})
+	if err != nil || isErr {
+		t.Fatalf("semantic_search: err=%v isErr=%v text=%s", err, isErr, text)
+	}
+	if !strings.Contains(text, "parse_connection") {
+		t.Errorf("expected parse_connection in output, got: %s", text)
+	}
+	if !strings.Contains(text, "bm25") {
+		t.Errorf("expected at least one bm25 attribution, got: %s", text)
+	}
+}
+
 func TestCentralSymbols(t *testing.T) {
 	h := testHandler(t, map[string]string{
 		"main.go": `package main

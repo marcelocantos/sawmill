@@ -433,6 +433,89 @@ func (h *Handler) handleSearchCode(args map[string]any) (string, bool, error) {
 	return sb.String(), false, nil
 }
 
+// ---- semantic_search ------------------------------------------------------
+
+func (h *Handler) handleSemanticSearch(args map[string]any) (string, bool, error) {
+	query, err := requireString(args, "query")
+	if err != nil {
+		return err.Error(), true, nil
+	}
+	kind := optString(args, "kind")
+	pathGlob := optString(args, "path_glob")
+	limit := optInt(args, "limit")
+	format := optString(args, "format")
+
+	h.mu.Lock()
+	defer h.mu.Unlock()
+
+	m, err := h.requireModel()
+	if err != nil {
+		return err.Error(), true, nil
+	}
+
+	ctx := context.Background()
+	hits, err := m.SemanticSearch(ctx, query, kind, pathGlob, limit)
+	if err != nil {
+		return fmt.Sprintf("semantic_search: %v", err), true, nil
+	}
+
+	if format == "json" {
+		type jsonHit struct {
+			File      string   `json:"file"`
+			Line      int      `json:"line"`
+			Column    int      `json:"column"`
+			EndLine   int      `json:"end_line"`
+			EndCol    int      `json:"end_col"`
+			StartByte int      `json:"start_byte"`
+			EndByte   int      `json:"end_byte"`
+			Name      string   `json:"name"`
+			Kind      string   `json:"kind"`
+			Signature string   `json:"signature,omitempty"`
+			Doc       string   `json:"doc,omitempty"`
+			Score     float64  `json:"score"`
+			Why       []string `json:"why"`
+		}
+		out := make([]jsonHit, 0, len(hits))
+		for _, h := range hits {
+			out = append(out, jsonHit{
+				File:      h.FilePath,
+				Line:      h.StartLine,
+				Column:    h.StartCol,
+				EndLine:   h.EndLine,
+				EndCol:    h.EndCol,
+				StartByte: h.StartByte,
+				EndByte:   h.EndByte,
+				Name:      h.Name,
+				Kind:      h.Kind,
+				Signature: h.Signature,
+				Doc:       h.Doc,
+				Score:     h.Score,
+				Why:       h.Why,
+			})
+		}
+		b, err := json.Marshal(out)
+		if err != nil {
+			return fmt.Sprintf("marshalling semantic_search: %v", err), true, nil
+		}
+		return string(b), false, nil
+	}
+
+	if len(hits) == 0 {
+		return fmt.Sprintf("No hits for %q.", query), false, nil
+	}
+
+	var sb strings.Builder
+	fmt.Fprintf(&sb, "%d hit(s) for %q:\n", len(hits), query)
+	for _, hit := range hits {
+		fmt.Fprintf(&sb, "  %s:%d  [%s] %s   (%.4f, %s)\n",
+			hit.FilePath, hit.StartLine, hit.Kind, hit.Name, hit.Score, strings.Join(hit.Why, "+"))
+		if hit.Signature != "" {
+			fmt.Fprintf(&sb, "    %s\n", hit.Signature)
+		}
+	}
+	return sb.String(), false, nil
+}
+
 // ---- central_symbols ------------------------------------------------------
 
 func (h *Handler) handleCentralSymbols(args map[string]any) (string, bool, error) {

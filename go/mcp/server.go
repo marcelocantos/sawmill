@@ -121,6 +121,8 @@ func (h *Handler) Call(name string, args map[string]any) (string, bool, error) {
 		return h.handleFindSymbol(args)
 	case "search_code":
 		return h.handleSearchCode(args)
+	case "semantic_search":
+		return h.handleSemanticSearch(args)
 	case "graph_expand":
 		return h.handleGraphExpand(args)
 	case "central_symbols":
@@ -404,6 +406,27 @@ func Definitions() []mcpgo.Tool {
 			),
 			mcpgo.WithNumber("limit",
 				mcpgo.Description("Maximum number of hits to return (default 50)"),
+			),
+			mcpgo.WithString("format",
+				mcpgo.Description("Output format: \"text\" (default) or \"json\""),
+			),
+		),
+
+		// semantic_search
+		mcpgo.NewTool("semantic_search",
+			mcpgo.WithDescription("Natural-language search over the codebase. Fuses three signals via reciprocal-rank-fusion: BM25 (from search_code), cosine over a local vector embedding of each symbol, and a one-hop graph expansion that surfaces callers of the BM25 hits. Each result lists a `why` field showing which signals contributed (bm25, vec, graph) so surprising hits can be debugged. The vector tier is active only when SAWMILL_EMBED_MODEL is set in the environment and the configured embedding server is reachable — without it semantic_search degrades cleanly to BM25 + graph."),
+			mcpgo.WithString("query",
+				mcpgo.Required(),
+				mcpgo.Description("Natural-language search query, e.g. \"where do we parse connection strings\""),
+			),
+			mcpgo.WithString("kind",
+				mcpgo.Description("Optional symbol-kind filter"),
+			),
+			mcpgo.WithString("path_glob",
+				mcpgo.Description("Optional SQL GLOB pattern restricting results by file path"),
+			),
+			mcpgo.WithNumber("limit",
+				mcpgo.Description("Maximum number of hits to return (default 20)"),
 			),
 			mcpgo.WithString("format",
 				mcpgo.Description("Output format: \"text\" (default) or \"json\""),

@@ -18,6 +18,7 @@ import (
 
 // SymbolRecord is a single symbol record stored in the database.
 type SymbolRecord struct {
+	ID        int64 // populated by read queries; ignored on insert
 	Name      string
 	Kind      string
 	FilePath  string
@@ -251,6 +252,16 @@ func (s *Store) init() error {
 		CREATE INDEX IF NOT EXISTS idx_refs_src       ON symbol_refs(src_symbol_id, kind);
 		CREATE INDEX IF NOT EXISTS idx_refs_dst_name  ON symbol_refs(dst_name, kind);
 		CREATE INDEX IF NOT EXISTS idx_refs_file      ON symbol_refs(src_file_path);
+
+		CREATE TABLE IF NOT EXISTS symbol_vecs (
+			symbol_id INTEGER PRIMARY KEY REFERENCES symbols(id) ON DELETE CASCADE,
+			vec       BLOB NOT NULL,
+			body_hash TEXT NOT NULL,
+			model_id  TEXT NOT NULL,
+			dim       INTEGER NOT NULL
+		);
+
+		CREATE INDEX IF NOT EXISTS idx_symbol_vecs_model ON symbol_vecs(model_id);
 	`)
 	if err != nil {
 		return fmt.Errorf("initialising store schema: %w", err)
@@ -743,7 +754,6 @@ func (s *Store) SearchCode(query, kind, pathGlob string, limit int) ([]SearchHit
 	var hits []SearchHit
 	for rows.Next() {
 		var (
-			id     int64
 			hit    SearchHit
 			rec    SymbolRecord
 			sig    sql.NullString
@@ -751,7 +761,7 @@ func (s *Store) SearchCode(query, kind, pathGlob string, limit int) ([]SearchHit
 			scoreD sql.NullFloat64
 		)
 		if err := rows.Scan(
-			&id, &rec.Name, &rec.Kind, &rec.FilePath,
+			&rec.ID, &rec.Name, &rec.Kind, &rec.FilePath,
 			&rec.StartLine, &rec.StartCol, &rec.EndLine, &rec.EndCol,
 			&rec.StartByte, &rec.EndByte,
 			&sig, &doc, &scoreD,
@@ -865,6 +875,54 @@ func (s *Store) FindSymbols(name string, kind string) ([]SymbolRecord, error) {
 	defer rows.Close()
 
 	return scanSymbolRows(rows)
+}
+
+// SymbolByID looks up one symbol by primary key. Returns (record, true) on
+// hit, or (zero, false) if no row matches.
+func (s *Store) SymbolByID(id int64) (SymbolRecord, bool) {
+	var rec SymbolRecord
+	row := s.db.QueryRow(
+		`SELECT id, name, kind, file_path, start_line, start_col, end_line, end_col, start_byte, end_byte
+		   FROM symbols WHERE id = ?`, id)
+	if err := row.Scan(&rec.ID, &rec.Name, &rec.Kind, &rec.FilePath,
+		&rec.StartLine, &rec.StartCol, &rec.EndLine, &rec.EndCol,
+		&rec.StartByte, &rec.EndByte); err != nil {
+		return rec, false
+	}
+	return rec, true
+}
+
+// SymbolIDsByName returns up to `limit` symbol ids matching name. Optional
+// kind filter restricts further. Used by graph expansion when only the name
+// is known.
+func (s *Store) SymbolIDsByName(name, kind string, limit int) ([]int64, error) {
+	if limit <= 0 {
+		limit = 8
+	}
+	var (
+		rows *sql.Rows
+		err  error
+	)
+	if kind == "" {
+		rows, err = s.db.Query(
+			`SELECT id FROM symbols WHERE name = ? LIMIT ?`, name, limit)
+	} else {
+		rows, err = s.db.Query(
+			`SELECT id FROM symbols WHERE name = ? AND kind = ? LIMIT ?`, name, kind, limit)
+	}
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var ids []int64
+	for rows.Next() {
+		var id int64
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		ids = append(ids, id)
+	}
+	return ids, rows.Err()
 }
 
 // SymbolsInFile returns all symbols in a file.

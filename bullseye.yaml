@@ -822,7 +822,7 @@ targets:
     achieved: 2026-06-29
   T39:
     name: Sawmill returns semantically-relevant code via hybrid lexical/vector/graph retrieval
-    status: identified
+    status: achieved
     value: 0.0
     cost: 0.0
     acceptance:
@@ -836,9 +836,10 @@ targets:
     - T38
     origin: manual
     discovered: 2026-06-29
+    achieved: 2026-06-29
   T39.1:
     name: A pure-Go embedding pipeline produces per-symbol vectors with body-hash freshness tracking
-    status: identified
+    status: achieved
     value: 0.0
     cost: 0.0
     acceptance:
@@ -851,9 +852,10 @@ targets:
     - T39
     origin: manual
     discovered: 2026-06-29
+    achieved: 2026-06-29
   T39.2:
     name: sqlite-vec backs a queryable per-symbol vector store
-    status: identified
+    status: achieved
     value: 0.0
     cost: 0.0
     acceptance:
@@ -866,9 +868,10 @@ targets:
     - T39.1
     origin: manual
     discovered: 2026-06-29
+    achieved: 2026-06-29
   T39.3:
     name: Hybrid retriever fuses BM25, vector, and graph signals with explainable provenance
-    status: identified
+    status: achieved
     value: 0.0
     cost: 0.0
     acceptance:
@@ -884,6 +887,7 @@ targets:
     - T39.2
     origin: manual
     discovered: 2026-06-29
+    achieved: 2026-06-29
   T4:
     name: CST node tree is stored in SQLite — in-memory CSTs are transient parse artifacts only
     status: achieved
