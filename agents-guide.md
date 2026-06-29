@@ -121,17 +121,24 @@ replaces any unapplied pending changes.
 | `find_symbol` | Find definitions by name | `symbol` |
 | `find_references` | Find usages by name | `symbol` |
 | `search_code` | Full-text search over symbol name, signature, and leading doc; bare terms are auto-prefix-expanded and camelCase/snake_case subwords are individually searchable | `query`, `kind`, `path_glob`, `limit` |
+| `semantic_search` | Natural-language hybrid search fusing BM25, vector cosine, and 1-hop graph expansion via reciprocal-rank-fusion; each hit shows `why` (which signals fired) | `query`, `kind`, `path_glob`, `limit` |
 | `graph_expand` | Walk the symbol reference graph (forward/reverse) over call, type-use, and import-use edges | `symbol`, `direction`, `edge_kind`, `symbol_kind` |
 | `central_symbols` | Rank load-bearing symbols by weighted PageRank over the reference graph | `path_glob`, `kind`, `limit` |
 | `dependency_usage` | Analyse package imports, symbols used, public API exposure | `package` |
 
-The last three tools are the **discovery tier**: use `search_code` when
-you know roughly what you're looking for ("where do we parse connection
-strings"), `central_symbols` to orient yourself in an unfamiliar
-codebase, and `graph_expand` to chase a symbol up or down its
-dependency edges (who calls X, what types does X use). All return CST
-byte ranges so you can pipe results directly into the transform tools
-without re-parsing.
+The discovery tools are the load-bearing way to find code: use
+`search_code` when you know roughly what you're looking for,
+`semantic_search` when you only know it in natural language,
+`central_symbols` to orient yourself in an unfamiliar codebase, and
+`graph_expand` to chase a symbol up or down its dependency edges (who
+calls X, what types does X use). All return CST byte ranges so results
+flow directly into the transform tools without re-parsing.
+
+`semantic_search` needs `SAWMILL_EMBED_MODEL` set in the server's
+environment (e.g. `SAWMILL_EMBED_MODEL=nomic-embed-text` with Ollama
+running locally). Without it, `semantic_search` still works but
+silently drops the vector signal — results are then BM25 + graph only,
+the same fusion just missing one input.
 
 ### Transforms
 

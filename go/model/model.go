@@ -19,9 +19,12 @@ import (
 
 	tree_sitter "github.com/marcelocantos/sawmill/tscompat"
 
+	"context"
 	"log"
+	"sync"
 
 	"github.com/marcelocantos/sawmill/adapters"
+	"github.com/marcelocantos/sawmill/embed"
 	"github.com/marcelocantos/sawmill/forest"
 	"github.com/marcelocantos/sawmill/gitindex"
 	"github.com/marcelocantos/sawmill/gitrepo"
@@ -50,6 +53,17 @@ type CodebaseModel struct {
 	GitIndex *gitindex.Indexer
 	// Scope classifies files as owned/library/ignored.
 	Scope *scope.Classifier
+
+	// Embedder is the optional vector-embedding model. nil disables the
+	// semantic-search tier (FTS and graph tiers still work).
+	Embedder embed.Embedder
+
+	// vecsMu guards Vecs.
+	vecsMu sync.RWMutex
+	// Vecs is the in-memory map of symbol_id -> embedding vector for the
+	// current Embedder.ModelID(). Refreshed by reloadVecs(). nil if no
+	// embedder is configured.
+	Vecs map[int64][]float32
 
 	// forest is only set for ephemeral models (no manager goroutine).
 	forest *forest.Forest
@@ -103,6 +117,24 @@ func Load(root string) (*CodebaseModel, error) {
 		return nil, fmt.Errorf("computing importance: %w", err)
 	}
 
+	// Optional semantic-search tier. Configured via SAWMILL_EMBED_MODEL env;
+	// nil if unset — the store and graph tiers carry on regardless.
+	emb := EmbedderFromEnv()
+	var vecs map[int64][]float32
+	if emb != nil {
+		ctx := context.Background()
+		if _, err := EmbedAll(ctx, s, emb); err != nil {
+			log.Printf("sawmill: embedding pass failed (semantic tier disabled this session): %v", err)
+		} else {
+			loaded, err := s.LoadEmbeddings(emb.ModelID())
+			if err != nil {
+				log.Printf("sawmill: loading vectors failed: %v", err)
+			} else {
+				vecs = loaded
+			}
+		}
+	}
+
 	w, events, err := watcher.Watch(absRoot, classifier)
 	if err != nil {
 		s.Close()
@@ -110,16 +142,18 @@ func Load(root string) (*CodebaseModel, error) {
 	}
 
 	m := &CodebaseModel{
-		Root:    absRoot,
-		Store:   s,
-		LSP:     lspclient.NewPool(),
-		Cache:   forest.NewTreeCache(forest.DefaultCacheSize),
-		Scope:   classifier,
-		w:       w,
-		events:  events,
-		notify:  make(chan []string, 16),
-		done:    make(chan struct{}),
-		stopped: make(chan struct{}),
+		Root:     absRoot,
+		Store:    s,
+		LSP:      lspclient.NewPool(),
+		Cache:    forest.NewTreeCache(forest.DefaultCacheSize),
+		Scope:    classifier,
+		Embedder: emb,
+		Vecs:     vecs,
+		w:        w,
+		events:   events,
+		notify:   make(chan []string, 16),
+		done:     make(chan struct{}),
+		stopped:  make(chan struct{}),
 	}
 
 	// Open the git index if this directory is inside a git repo. Index HEAD in
@@ -469,6 +503,16 @@ func (m *CodebaseModel) parseAndIndexFile(path string) {
 	_ = m.Store.UpdateSymbols(path, records)
 	_ = m.Store.UpdateRefs(path, edgesToRecords(edges))
 	_ = m.Store.RecomputeImportance()
+	if m.Embedder != nil {
+		if _, err := embedFiltered(context.Background(), m.Store, m.Embedder, path); err != nil {
+			log.Printf("sawmill: re-embedding %s: %v", path, err)
+		}
+		if loaded, err := m.Store.LoadEmbeddings(m.Embedder.ModelID()); err == nil {
+			m.vecsMu.Lock()
+			m.Vecs = loaded
+			m.vecsMu.Unlock()
+		}
+	}
 }
 
 // --- Static helpers ---

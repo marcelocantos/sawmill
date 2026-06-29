@@ -1,0 +1,50 @@
+# Discovery evals — golden queries the hybrid retriever should answer well
+# on the sawmill repo itself.
+#
+# Format: a list of query records. `expect_any` is a list of symbol names
+# that, if present in the top-K results, count the query as a hit. `top_k`
+# defaults to 10. These are best-effort sanity checks, not a benchmark
+# harness — recall is sensitive to the embedding model in use, so a regression
+# here is a signal to look at the change, not necessarily a hard failure.
+#
+# To run manually:
+#   export SAWMILL_EMBED_MODEL=nomic-embed-text
+#   ollama pull nomic-embed-text   # one-time
+#   go run ./_evalharness/         # not committed; assemble from the smoke loop in T39 PR
+
+embedder:
+  provider: ollama
+  model: nomic-embed-text
+
+queries:
+  - q: "parse a connection string"
+    expect_any: [expandFTSQuery, SearchCode, parseAndIndexFile]
+    top_k: 10
+
+  - q: "compute the SHA-256 hash of a file"
+    expect_any: [hashBytes, rootHash]
+    top_k: 10
+
+  - q: "open a SQLite database"
+    expect_any: [Open, OpenInMemory, openTestStore]
+    top_k: 10
+
+  - q: "walk the symbol reference graph"
+    expect_any: [Edge, ExtractEdges, ExpandForward, ExpandReverse, SymbolRecord]
+    top_k: 10
+
+  - q: "PageRank ranking by importance"
+    expect_any: [RecomputeImportance, CentralSymbols, edgeKindWeights]
+    top_k: 10
+
+  - q: "embedding model via HTTP"
+    expect_any: [OllamaEmbedder, Embed, NewOllama]
+    top_k: 10
+
+  - q: "AST cache eviction"
+    expect_any: [TreeCache, NewTreeCache, Clear]
+    top_k: 10
+
+  - q: "rename a symbol across files"
+    expect_any: [handleRename, Rename, RenameSymbol]
+    top_k: 10
