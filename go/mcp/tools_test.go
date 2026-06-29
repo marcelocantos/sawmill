@@ -506,6 +506,144 @@ func TestFindSymbol(t *testing.T) {
 	}
 }
 
+func TestSearchCode(t *testing.T) {
+	h := testHandler(t, map[string]string{
+		"main.py": "# Parse a DSN-style connection string.\n# Returns a Connection object.\ndef parse_connection(s):\n    pass\n\ndef helper():\n    pass\n",
+	})
+
+	// Bare term -> prefix expansion; "parse" must match "parse_connection".
+	text, isError, err := h.handleSearchCode(map[string]any{
+		"query": "parse",
+	})
+	if err != nil || isError {
+		t.Fatalf("handleSearchCode error: err=%v isError=%v text=%s", err, isError, text)
+	}
+	if !strings.Contains(text, "parse_connection") {
+		t.Errorf("expected parse_connection in output, got: %s", text)
+	}
+
+	// Doc text matches.
+	text, _, _ = h.handleSearchCode(map[string]any{"query": "DSN"})
+	if !strings.Contains(text, "parse_connection") {
+		t.Errorf("expected doc match for DSN, got: %s", text)
+	}
+
+	// JSON output.
+	text, _, _ = h.handleSearchCode(map[string]any{
+		"query":  "parse",
+		"format": "json",
+	})
+	if !strings.Contains(text, `"name":"parse_connection"`) {
+		t.Errorf("expected JSON containing parse_connection, got: %s", text)
+	}
+
+	// Empty hit set is reported as text.
+	text, _, _ = h.handleSearchCode(map[string]any{"query": "nonexistent_unique_term"})
+	if !strings.Contains(text, "No hits") {
+		t.Errorf("expected 'No hits' message, got: %s", text)
+	}
+}
+
+func TestCentralSymbols(t *testing.T) {
+	h := testHandler(t, map[string]string{
+		"main.go": `package main
+
+func helper() {}
+
+func a() { helper() }
+func b() { helper() }
+func c() { helper() }
+
+func main() { a(); b(); c() }
+`,
+	})
+
+	text, isErr, err := h.handleCentralSymbols(map[string]any{"limit": 5})
+	if err != nil || isErr {
+		t.Fatalf("central_symbols: err=%v isErr=%v text=%s", err, isErr, text)
+	}
+	if !strings.Contains(text, "helper") {
+		t.Errorf("expected helper to be among central symbols, got: %s", text)
+	}
+
+	// helper should be ranked above main because three functions call it.
+	helperPos := strings.Index(text, "helper")
+	mainPos := strings.Index(text, "main")
+	if helperPos == -1 || helperPos > mainPos {
+		t.Errorf("expected helper to rank above main, got:\n%s", text)
+	}
+
+	// JSON format.
+	text, _, _ = h.handleCentralSymbols(map[string]any{"format": "json", "limit": 3})
+	if !strings.Contains(text, `"importance"`) {
+		t.Errorf("expected JSON with importance field, got: %s", text)
+	}
+}
+
+func TestGraphExpand(t *testing.T) {
+	h := testHandler(t, map[string]string{
+		"main.go": `package main
+
+type Config struct{}
+
+func parse(c Config) error { return nil }
+
+func main() {
+	var c Config
+	parse(c)
+	parse(c)
+}
+`,
+	})
+
+	// Forward expansion of main should show the call edges.
+	text, isErr, err := h.handleGraphExpand(map[string]any{
+		"symbol":    "main",
+		"direction": "forward",
+		"edge_kind": "call",
+	})
+	if err != nil || isErr {
+		t.Fatalf("graph_expand forward: err=%v isErr=%v text=%s", err, isErr, text)
+	}
+	if !strings.Contains(text, "parse") {
+		t.Errorf("expected forward expand to mention parse, got: %s", text)
+	}
+
+	// Reverse expansion of parse should show main as the caller (twice).
+	text, _, _ = h.handleGraphExpand(map[string]any{
+		"symbol":    "parse",
+		"direction": "reverse",
+		"edge_kind": "call",
+	})
+	if !strings.Contains(text, "main") {
+		t.Errorf("expected reverse expand to mention main, got: %s", text)
+	}
+	if !strings.Contains(text, "2 reverse") {
+		t.Errorf("expected 2 reverse edges, got: %s", text)
+	}
+
+	// Type-use: parse should have a type_use edge to Config.
+	text, _, _ = h.handleGraphExpand(map[string]any{
+		"symbol":    "parse",
+		"direction": "forward",
+		"edge_kind": "type_use",
+	})
+	if !strings.Contains(text, "Config") {
+		t.Errorf("expected type_use edge to Config, got: %s", text)
+	}
+
+	// JSON format.
+	text, _, _ = h.handleGraphExpand(map[string]any{
+		"symbol":    "parse",
+		"direction": "reverse",
+		"edge_kind": "call",
+		"format":    "json",
+	})
+	if !strings.Contains(text, `"dst":"parse"`) {
+		t.Errorf("expected JSON with dst=parse, got: %s", text)
+	}
+}
+
 func TestFindReferences(t *testing.T) {
 	h := testHandler(t, map[string]string{
 		"main.py": "def helper():\n    pass\n\nhelper()\nhelper()\n",

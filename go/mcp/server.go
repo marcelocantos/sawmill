@@ -119,6 +119,12 @@ func (h *Handler) Call(name string, args map[string]any) (string, bool, error) {
 		return h.handleQuery(args)
 	case "find_symbol":
 		return h.handleFindSymbol(args)
+	case "search_code":
+		return h.handleSearchCode(args)
+	case "graph_expand":
+		return h.handleGraphExpand(args)
+	case "central_symbols":
+		return h.handleCentralSymbols(args)
 	case "find_references":
 		return h.handleFindReferences(args)
 	case "transform":
@@ -342,6 +348,65 @@ func Definitions() []mcpgo.Tool {
 			),
 			mcpgo.WithString("kind",
 				mcpgo.Description("Optional kind filter (function, type, call, …)"),
+			),
+		),
+
+		// central_symbols
+		mcpgo.NewTool("central_symbols",
+			mcpgo.WithDescription("Return the load-bearing symbols of the codebase, ranked by a weighted PageRank over the symbol reference graph (call edges weighted highest, then type uses, then imports). Useful for orienting yourself in an unfamiliar repo or scoping a refactor to the symbols most depended on. Filterable by kind and path glob."),
+			mcpgo.WithString("path_glob",
+				mcpgo.Description("Optional SQL GLOB pattern restricting results by file path (e.g. 'go/mcp/*')"),
+			),
+			mcpgo.WithString("kind",
+				mcpgo.Description("Optional symbol-kind filter (function, type, method, ...)"),
+			),
+			mcpgo.WithNumber("limit",
+				mcpgo.Description("Maximum number of symbols to return (default 20)"),
+			),
+			mcpgo.WithString("format",
+				mcpgo.Description("Output format: \"text\" (default) or \"json\""),
+			),
+		),
+
+		// graph_expand
+		mcpgo.NewTool("graph_expand",
+			mcpgo.WithDescription("Walk the symbol reference graph. direction=\"forward\" returns edges leaving the named symbol (who does X call / what types does X use / what does X import). direction=\"reverse\" returns edges that point AT the symbol (who calls X / who uses type X). Edges have provenance: every hit lists src, dst, edge kind, and the source location, so the agent can chase the result back to code."),
+			mcpgo.WithString("symbol",
+				mcpgo.Required(),
+				mcpgo.Description("Symbol name to expand around"),
+			),
+			mcpgo.WithString("direction",
+				mcpgo.Description("\"forward\" (out-edges, default) or \"reverse\" (in-edges)"),
+			),
+			mcpgo.WithString("edge_kind",
+				mcpgo.Description("Optional edge-kind filter: call, type_use, or import_use"),
+			),
+			mcpgo.WithString("symbol_kind",
+				mcpgo.Description("Optional symbol-kind filter applied to the symbol parameter (function, type, method, …)"),
+			),
+			mcpgo.WithString("format",
+				mcpgo.Description("Output format: \"text\" (default) or \"json\""),
+			),
+		),
+
+		// search_code
+		mcpgo.NewTool("search_code",
+			mcpgo.WithDescription("Full-text search over the symbol discovery index — name, signature, and leading doc/comments. Bare terms are auto-expanded as prefix matches and camelCase/snake_case subwords are individually searchable (so 'parse' matches both 'Parser' and 'parseConnection'). For advanced control pass FTS5 syntax directly (quoted phrases, AND/OR/NOT, prefix*). Returns ranked hits with file:line ranges, kind, and matching signature/doc snippets."),
+			mcpgo.WithString("query",
+				mcpgo.Required(),
+				mcpgo.Description("Search expression. Plain words are auto-expanded to prefix matches; use FTS5 syntax for precise queries."),
+			),
+			mcpgo.WithString("kind",
+				mcpgo.Description("Optional kind filter (function, type, method, field, import, call)"),
+			),
+			mcpgo.WithString("path_glob",
+				mcpgo.Description("Optional SQL GLOB pattern restricting results by file path (e.g. 'go/mcp/*')"),
+			),
+			mcpgo.WithNumber("limit",
+				mcpgo.Description("Maximum number of hits to return (default 50)"),
+			),
+			mcpgo.WithString("format",
+				mcpgo.Description("Output format: \"text\" (default) or \"json\""),
 			),
 		),
 

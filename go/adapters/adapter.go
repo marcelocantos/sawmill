@@ -54,6 +54,13 @@ type LanguageAdapter interface {
 	// whole node. Returns empty string if not applicable.
 	FieldQuery() string
 
+	// TypeUseQuery is a Tree-sitter query for type references in non-decl
+	// positions (function-parameter types, return types, struct-field types,
+	// etc.). Must capture @name for the type identifier. Used by the
+	// references edge table to record type-use edges. Returns empty string if
+	// the adapter does not yet support type-use extraction.
+	TypeUseQuery() string
+
 	// MethodQuery is a Tree-sitter query for methods within a class/impl block.
 	// Must capture @name and @method for the whole node. Returns empty string
 	// if not applicable.

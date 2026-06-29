@@ -58,6 +58,20 @@ func optBool(args map[string]any, key string) bool {
 	return v
 }
 
+// optInt returns the int argument named key, or 0 if absent / not numeric.
+// MCP JSON delivers numbers as float64; we accept ints too for completeness.
+func optInt(args map[string]any, key string) int {
+	switch v := args[key].(type) {
+	case float64:
+		return int(v)
+	case int:
+		return v
+	case int64:
+		return int(v)
+	}
+	return 0
+}
+
 // ptr returns a pointer to s, or nil if s == "".
 func ptr(s string) *string {
 	if s == "" {
@@ -333,6 +347,248 @@ func (h *Handler) handleFindSymbol(args map[string]any) (string, bool, error) {
 	return sb.String(), false, nil
 }
 
+// ---- search_code ----------------------------------------------------------
+
+func (h *Handler) handleSearchCode(args map[string]any) (string, bool, error) {
+	query, err := requireString(args, "query")
+	if err != nil {
+		return err.Error(), true, nil
+	}
+	kind := optString(args, "kind")
+	pathGlob := optString(args, "path_glob")
+	limit := optInt(args, "limit")
+	format := optString(args, "format")
+
+	h.mu.Lock()
+	defer h.mu.Unlock()
+
+	m, err := h.requireModel()
+	if err != nil {
+		return err.Error(), true, nil
+	}
+
+	hits, err := m.SearchCode(query, kind, pathGlob, limit)
+	if err != nil {
+		return fmt.Sprintf("search_code: %v", err), true, nil
+	}
+
+	if format == "json" {
+		type jsonHit struct {
+			File      string  `json:"file"`
+			Line      int     `json:"line"`
+			Column    int     `json:"column"`
+			EndLine   int     `json:"end_line"`
+			EndCol    int     `json:"end_col"`
+			StartByte int     `json:"start_byte"`
+			EndByte   int     `json:"end_byte"`
+			Name      string  `json:"name"`
+			Kind      string  `json:"kind"`
+			Signature string  `json:"signature,omitempty"`
+			Doc       string  `json:"doc,omitempty"`
+			Score     float64 `json:"score"`
+		}
+		out := make([]jsonHit, 0, len(hits))
+		for _, h := range hits {
+			out = append(out, jsonHit{
+				File:      h.FilePath,
+				Line:      h.StartLine,
+				Column:    h.StartCol,
+				EndLine:   h.EndLine,
+				EndCol:    h.EndCol,
+				StartByte: h.StartByte,
+				EndByte:   h.EndByte,
+				Name:      h.Name,
+				Kind:      h.Kind,
+				Signature: h.Signature,
+				Doc:       h.Doc,
+				Score:     h.Score,
+			})
+		}
+		b, err := json.Marshal(out)
+		if err != nil {
+			return fmt.Sprintf("marshalling search_code result: %v", err), true, nil
+		}
+		return string(b), false, nil
+	}
+
+	if len(hits) == 0 {
+		return fmt.Sprintf("No hits for %q.", query), false, nil
+	}
+
+	var sb strings.Builder
+	fmt.Fprintf(&sb, "%d hit(s) for %q:\n", len(hits), query)
+	for _, h := range hits {
+		fmt.Fprintf(&sb, "  %s:%d  [%s] %s\n", h.FilePath, h.StartLine, h.Kind, h.Name)
+		if h.Signature != "" {
+			fmt.Fprintf(&sb, "    %s\n", h.Signature)
+		}
+		if h.Doc != "" {
+			doc := h.Doc
+			if len(doc) > 160 {
+				doc = doc[:160] + "…"
+			}
+			fmt.Fprintf(&sb, "    doc: %s\n", doc)
+		}
+	}
+	return sb.String(), false, nil
+}
+
+// ---- central_symbols ------------------------------------------------------
+
+func (h *Handler) handleCentralSymbols(args map[string]any) (string, bool, error) {
+	pathGlob := optString(args, "path_glob")
+	kind := optString(args, "kind")
+	limit := optInt(args, "limit")
+	if limit <= 0 {
+		limit = 20
+	}
+	format := optString(args, "format")
+
+	h.mu.Lock()
+	defer h.mu.Unlock()
+
+	m, err := h.requireModel()
+	if err != nil {
+		return err.Error(), true, nil
+	}
+
+	results, err := m.CentralSymbols(pathGlob, kind, limit)
+	if err != nil {
+		return fmt.Sprintf("central_symbols: %v", err), true, nil
+	}
+
+	if format == "json" {
+		type jsonRow struct {
+			Name       string  `json:"name"`
+			Kind       string  `json:"kind"`
+			File       string  `json:"file"`
+			Line       int     `json:"line"`
+			Column     int     `json:"column"`
+			Importance float64 `json:"importance"`
+		}
+		out := make([]jsonRow, 0, len(results))
+		for _, r := range results {
+			out = append(out, jsonRow{
+				Name:       r.Name,
+				Kind:       r.Kind,
+				File:       r.FilePath,
+				Line:       r.StartLine,
+				Column:     r.StartCol,
+				Importance: r.Importance,
+			})
+		}
+		b, err := json.Marshal(out)
+		if err != nil {
+			return fmt.Sprintf("marshalling central_symbols: %v", err), true, nil
+		}
+		return string(b), false, nil
+	}
+
+	if len(results) == 0 {
+		return "No central symbols yet — index may be empty or importance has not been computed.", false, nil
+	}
+
+	var sb strings.Builder
+	fmt.Fprintf(&sb, "Top %d symbol(s) by importance:\n", len(results))
+	for i, r := range results {
+		fmt.Fprintf(&sb, "  %2d. %-32s [%s] %s:%d  (importance=%.5f)\n",
+			i+1, r.Name, r.Kind, r.FilePath, r.StartLine, r.Importance)
+	}
+	return sb.String(), false, nil
+}
+
+// ---- graph_expand ---------------------------------------------------------
+
+func (h *Handler) handleGraphExpand(args map[string]any) (string, bool, error) {
+	symbol, err := requireString(args, "symbol")
+	if err != nil {
+		return err.Error(), true, nil
+	}
+	direction := optString(args, "direction")
+	if direction == "" {
+		direction = "forward"
+	}
+	edgeKind := optString(args, "edge_kind")
+	symbolKind := optString(args, "symbol_kind")
+	format := optString(args, "format")
+
+	h.mu.Lock()
+	defer h.mu.Unlock()
+
+	m, err := h.requireModel()
+	if err != nil {
+		return err.Error(), true, nil
+	}
+
+	var (
+		edges []store.GraphEdge
+		gerr  error
+	)
+	switch direction {
+	case "forward":
+		edges, gerr = m.ExpandForward(symbol, symbolKind, edgeKind)
+	case "reverse":
+		edges, gerr = m.ExpandReverse(symbol, symbolKind, edgeKind)
+	default:
+		return fmt.Sprintf("direction must be \"forward\" or \"reverse\", got %q", direction), true, nil
+	}
+	if gerr != nil {
+		return fmt.Sprintf("graph_expand: %v", gerr), true, nil
+	}
+
+	if format == "json" {
+		type jsonEdge struct {
+			Kind    string `json:"kind"`
+			Src     string `json:"src,omitempty"`
+			SrcKind string `json:"src_kind,omitempty"`
+			SrcFile string `json:"src_file"`
+			Dst     string `json:"dst"`
+			DstKind string `json:"dst_kind,omitempty"`
+			DstFile string `json:"dst_file,omitempty"`
+			Line    int    `json:"line"`
+			Column  int    `json:"column"`
+		}
+		out := make([]jsonEdge, 0, len(edges))
+		for _, e := range edges {
+			out = append(out, jsonEdge{
+				Kind:    e.Kind,
+				Src:     e.SrcName,
+				SrcKind: e.SrcKind,
+				SrcFile: e.SrcFile,
+				Dst:     e.DstName,
+				DstKind: e.DstKind,
+				DstFile: e.DstFile,
+				Line:    e.StartLine,
+				Column:  e.StartCol,
+			})
+		}
+		b, err := json.Marshal(out)
+		if err != nil {
+			return fmt.Sprintf("marshalling graph_expand: %v", err), true, nil
+		}
+		return string(b), false, nil
+	}
+
+	if len(edges) == 0 {
+		return fmt.Sprintf("No %s edges for %q.", direction, symbol), false, nil
+	}
+
+	var sb strings.Builder
+	fmt.Fprintf(&sb, "%d %s edge(s) for %q:\n", len(edges), direction, symbol)
+	for _, e := range edges {
+		src := e.SrcName
+		if src == "" {
+			src = "<file-scope>"
+		}
+		dst := e.DstName
+		if e.DstFile != "" {
+			dst = fmt.Sprintf("%s (%s)", e.DstName, e.DstFile)
+		}
+		fmt.Fprintf(&sb, "  [%s] %s -> %s   %s:%d\n", e.Kind, src, dst, e.SrcFile, e.StartLine)
+	}
+	return sb.String(), false, nil
+}
+
 // ---- find_references ------------------------------------------------------
 
 func (h *Handler) handleFindReferences(args map[string]any) (string, bool, error) {
@@ -350,28 +606,34 @@ func (h *Handler) handleFindReferences(args map[string]any) (string, bool, error
 		return err.Error(), true, nil
 	}
 
-	// Library files have no call symbols (they're indexed in API-only mode),
-	// so the scope filter is implicitly satisfied — we restrict to "owned"
-	// files explicitly to make the contract clear and to remain robust if a
-	// library file's classification ever changes.
-	scopes := []string{"owned"}
-	if includeLibraries {
-		scopes = append(scopes, "library")
-	}
-
-	records, err := m.FindSymbolsInScopes(symbol, "call", scopes)
+	// Query call-kind reverse edges to symbol. Library scope is excluded by
+	// default (library files are indexed in API-only mode and don't emit
+	// edges anyway; the explicit filter just makes the contract clear).
+	edges, err := m.ExpandReverse(symbol, "", "call")
 	if err != nil {
 		return fmt.Sprintf("finding references: %v", err), true, nil
 	}
 
-	if len(records) == 0 {
+	if !includeLibraries {
+		filtered := edges[:0]
+		for _, e := range edges {
+			scope, _ := m.Store.FileScope(e.SrcFile)
+			if scope == "library" {
+				continue
+			}
+			filtered = append(filtered, e)
+		}
+		edges = filtered
+	}
+
+	if len(edges) == 0 {
 		return fmt.Sprintf("No call sites found for %q.", symbol), false, nil
 	}
 
 	var sb strings.Builder
-	fmt.Fprintf(&sb, "%d call site(s) for %q:\n", len(records), symbol)
-	for _, r := range records {
-		fmt.Fprintf(&sb, "  %s:%d\n", r.FilePath, r.StartLine)
+	fmt.Fprintf(&sb, "%d call site(s) for %q:\n", len(edges), symbol)
+	for _, e := range edges {
+		fmt.Fprintf(&sb, "  %s:%d\n", e.SrcFile, e.StartLine)
 	}
 	return sb.String(), false, nil
 }

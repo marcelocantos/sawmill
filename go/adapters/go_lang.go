@@ -58,6 +58,28 @@ func (a *GoAdapter) MethodQuery() string {
 // DecoratorQuery returns empty — Go has no decorators.
 func (a *GoAdapter) DecoratorQuery() string { return "" }
 
+// TypeUseQuery captures type-identifier references in type positions: param
+// types, return types, struct field types, type aliases, and embedded types
+// in struct/interface bodies. It does NOT capture the LHS of a
+// type_declaration — that's a declaration, not a use, and is already covered
+// by TypeDefQuery.
+func (a *GoAdapter) TypeUseQuery() string {
+	return `
+[
+  (parameter_declaration type: (type_identifier) @name)
+  (field_declaration type: (type_identifier) @name)
+  (function_declaration result: (type_identifier) @name)
+  (method_declaration result: (type_identifier) @name)
+  (composite_literal type: (type_identifier) @name)
+  (pointer_type (type_identifier) @name)
+  (slice_type (type_identifier) @name)
+  (array_type element: (type_identifier) @name)
+  (channel_type (type_identifier) @name)
+  (type_assertion_expression type: (type_identifier) @name)
+  (type_conversion_expression type: (type_identifier) @name)
+] @type_use`
+}
+
 // GenField generates a Go field declaration. Go puts the type after the name.
 func (a *GoAdapter) GenField(name, typeName string) string {
 	return fmt.Sprintf("    %s %s\n", name, typeName)

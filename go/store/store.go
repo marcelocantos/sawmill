@@ -27,6 +27,46 @@ type SymbolRecord struct {
 	EndCol    int
 	StartByte int
 	EndByte   int
+
+	// Signature is the first line of the declaration's source. Used for the
+	// discovery FTS index; not stored in the symbols table itself.
+	Signature string
+
+	// Doc is the leading line-comment block above the declaration, with the
+	// comment prefix stripped. Used for the discovery FTS index.
+	Doc string
+}
+
+// SearchHit is one ranked result from SearchCode.
+type SearchHit struct {
+	SymbolRecord
+	Score float64 // bm25 score; lower is better
+}
+
+// EdgeRecord is one outgoing reference to record in the symbol_refs table.
+// Source resolution (which function contains the edge) happens inside
+// UpdateRefs by byte containment, so callers don't supply it.
+type EdgeRecord struct {
+	Kind      string // "call" | "type_use" | "import_use"
+	DstName   string
+	StartByte int
+	EndByte   int
+	StartLine int
+	StartCol  int
+}
+
+// GraphEdge is one row from a graph_expand traversal — a directed edge with
+// resolved endpoints.
+type GraphEdge struct {
+	Kind      string
+	SrcName   string // empty if the edge originates outside any function
+	SrcKind   string
+	SrcFile   string
+	DstName   string
+	DstKind   string // empty if unresolved
+	DstFile   string // empty if unresolved
+	StartLine int
+	StartCol  int
 }
 
 // Recipe is a saved transformation recipe.
@@ -116,6 +156,18 @@ func (s *Store) init() error {
 		}
 	}
 
+	// symbols.importance is added by 🎯T38.3. CREATE TABLE below initialises
+	// it for new schemas; ALTER TABLE migrates existing ones.
+	haveSym, err := s.columns("symbols")
+	if err != nil {
+		return err
+	}
+	if len(haveSym) > 0 && !haveSym["importance"] {
+		if _, err := s.db.Exec(`ALTER TABLE symbols ADD COLUMN importance REAL NOT NULL DEFAULT 0`); err != nil {
+			return fmt.Errorf("adding importance column: %w", err)
+		}
+	}
+
 	_, err = s.db.Exec(`
 
 		CREATE TABLE IF NOT EXISTS symbols (
@@ -128,12 +180,14 @@ func (s *Store) init() error {
 			end_line INTEGER NOT NULL,
 			end_col INTEGER NOT NULL,
 			start_byte INTEGER NOT NULL,
-			end_byte INTEGER NOT NULL
+			end_byte INTEGER NOT NULL,
+			importance REAL NOT NULL DEFAULT 0
 		);
 
 		CREATE INDEX IF NOT EXISTS idx_symbols_name ON symbols(name);
 		CREATE INDEX IF NOT EXISTS idx_symbols_file ON symbols(file_path);
 		CREATE INDEX IF NOT EXISTS idx_symbols_kind ON symbols(kind);
+		CREATE INDEX IF NOT EXISTS idx_symbols_importance ON symbols(importance DESC);
 
 		CREATE INDEX IF NOT EXISTS idx_files_language ON files(language);
 
@@ -171,6 +225,32 @@ func (s *Store) init() error {
 			action_json TEXT NOT NULL,
 			confidence TEXT NOT NULL DEFAULT 'suggest'
 		);
+
+		CREATE VIRTUAL TABLE IF NOT EXISTS symbols_fts USING fts5(
+			name,
+			signature,
+			doc,
+			kind      UNINDEXED,
+			file_path UNINDEXED,
+			tokenize = 'unicode61 remove_diacritics 2',
+			prefix   = '2 3 4 5 6'
+		);
+
+		CREATE TABLE IF NOT EXISTS symbol_refs (
+			id            INTEGER PRIMARY KEY,
+			src_symbol_id INTEGER REFERENCES symbols(id) ON DELETE CASCADE,
+			src_file_path TEXT NOT NULL REFERENCES files(path) ON DELETE CASCADE,
+			dst_name      TEXT NOT NULL,
+			kind          TEXT NOT NULL,
+			start_byte    INTEGER NOT NULL,
+			end_byte      INTEGER NOT NULL,
+			start_line    INTEGER NOT NULL,
+			start_col     INTEGER NOT NULL
+		);
+
+		CREATE INDEX IF NOT EXISTS idx_refs_src       ON symbol_refs(src_symbol_id, kind);
+		CREATE INDEX IF NOT EXISTS idx_refs_dst_name  ON symbol_refs(dst_name, kind);
+		CREATE INDEX IF NOT EXISTS idx_refs_file      ON symbol_refs(src_file_path);
 	`)
 	if err != nil {
 		return fmt.Errorf("initialising store schema: %w", err)
@@ -185,9 +265,15 @@ func splitMtime(t time.Time) (int64, int64) {
 
 // fileColumns returns the set of column names currently on the files table.
 func (s *Store) fileColumns() (map[string]bool, error) {
-	rows, err := s.db.Query("PRAGMA table_info(files)")
+	return s.columns("files")
+}
+
+// columns returns the set of column names on the named table, or an empty
+// map if the table does not exist yet.
+func (s *Store) columns(table string) (map[string]bool, error) {
+	rows, err := s.db.Query(fmt.Sprintf("PRAGMA table_info(%s)", table))
 	if err != nil {
-		return nil, fmt.Errorf("checking files schema: %w", err)
+		return nil, fmt.Errorf("checking %s schema: %w", table, err)
 	}
 	defer rows.Close()
 	cols := make(map[string]bool)
@@ -198,7 +284,7 @@ func (s *Store) fileColumns() (map[string]bool, error) {
 		var dflt sql.NullString
 		var pk int
 		if err := rows.Scan(&cid, &name, &typ, &notnull, &dflt, &pk); err != nil {
-			return nil, fmt.Errorf("scanning table_info: %w", err)
+			return nil, fmt.Errorf("scanning table_info(%s): %w", table, err)
 		}
 		cols[name] = true
 	}
@@ -388,7 +474,9 @@ func (s *Store) TrackedFilesWithMeta() ([]TrackedFileRecord, error) {
 
 // --- Symbols ---
 
-// UpdateSymbols clears and re-inserts symbols for a file.
+// UpdateSymbols clears and re-inserts symbols for a file, keeping the FTS
+// index in sync. The FTS rowid is aligned with symbols.id so search results
+// can be joined back to symbol rows cheaply.
 func (s *Store) UpdateSymbols(filePath string, symbols []SymbolRecord) error {
 	tx, err := s.db.Begin()
 	if err != nil {
@@ -396,11 +484,19 @@ func (s *Store) UpdateSymbols(filePath string, symbols []SymbolRecord) error {
 	}
 	defer tx.Rollback() //nolint:errcheck
 
+	// Delete FTS rows for this file's symbols BEFORE the symbols themselves —
+	// the symbols.id values are needed to identify the matching FTS rowids.
+	if _, err := tx.Exec(
+		`DELETE FROM symbols_fts WHERE rowid IN (SELECT id FROM symbols WHERE file_path = ?)`,
+		filePath,
+	); err != nil {
+		return fmt.Errorf("clearing FTS for %s: %w", filePath, err)
+	}
 	if _, err := tx.Exec("DELETE FROM symbols WHERE file_path = ?", filePath); err != nil {
 		return fmt.Errorf("clearing symbols for %s: %w", filePath, err)
 	}
 
-	stmt, err := tx.Prepare(
+	insertSym, err := tx.Prepare(
 		`INSERT INTO symbols
 		 (name, kind, file_path, start_line, start_col, end_line, end_col, start_byte, end_byte)
 		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
@@ -408,19 +504,267 @@ func (s *Store) UpdateSymbols(filePath string, symbols []SymbolRecord) error {
 	if err != nil {
 		return fmt.Errorf("preparing symbol insert: %w", err)
 	}
-	defer stmt.Close()
+	defer insertSym.Close()
+
+	insertFTS, err := tx.Prepare(
+		`INSERT INTO symbols_fts (rowid, name, signature, doc, kind, file_path)
+		 VALUES (?, ?, ?, ?, ?, ?)`,
+	)
+	if err != nil {
+		return fmt.Errorf("preparing FTS insert: %w", err)
+	}
+	defer insertFTS.Close()
 
 	for _, sym := range symbols {
-		if _, err := stmt.Exec(
+		res, err := insertSym.Exec(
 			sym.Name, sym.Kind, filePath,
 			sym.StartLine, sym.StartCol, sym.EndLine, sym.EndCol,
 			sym.StartByte, sym.EndByte,
-		); err != nil {
+		)
+		if err != nil {
 			return fmt.Errorf("inserting symbol %q for %s: %w", sym.Name, filePath, err)
+		}
+		id, err := res.LastInsertId()
+		if err != nil {
+			return fmt.Errorf("reading last insert id: %w", err)
+		}
+		if _, err := insertFTS.Exec(
+			id,
+			splitIdentifier(sym.Name),
+			sym.Signature,
+			sym.Doc,
+			sym.Kind,
+			filePath,
+		); err != nil {
+			return fmt.Errorf("inserting FTS row for %q in %s: %w", sym.Name, filePath, err)
 		}
 	}
 
 	return tx.Commit()
+}
+
+// UpdateRefs clears and re-inserts the outgoing references for filePath.
+// src_symbol_id is computed by smallest-byte-containment against the file's
+// function and method symbols; edges originating outside any function (e.g.
+// top-level imports) carry a NULL src_symbol_id.
+func (s *Store) UpdateRefs(filePath string, edges []EdgeRecord) error {
+	tx, err := s.db.Begin()
+	if err != nil {
+		return fmt.Errorf("beginning ref transaction: %w", err)
+	}
+	defer tx.Rollback() //nolint:errcheck
+
+	if _, err := tx.Exec(`DELETE FROM symbol_refs WHERE src_file_path = ?`, filePath); err != nil {
+		return fmt.Errorf("clearing refs for %s: %w", filePath, err)
+	}
+
+	if len(edges) == 0 {
+		return tx.Commit()
+	}
+
+	// Load enclosing-candidate symbols once per file. Sorted by extent ASC so
+	// the smallest enclosing match wins.
+	type container struct {
+		id        int64
+		startByte int
+		endByte   int
+	}
+	rows, err := tx.Query(
+		`SELECT id, start_byte, end_byte
+		   FROM symbols
+		  WHERE file_path = ? AND kind IN ('function','method')
+		  ORDER BY (end_byte - start_byte) ASC`,
+		filePath,
+	)
+	if err != nil {
+		return fmt.Errorf("loading containers for %s: %w", filePath, err)
+	}
+	var containers []container
+	for rows.Next() {
+		var c container
+		if err := rows.Scan(&c.id, &c.startByte, &c.endByte); err != nil {
+			rows.Close()
+			return fmt.Errorf("scanning container: %w", err)
+		}
+		containers = append(containers, c)
+	}
+	rows.Close()
+
+	stmt, err := tx.Prepare(`INSERT INTO symbol_refs
+		(src_symbol_id, src_file_path, dst_name, kind, start_byte, end_byte, start_line, start_col)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?)`)
+	if err != nil {
+		return fmt.Errorf("preparing ref insert: %w", err)
+	}
+	defer stmt.Close()
+
+	for _, e := range edges {
+		var srcID sql.NullInt64
+		for _, c := range containers {
+			if c.startByte <= e.StartByte && e.EndByte <= c.endByte {
+				srcID = sql.NullInt64{Int64: c.id, Valid: true}
+				break
+			}
+		}
+		if _, err := stmt.Exec(
+			srcID, filePath, e.DstName, e.Kind,
+			e.StartByte, e.EndByte, e.StartLine, e.StartCol,
+		); err != nil {
+			return fmt.Errorf("inserting ref (%s -> %s) for %s: %w", e.Kind, e.DstName, filePath, err)
+		}
+	}
+
+	return tx.Commit()
+}
+
+// ExpandForward returns the edges leaving any symbol that matches the given
+// name (and optionally kind). Destination symbols are resolved by name-join
+// at query time; unresolved edges still appear with empty DstFile / DstKind.
+func (s *Store) ExpandForward(srcName, srcKind string, edgeKind string) ([]GraphEdge, error) {
+	q := strings.Builder{}
+	q.WriteString(`
+		SELECT
+		  COALESCE(src.name, ''), COALESCE(src.kind, ''), r.src_file_path,
+		  r.kind, r.dst_name,
+		  COALESCE(dst.kind, ''), COALESCE(dst.file_path, ''),
+		  r.start_line, r.start_col
+		FROM symbol_refs r
+		LEFT JOIN symbols src ON src.id = r.src_symbol_id
+		LEFT JOIN symbols dst
+		       ON dst.name = r.dst_name
+		      AND dst.kind IN ('function','method','type')
+		WHERE src.name = ?`)
+	args := []any{srcName}
+	if srcKind != "" {
+		q.WriteString(" AND src.kind = ?")
+		args = append(args, srcKind)
+	}
+	if edgeKind != "" {
+		q.WriteString(" AND r.kind = ?")
+		args = append(args, edgeKind)
+	}
+	q.WriteString(" ORDER BY r.id")
+	return scanGraphEdges(s.db, q.String(), args)
+}
+
+// ExpandReverse returns edges pointing AT a symbol with the given name (and
+// optionally kind). This is the "who references X" direction.
+func (s *Store) ExpandReverse(dstName, dstKind string, edgeKind string) ([]GraphEdge, error) {
+	q := strings.Builder{}
+	q.WriteString(`
+		SELECT
+		  COALESCE(src.name, ''), COALESCE(src.kind, ''), r.src_file_path,
+		  r.kind, r.dst_name,
+		  COALESCE(dst.kind, ''), COALESCE(dst.file_path, ''),
+		  r.start_line, r.start_col
+		FROM symbol_refs r
+		LEFT JOIN symbols src ON src.id = r.src_symbol_id
+		LEFT JOIN symbols dst
+		       ON dst.name = r.dst_name
+		      AND dst.kind IN ('function','method','type')
+		WHERE r.dst_name = ?`)
+	args := []any{dstName}
+	if dstKind != "" {
+		q.WriteString(" AND (dst.kind = ? OR dst.kind IS NULL)")
+		args = append(args, dstKind)
+	}
+	if edgeKind != "" {
+		q.WriteString(" AND r.kind = ?")
+		args = append(args, edgeKind)
+	}
+	q.WriteString(" ORDER BY r.id")
+	return scanGraphEdges(s.db, q.String(), args)
+}
+
+func scanGraphEdges(db *sql.DB, query string, args []any) ([]GraphEdge, error) {
+	rows, err := db.Query(query, args...)
+	if err != nil {
+		return nil, fmt.Errorf("graph expand: %w", err)
+	}
+	defer rows.Close()
+	var out []GraphEdge
+	for rows.Next() {
+		var e GraphEdge
+		if err := rows.Scan(
+			&e.SrcName, &e.SrcKind, &e.SrcFile,
+			&e.Kind, &e.DstName,
+			&e.DstKind, &e.DstFile,
+			&e.StartLine, &e.StartCol,
+		); err != nil {
+			return nil, fmt.Errorf("scanning graph edge: %w", err)
+		}
+		out = append(out, e)
+	}
+	return out, rows.Err()
+}
+
+// SearchCode runs a full-text search over the discovery index and returns
+// ranked hits. query is an FTS5 MATCH expression — callers may pass a plain
+// word list ("parse connection") or use FTS5 operators directly. kind, if
+// non-empty, restricts results to that symbol kind. pathGlob, if non-empty,
+// restricts by SQL GLOB on file_path. limit caps the number of returned hits;
+// pass <=0 for an internal default.
+func (s *Store) SearchCode(query, kind, pathGlob string, limit int) ([]SearchHit, error) {
+	if limit <= 0 {
+		limit = 50
+	}
+	q := strings.Builder{}
+	// Combined ranking: BM25 (lower is better) minus a small importance
+	// premium (higher is better), so PageRank only matters as a tie-breaker
+	// among similarly-scored FTS hits.
+	const importanceWeight = 0.5
+	q.WriteString(`
+		SELECT s.id, s.name, s.kind, s.file_path,
+		       s.start_line, s.start_col, s.end_line, s.end_col,
+		       s.start_byte, s.end_byte,
+		       fts.signature, fts.doc,
+		       bm25(symbols_fts) - ? * s.importance AS rank
+		  FROM symbols_fts fts
+		  JOIN symbols s ON s.id = fts.rowid
+		 WHERE symbols_fts MATCH ?`)
+	args := []any{importanceWeight, expandFTSQuery(query)}
+	if kind != "" {
+		q.WriteString(" AND s.kind = ?")
+		args = append(args, kind)
+	}
+	if pathGlob != "" {
+		q.WriteString(" AND s.file_path GLOB ?")
+		args = append(args, pathGlob)
+	}
+	q.WriteString(" ORDER BY rank ASC LIMIT ?")
+	args = append(args, limit)
+
+	rows, err := s.db.Query(q.String(), args...)
+	if err != nil {
+		return nil, fmt.Errorf("search_code (%q): %w", query, err)
+	}
+	defer rows.Close()
+
+	var hits []SearchHit
+	for rows.Next() {
+		var (
+			id     int64
+			hit    SearchHit
+			rec    SymbolRecord
+			sig    sql.NullString
+			doc    sql.NullString
+			scoreD sql.NullFloat64
+		)
+		if err := rows.Scan(
+			&id, &rec.Name, &rec.Kind, &rec.FilePath,
+			&rec.StartLine, &rec.StartCol, &rec.EndLine, &rec.EndCol,
+			&rec.StartByte, &rec.EndByte,
+			&sig, &doc, &scoreD,
+		); err != nil {
+			return nil, fmt.Errorf("scanning search hit: %w", err)
+		}
+		rec.Signature = sig.String
+		rec.Doc = doc.String
+		hit.SymbolRecord = rec
+		hit.Score = scoreD.Float64
+		hits = append(hits, hit)
+	}
+	return hits, rows.Err()
 }
 
 // FindSymbolsInScopes is FindSymbols restricted to files whose scope is in
