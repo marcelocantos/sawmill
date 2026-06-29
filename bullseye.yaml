@@ -758,7 +758,7 @@ targets:
     achieved: 2026-06-22
   T38:
     name: Sawmill answers structural discovery queries via FTS + a typed reference graph
-    status: identified
+    status: achieved
     value: 0.0
     cost: 0.0
     acceptance:
@@ -770,9 +770,10 @@ targets:
     context: Tier 1 of the discovery roadmap. Cheapest, no models, no infra. The current index is symbol-name lookup only — there is no FTS, no edge table, and `find_references` re-runs captures on demand. FTS5 + an edges table + PageRank give us lexical-and-graph discovery for free, and become the structural re-ranker that tiers 2 and 3 layer onto. The discovery superpower is returning **CST node ranges with edge provenance**, not 200-line text chunks — design every tool around symbol-grain results.
     origin: manual
     discovered: 2026-06-29
+    achieved: 2026-06-29
   T38.1:
     name: FTS5 index over symbol identifiers, signatures, and leading doc/comments is populated incrementally
-    status: identified
+    status: achieved
     value: 0.0
     cost: 0.0
     acceptance:
@@ -785,9 +786,10 @@ targets:
     - T38
     origin: manual
     discovered: 2026-06-29
+    achieved: 2026-06-29
   T38.2:
     name: A typed reference edge table records caller→callee, type-use, and import-use relations
-    status: identified
+    status: achieved
     value: 0.0
     cost: 0.0
     acceptance:
@@ -801,9 +803,10 @@ targets:
     - T38
     origin: manual
     discovered: 2026-06-29
+    achieved: 2026-06-29
   T38.3:
     name: PageRank-style importance scores rank central symbols
-    status: identified
+    status: achieved
     value: 0.0
     cost: 0.0
     acceptance:
@@ -816,6 +819,7 @@ targets:
     - T38.2
     origin: manual
     discovered: 2026-06-29
+    achieved: 2026-06-29
   T39:
     name: Sawmill returns semantically-relevant code via hybrid lexical/vector/graph retrieval
     status: identified
