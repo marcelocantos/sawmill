@@ -1089,6 +1089,22 @@ targets:
     context: 'HIGH. go/rewrite/rewrite.go:79: rename is scope-blind — it renames every identifier whose text matches, across all bindings and the whole codebase. Unverified Fable-5 finder-stage candidate; verify before implementing. See docs/audit/fable-2026-07.md.'
     origin: manual
     discovered: 2026-07-02
+  T51:
+    name: 'sawmill checks cross-implementation behavioural equivalence: two implementations, a common seeded input suite, trace divergence reported'
+    status: identified
+    value: 0.0
+    cost: 0.0
+    acceptance:
+    - 'A tool (generalisation of semantic_diff, or a sibling) accepts two runnable implementations plus an input-tape specification and reports per-step trace divergence: percentiles as a function of horizon, plus first-divergence localisation with paired state'
+    - 'Acceptance semantics support the Lyapunov split: per-step epsilon gates plus distributional/qualitative invariants at long horizons (bit-exact long-horizon match across engines is explicitly not the bar)'
+    - Validated by reproducing a known result — the TiltBuggy Chipmunk-vs-box2d harness (squz/ge sample/tiltbuggy/oracle) is the reference shape and test case
+    - 'The Goodhart guard is documented in the tool''s guidance: fixes must trace to structural divergences in the reference source, never constant-tuning against the diff'
+    context: 'First slice of the migration-fidelity oracle — the highest-leverage sawmill research direction from the 2026-07-03 discussion (session 1cf2248b). Core IP of the verified-migration thesis (~think/analysis/verified-migration-business.md); method: oracle-first skill rule 5. The transform is not the product; the equivalence oracle is.'
+    tags:
+    - oracle-first
+    - research
+    origin: manual
+    discovered: 2026-07-03
   T6:
     name: Git history is semantically indexed — commits are parsed with Tree-sitter and symbol changes are queryable via MCP tools
     status: achieved
