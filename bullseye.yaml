@@ -957,6 +957,106 @@ targets:
     origin: manual
     discovered: 2026-06-29
     achieved: 2026-06-29
+  T41:
+    name: sawmill undo restores a modified originally-empty file instead of deleting it
+    status: identified
+    value: 13.0
+    cost: 3.0
+    acceptance:
+    - Undo of a change to a file that was originally empty restores the empty file rather than deleting it
+    - Regression test covers undo of an originally-empty file
+    context: 'CRITICAL data loss. go/forest/forest.go:268: undo of a modified originally-empty file DELETES the file. Unverified Fable-5 finder-stage candidate (adversarial verification interrupted by an API spend limit); verify before implementing. See docs/audit/fable-2026-07.md.'
+    origin: manual
+    discovered: 2026-07-02
+  T42:
+    name: sawmill rename_file confines the destination to the project root, never overwriting files outside it
+    status: identified
+    value: 13.0
+    cost: 3.0
+    acceptance:
+    - rename_file rejects a `to` containing .. or an absolute path that escapes the project root
+    - No file outside the root can be overwritten; in-root overwrites take a backup
+    - Regression test covers a traversal `to`
+    context: 'CRITICAL data loss. go/mcp/tools.go:1949: rename_file destination is not contained to the project root — a `to` with .. or an absolute path escapes the root and overwrites arbitrary files with no backup. Unverified Fable-5 finder-stage candidate; verify before implementing. See docs/audit/fable-2026-07.md.'
+    origin: manual
+    discovered: 2026-07-02
+  T43:
+    name: sawmill apply and undo preserve the original file's permission bits
+    status: identified
+    value: 8.0
+    cost: 3.0
+    acceptance:
+    - Apply and undo restore the file's original mode instead of hardcoding 0o644
+    - Regression test verifies mode preservation for a non-0644 file
+    context: 'HIGH. go/forest/forest.go:196: apply and undo discard the original file''s permission bits (0o644 hardcoded). Unverified Fable-5 finder-stage candidate; verify before implementing. See docs/audit/fable-2026-07.md.'
+    origin: manual
+    discovered: 2026-07-02
+  T44:
+    name: sawmill apply re-checks original content against disk so a concurrent apply cannot silently clobber committed changes
+    status: identified
+    value: 8.0
+    cost: 3.0
+    acceptance:
+    - apply() re-reads pending.Original against current disk before writing and fails or retries on mismatch
+    - Concurrent applies on a shared model do not silently overwrite each other
+    context: 'HIGH. go/forest/forest.go:208: apply() never re-checks pending.Original against current disk, so concurrent applies on a shared model silently clobber committed changes. Unverified Fable-5 finder-stage candidate; verify before implementing. See docs/audit/fable-2026-07.md.'
+    origin: manual
+    discovered: 2026-07-02
+  T45:
+    name: sawmill ApplyWithBackup rolls back cleanly on a partial multi-file rename failure
+    status: identified
+    value: 8.0
+    cost: 3.0
+    acceptance:
+    - The step-3 rename loop is atomic or rolls back already-applied renames on partial failure
+    - A failure mid-loop leaves the tree in its pre-apply state
+    context: 'HIGH. go/forest/forest.go:228: ApplyWithBackup step-3 rename loop is not atomic and has no rollback on partial failure. Unverified Fable-5 finder-stage candidate; verify before implementing. See docs/audit/fable-2026-07.md.'
+    origin: manual
+    discovered: 2026-07-02
+  T46:
+    name: sawmill's pattern DSL respects bracket nesting so captures split arguments correctly and never emit corrupt code
+    status: identified
+    value: 8.0
+    cost: 3.0
+    acceptance:
+    - Pattern capture splitting accounts for nested brackets and parentheses
+    - migrate_pattern / apply_equivalence produce well-formed code on nested-argument inputs; regression test added
+    context: 'HIGH. go/mcp/pattern.go:105: pattern DSL captures ignore bracket nesting, mis-splitting arguments and emitting corrupt code. Unverified Fable-5 finder-stage candidate; verify before implementing. See docs/audit/fable-2026-07.md.'
+    origin: manual
+    discovered: 2026-07-02
+  T47:
+    name: sawmill handleApply retains backup paths on partial failure so undo remains possible
+    status: identified
+    value: 8.0
+    cost: 3.0
+    acceptance:
+    - handleApply preserves backup paths even when the file-rename loop fails
+    - Undo works after a partial apply; regression test added
+    context: 'HIGH. go/mcp/tools.go:1239: handleApply discards backup paths when the file-rename loop fails, making undo impossible after a partial apply. Unverified Fable-5 finder-stage candidate; verify before implementing. See docs/audit/fable-2026-07.md.'
+    origin: manual
+    discovered: 2026-07-02
+  T48:
+    name: sawmill guards SummaryVecs against concurrent map read/write so the daemon cannot fatally crash
+    status: identified
+    value: 8.0
+    cost: 3.0
+    acceptance:
+    - Access to SummaryVecs is synchronized (mutex or sync.Map)
+    - go test -race is clean; concurrent retrieve does not fatally crash the daemon
+    context: 'HIGH. go/model/retrieve.go:196: concurrent map read/write on SummaryVecs crashes the whole daemon (fatal, uncatchable). Unverified Fable-5 finder-stage candidate; verify before implementing. See docs/audit/fable-2026-07.md.'
+    origin: manual
+    discovered: 2026-07-02
+  T49:
+    name: sawmill uses collision-free backup/staging paths and a cross-session apply lock so concurrent same-file applies don't corrupt backups
+    status: identified
+    value: 8.0
+    cost: 3.0
+    acceptance:
+    - Backup/staging paths are unique per apply rather than deterministic
+    - A cross-session lock serializes same-file applies so backups and undo stay consistent
+    context: 'HIGH. go/paths/paths.go:58: deterministic backup/staging paths plus no cross-session apply lock corrupt backups and break undo on concurrent same-file applies. Unverified Fable-5 finder-stage candidate; verify before implementing. See docs/audit/fable-2026-07.md.'
+    origin: manual
+    discovered: 2026-07-02
   T5:
     name: Sawmill supports coordinated transforms across multiple repositories
     status: achieved
@@ -978,6 +1078,33 @@ targets:
     origin: Discussion comparing sawmill to Sourcegraph — identified cross-repo as a natural extension
     discovered: 2026-04-10
     achieved: 2026-04-26
+  T50:
+    name: sawmill rename is scope-aware, renaming only the intended binding rather than every matching identifier
+    status: identified
+    value: 8.0
+    cost: 5.0
+    acceptance:
+    - rename resolves the target binding/scope and renames only references to it, not all text matches
+    - A shadowed or unrelated same-named identifier is left untouched; regression test added
+    context: 'HIGH. go/rewrite/rewrite.go:79: rename is scope-blind — it renames every identifier whose text matches, across all bindings and the whole codebase. Unverified Fable-5 finder-stage candidate; verify before implementing. See docs/audit/fable-2026-07.md.'
+    origin: manual
+    discovered: 2026-07-02
+  T51:
+    name: 'sawmill checks cross-implementation behavioural equivalence: two implementations, a common seeded input suite, trace divergence reported'
+    status: identified
+    value: 0.0
+    cost: 0.0
+    acceptance:
+    - 'A tool (generalisation of semantic_diff, or a sibling) accepts two runnable implementations plus an input-tape specification and reports per-step trace divergence: percentiles as a function of horizon, plus first-divergence localisation with paired state'
+    - 'Acceptance semantics support the Lyapunov split: per-step epsilon gates plus distributional/qualitative invariants at long horizons (bit-exact long-horizon match across engines is explicitly not the bar)'
+    - Validated by reproducing a known result — the TiltBuggy Chipmunk-vs-box2d harness (squz/ge sample/tiltbuggy/oracle) is the reference shape and test case
+    - 'The Goodhart guard is documented in the tool''s guidance: fixes must trace to structural divergences in the reference source, never constant-tuning against the diff'
+    context: 'First slice of the migration-fidelity oracle — the highest-leverage sawmill research direction from the 2026-07-03 discussion (session 1cf2248b). Core IP of the verified-migration thesis (~think/analysis/verified-migration-business.md); method: oracle-first skill rule 5. The transform is not the product; the equivalence oracle is.'
+    tags:
+    - oracle-first
+    - research
+    origin: manual
+    discovered: 2026-07-03
   T6:
     name: Git history is semantically indexed — commits are parsed with Tree-sitter and symbol changes are queryable via MCP tools
     status: achieved
