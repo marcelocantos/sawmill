@@ -737,6 +737,56 @@ targets:
     origin: forked 2026-05-04 store-size investigation; Unity DB hit 6.3 GB
     discovered: 2026-05-06
     achieved: 2026-05-09
+  T35:
+    name: Sawmill answers concept-level code queries — find_by_concept returns AST-anchored symbol matches expanded via a project-extensible concept dictionary
+    status: achieved
+    value: 13.0
+    cost: 8.0
+    acceptance:
+    - find_by_concept MCP tool accepts a free-text concept query and returns ranked symbol hits with file:line locations and matched-evidence (which alias/identifier/literal/import triggered the match)
+    - Per-symbol index covers identifiers, docstrings/comments, string literals, and imported types — built incrementally via the existing watcher
+    - Concept dictionary supports synonym expansion with project-extensible entries (e.g. swipe → swipe, gesture, fling, pan, plus platform types like UISwipeGestureRecognizer, PanGestureHandler, GestureDetector)
+    - teach_concept MCP tool persists user-defined concepts and aliases in SQLite alongside other teach_* state; appears in list_recipes-style enumeration
+    - A small set of built-in concept seeds covers common cross-language clusters (gestures, retry/backoff, auth/credentials, logging) but is overridable by project-taught aliases
+    - Manual validation against three queries drawn from the audit corpus (BackBoard state plumbing in a spyder-style codebase; gesture handling in a game; retry-on-transient logic) returns the expected anchor symbols in a single call, replacing the 3+ grep rounds observed in transcripts
+    - Indexing scope respects the v0.13.0 owned/library/ignored classification — library and ignored code excluded by default
+    context: |-
+      A May 2026 audit of mnemo-indexed Claude sessions found ~6% of grep/rg/find invocations (and a larger share when weighted by turn cost) are *thematic* searches: "swipe handling", "retry logic", "BackBoard state plumbing", "where do we touch the auth header", "clinical-concept references in HMS". These currently cost 3–8 grep-and-read rounds per walk — Claude greps with term A, reads, greps with synonym B, reads, then chases what those handlers call. Existing Sawmill tools (find_symbol, find_references, query) require the right name or the right CST pattern; they don't expand across aliases.
+
+      The proposed capability indexes each symbol's identifiers, docstrings, string literals, and imported types; expands a concept query through a synonym dictionary (built-in seeds + project-taught aliases via teach_concept); and returns ranked symbol matches with locations. Differentiator over Vera (which the user already runs): AST anchoring at symbol granularity and project-extensible dictionaries, fed by the same teach_* / SQLite store as other Sawmill state.
+
+      Audit estimated ~15–20% of total grep volume is displaceable by this capability — high-quality displacement because each replaced cycle was costing 3–8 turns of agent context.
+
+      v2 (separate sub-target when v1 lands): N-hop downstream call-graph expansion, so a query for "swipe handling" returns the recognizer *plus* what it triggers. Embeddings deferred — Vera covers generic semantic search; Sawmill's edge is AST anchoring, not vectors.
+    tags:
+    - search
+    - concept
+    - indexing
+    - agent-ergonomics
+    origin: manual
+    discovered: 2026-05-14
+    achieved: 2026-05-17
+  T36:
+    name: find_by_concept resolves real-world concept queries from the grep-audit corpus in a single call, with measurable reduction in observed grep-and-read cycles
+    kind: verify
+    status: achieved
+    value: 0.0
+    cost: 0.0
+    acceptance:
+    - A reproducible test fixture runs find_by_concept against at least 3 concept queries drawn from the May 2026 grep audit (gesture/swipe handling; BackBoard-style app-state plumbing; retry/backoff sites) on representative codebases
+    - Each query returns the expected anchor symbols within the top N results (N ≤ 10) with no manual grep rounds required
+    - Recall vs. a hand-curated ground-truth set is recorded and documented in docs/
+    - Precision is high enough that the top-5 results are dominated by genuinely concept-relevant symbols, not incidental keyword hits
+    context: 'Concept search is the first Sawmill capability whose value is largely empirical (does it actually replace grep cycles?) rather than structural (does the AST transform produce the right tree?). The audit corpus gives us a ground-truth set: real queries Claude ran, the symbols Claude ultimately found, and the number of grep rounds it took. A verify checkpoint anchored on that corpus turns the capability from "we shipped a tool" into "the tool measurably collapses the workflow."'
+    verifies:
+    - T35
+    tags:
+    - search
+    - concept
+    - verify
+    origin: manual
+    discovered: 2026-05-14
+    achieved: 2026-05-17
   T37:
     name: Sawmill skips minified and oversized files before invoking tree-sitter
     status: achieved

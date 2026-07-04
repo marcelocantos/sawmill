@@ -36,6 +36,13 @@ type SymbolRecord struct {
 	// Doc is the leading line-comment block above the declaration, with the
 	// comment prefix stripped. Used for the discovery FTS index.
 	Doc string
+
+	// Evidence is a lowercased, space-padded token bag (" tok1 tok2 ")
+	// derived from the symbol's identifier, path, doc/comment text, and
+	// in-body literals. Used by find_by_concept (which matches against the
+	// full body span, unlike the FTS index which only covers name +
+	// signature + leading doc). Empty for callers that don't compute it.
+	Evidence string
 }
 
 // SearchHit is one ranked result from SearchCode.
@@ -157,8 +164,10 @@ func (s *Store) init() error {
 		}
 	}
 
-	// symbols.importance is added by 🎯T38.3. CREATE TABLE below initialises
-	// it for new schemas; ALTER TABLE migrates existing ones.
+	// symbols.importance (🎯T38.3) and symbols.evidence (find_by_concept) are
+	// added by the CREATE TABLE below for new schemas; these ALTERs migrate
+	// existing ones. columns() returns empty when the table doesn't exist yet
+	// (fresh DB), so the len guard skips the ALTER and lets CREATE TABLE do it.
 	haveSym, err := s.columns("symbols")
 	if err != nil {
 		return err
@@ -166,6 +175,11 @@ func (s *Store) init() error {
 	if len(haveSym) > 0 && !haveSym["importance"] {
 		if _, err := s.db.Exec(`ALTER TABLE symbols ADD COLUMN importance REAL NOT NULL DEFAULT 0`); err != nil {
 			return fmt.Errorf("adding importance column: %w", err)
+		}
+	}
+	if len(haveSym) > 0 && !haveSym["evidence"] {
+		if _, err := s.db.Exec(`ALTER TABLE symbols ADD COLUMN evidence TEXT NOT NULL DEFAULT ''`); err != nil {
+			return fmt.Errorf("adding evidence column: %w", err)
 		}
 	}
 
@@ -182,7 +196,8 @@ func (s *Store) init() error {
 			end_col INTEGER NOT NULL,
 			start_byte INTEGER NOT NULL,
 			end_byte INTEGER NOT NULL,
-			importance REAL NOT NULL DEFAULT 0
+			importance REAL NOT NULL DEFAULT 0,
+			evidence TEXT NOT NULL DEFAULT ''
 		);
 
 		CREATE INDEX IF NOT EXISTS idx_symbols_name ON symbols(name);
@@ -225,6 +240,12 @@ func (s *Store) init() error {
 			diagnostic_regex TEXT NOT NULL,
 			action_json TEXT NOT NULL,
 			confidence TEXT NOT NULL DEFAULT 'suggest'
+		);
+
+		CREATE TABLE IF NOT EXISTS concepts (
+			name TEXT PRIMARY KEY,
+			description TEXT NOT NULL DEFAULT '',
+			aliases_json TEXT NOT NULL DEFAULT '[]'
 		);
 
 		CREATE VIRTUAL TABLE IF NOT EXISTS symbols_fts USING fts5(
@@ -561,8 +582,8 @@ func (s *Store) UpdateSymbols(filePath string, symbols []SymbolRecord) error {
 
 	insertSym, err := tx.Prepare(
 		`INSERT INTO symbols
-		 (name, kind, file_path, start_line, start_col, end_line, end_col, start_byte, end_byte)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		 (name, kind, file_path, start_line, start_col, end_line, end_col, start_byte, end_byte, evidence)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 	)
 	if err != nil {
 		return fmt.Errorf("preparing symbol insert: %w", err)
@@ -582,7 +603,7 @@ func (s *Store) UpdateSymbols(filePath string, symbols []SymbolRecord) error {
 		res, err := insertSym.Exec(
 			sym.Name, sym.Kind, filePath,
 			sym.StartLine, sym.StartCol, sym.EndLine, sym.EndCol,
-			sym.StartByte, sym.EndByte,
+			sym.StartByte, sym.EndByte, sym.Evidence,
 		)
 		if err != nil {
 			return fmt.Errorf("inserting symbol %q for %s: %w", sym.Name, filePath, err)

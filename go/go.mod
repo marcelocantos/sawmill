@@ -6,6 +6,7 @@ require (
 	github.com/fsnotify/fsnotify v1.9.0
 	github.com/go-git/go-billy/v5 v5.8.0
 	github.com/go-git/go-git/v5 v5.17.2
+	github.com/marcelocantos/claudia v0.12.0
 	github.com/mark3labs/mcp-go v0.47.0
 	github.com/odvcencio/gotreesitter v0.15.2
 	github.com/pmezard/go-difflib v1.0.0
@@ -28,7 +29,6 @@ require (
 	github.com/google/uuid v1.6.0 // indirect
 	github.com/jbenet/go-context v0.0.0-20150711004518-d14ea06fba99 // indirect
 	github.com/kevinburke/ssh_config v1.2.0 // indirect
-	github.com/marcelocantos/claudia v0.12.0 // indirect
 	github.com/mattn/go-isatty v0.0.20 // indirect
 	github.com/ncruces/go-strftime v1.0.0 // indirect
 	github.com/pjbgf/sha1cd v0.3.2 // indirect
