@@ -16,6 +16,12 @@ changes that preserve formatting, comments, and whitespace.
 - **MCP server**: Runs over stdio; works with any MCP-compatible AI agent
 - **Persistent daemon**: Background process shares parsed state across
   sessions via Unix socket — auto-started on first use
+- **Code discovery**: Full-text (`search_code`), natural-language hybrid
+  retrieval fusing BM25 + vector embeddings + graph (`semantic_search`),
+  curated concept search (`find_by_concept`), a typed reference graph
+  (`graph_expand`), and PageRank symbol ranking (`central_symbols`) — all
+  returning precise CST ranges. Optional LLM-distilled summaries and
+  knowledge-graph edges layer on top
 - **Structural transforms**: Rename, query, match/act with declarative
   actions or JavaScript transform functions
 - **Teach by example**: Point at existing code, name the variable parts,
@@ -146,7 +152,7 @@ AI Agent ──HTTP──▶ sawmill serve (HTTP MCP server, port 8765)
 
 ## MCP tools
 
-57 tools, grouped by purpose. Every transform returns a diff preview;
+66 tools, grouped by purpose. Every transform returns a diff preview;
 call `apply` to write changes, `undo` to revert.
 
 **Discovery & navigation**
@@ -157,6 +163,13 @@ call `apply` to write changes, `undo` to revert.
 | `query` | Search for structural patterns by kind/name or raw Tree-sitter query (`format=json` for structured output) |
 | `find_symbol` | Find all definitions of a symbol by name |
 | `find_references` | Find all usages of a symbol by name |
+| `search_code` | Full-text search over symbol name, signature, and leading doc; camelCase/snake_case subwords are individually searchable |
+| `semantic_search` | Natural-language hybrid search fusing BM25, vector embeddings, and 1-hop graph expansion (RRF); each hit shows which signals fired. Vector tier needs `SAWMILL_EMBED_MODEL` set |
+| `find_by_concept` | Concept-level search — expands a query through curated + built-in concept dictionaries, ranks symbols by alias hits across the whole body |
+| `teach_concept` / `list_concepts` / `delete_concept` | Manage the project-extensible concept dictionary that `find_by_concept` expands |
+| `graph_expand` | Walk the symbol reference graph (forward/reverse) over call/type-use/import edges; `source` switches syntactic ↔ LLM knowledge graph |
+| `central_symbols` | Rank the load-bearing symbols by weighted PageRank over the reference graph |
+| `index_status` | Per-tier status snapshot: file/vector/summary counts, prompt id, running cost, failures |
 | `dependency_usage` | Analyse package imports, symbols used, public API exposure |
 
 **Transforms**
