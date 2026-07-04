@@ -252,7 +252,7 @@ func LoadEphemeral(root string) (*CodebaseModel, error) {
 			return nil, fmt.Errorf("upserting file %s: %w", file.Path, err)
 		}
 		symbols := index.ExtractSymbolsFromPartsMode(file.OriginalSource, file.Tree, file.Adapter, file.Path, mode)
-		records := symbolsToRecords(symbols, file.Path)
+		records := symbolsToRecords(symbols, file.Path, file.OriginalSource)
 		if err := s.UpdateSymbols(file.Path, records); err != nil {
 			s.Close()
 			return nil, fmt.Errorf("indexing %s: %w", file.Path, err)
@@ -560,7 +560,7 @@ func (m *CodebaseModel) parseAndIndexFile(path string) {
 	}
 
 	symbols := index.ExtractSymbolsFromPartsMode(source, tree, adapter, path, mode)
-	records := symbolsToRecords(symbols, path)
+	records := symbolsToRecords(symbols, path, source)
 	edges := index.ExtractEdgesFromParts(source, tree, adapter, mode)
 
 	_ = m.Store.UpsertFile(path, ext, mtime, contentHash, stored, fileScope.String())
@@ -651,7 +651,7 @@ func incrementalParse(root string, s *store.Store, classifier *scope.Classifier)
 		edges := index.ExtractEdgesFromParts(source, tree, adapter, mode)
 		tree.Close()
 
-		records := symbolsToRecords(symbols, path)
+		records := symbolsToRecords(symbols, path, source)
 		_ = s.UpsertFile(path, ext, mtime, contentHash, stored, fileScope.String())
 		_ = s.UpdateSymbols(path, records)
 		_ = s.UpdateRefs(path, edgesToRecords(edges))
@@ -685,9 +685,13 @@ func edgesToRecords(edges []index.Edge) []store.EdgeRecord {
 	return records
 }
 
-func symbolsToRecords(symbols []index.Symbol, filePath string) []store.SymbolRecord {
+func symbolsToRecords(symbols []index.Symbol, filePath string, source []byte) []store.SymbolRecord {
 	records := make([]store.SymbolRecord, len(symbols))
 	for i, s := range symbols {
+		var body []byte
+		if int(s.EndByte) <= len(source) && s.EndByte > s.StartByte {
+			body = source[s.StartByte:s.EndByte]
+		}
 		records[i] = store.SymbolRecord{
 			Name:      s.Name,
 			Kind:      s.Kind,
@@ -700,6 +704,7 @@ func symbolsToRecords(symbols []index.Symbol, filePath string) []store.SymbolRec
 			EndByte:   int(s.EndByte),
 			Signature: s.Signature,
 			Doc:       s.Doc,
+			Evidence:  index.EvidenceFor(s.Name, filePath, body),
 		}
 	}
 	return records
@@ -743,6 +748,21 @@ func (m *CodebaseModel) LoadEquivalence(name string) (*store.Equivalence, error)
 }
 func (m *CodebaseModel) DeleteEquivalence(name string) (bool, error) {
 	return m.Store.DeleteEquivalence(name)
+}
+func (m *CodebaseModel) SaveConcept(name, description string, aliases []string) error {
+	return m.Store.SaveConcept(name, description, aliases)
+}
+func (m *CodebaseModel) ListConcepts() ([]store.Concept, error) {
+	return m.Store.ListConcepts()
+}
+func (m *CodebaseModel) LoadConcept(name string) (*store.Concept, error) {
+	return m.Store.LoadConcept(name)
+}
+func (m *CodebaseModel) DeleteConcept(name string) (bool, error) {
+	return m.Store.DeleteConcept(name)
+}
+func (m *CodebaseModel) FindByConcept(aliases []string, scopes []string, limit int) ([]store.ConceptMatch, error) {
+	return m.Store.FindByConcept(aliases, scopes, limit)
 }
 func (m *CodebaseModel) SaveFix(name, description, diagnosticRegex, actionJSON, confidence string) error {
 	return m.Store.SaveFix(name, description, diagnosticRegex, actionJSON, confidence)

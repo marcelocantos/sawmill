@@ -96,6 +96,10 @@ replaces any unapplied pending changes.
 | `find_references` | Find usages by name | `symbol` |
 | `search_code` | Full-text search over symbol name, signature, and leading doc; bare terms are auto-prefix-expanded and camelCase/snake_case subwords are individually searchable | `query`, `kind`, `path_glob`, `limit` |
 | `semantic_search` | Natural-language hybrid search fusing BM25, vector cosine, and 1-hop graph expansion via reciprocal-rank-fusion; each hit shows `why` (which signals fired) | `query`, `kind`, `path_glob`, `limit` |
+| `find_by_concept` | Concept-level search — expands a free-text query (e.g. "swipe", "retry", "auth") through stored + built-in concept dictionaries, then ranks symbols by alias hits across name, path, and full-body tokens. Matches a broader span than `search_code` (whole body vs. name/sig/doc). | `query`, `limit`, `scope`, `format` |
+| `teach_concept` | Save a concept entry — a name plus an alias list that `find_by_concept` expands during search. Shadows the built-in concept of the same name. | `name`, `aliases`, `description` |
+| `list_concepts` | List taught concepts plus the built-in concepts that aren't shadowed | -- |
+| `delete_concept` | Delete a taught concept by name (built-ins cannot be deleted, only shadowed) | `name` |
 | `graph_expand` | Walk the symbol reference graph (forward/reverse) over call, type-use, and import-use edges; pass `source` to switch between the syntactic Tree-sitter graph (default) and the LLM-extracted knowledge graph | `symbol`, `direction`, `edge_kind`, `symbol_kind`, `source` |
 | `central_symbols` | Rank load-bearing symbols by weighted PageRank over the reference graph | `path_glob`, `kind`, `limit` |
 | `index_status` | Per-tier status snapshot: file/vector/summary counts, prompt id, running cost, failure totals | `format` |
@@ -103,6 +107,8 @@ replaces any unapplied pending changes.
 The discovery tools are the load-bearing way to find code: use
 `search_code` when you know roughly what you're looking for,
 `semantic_search` when you only know it in natural language,
+`find_by_concept` when a curated synonym set beats a single query
+("swipe" → gesture/pan/fling across whole bodies),
 `central_symbols` to orient yourself in an unfamiliar codebase, and
 `graph_expand` to chase a symbol up or down its dependency edges (who
 calls X, what types does X use). All return CST byte ranges so results
