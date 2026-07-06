@@ -1222,13 +1222,24 @@ func (h *Handler) handleApply(args map[string]any) (string, bool, error) {
 		return fmt.Sprintf("Pending %d change(s). Set confirm=true to apply.", totalPending), false, nil
 	}
 
-	var backupPaths []string
+	// Serialise the whole apply against sibling sessions sharing this model.
+	h.model.LockApply()
+	defer h.model.UnlockApply()
+
+	// Each apply's undo record supersedes the previous one; drop any stale
+	// manifest up front so a rename-only apply (which produces no content
+	// backups) can't leave an earlier apply's manifest wired to undo.
+	h.lastBackups = nil
+
 	if len(h.pending.Changes) > 0 {
-		bp, err := forest.ApplyWithBackup(h.model.Root, h.pending.Changes)
+		manifest, err := forest.ApplyWithBackup(h.model.Root, h.pending.Changes)
 		if err != nil {
 			return fmt.Sprintf("applying changes: %v", err), true, nil
 		}
-		backupPaths = append(backupPaths, bp...)
+		// Record the undo manifest immediately — before the rename loop below,
+		// which can fail — so a rename failure still leaves undo able to revert
+		// the content changes already written to disk.
+		h.lastBackups = &LastBackups{Manifest: manifest}
 	}
 
 	// Perform file renames.
@@ -1251,7 +1262,6 @@ func (h *Handler) handleApply(args map[string]any) (string, bool, error) {
 		changedPaths = append(changedPaths, r.To)
 	}
 
-	h.lastBackups = &LastBackups{Paths: backupPaths}
 	applied := totalPending
 	h.pending = nil
 
@@ -1268,11 +1278,11 @@ func (h *Handler) handleUndo(_ map[string]any) (string, bool, error) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 
-	if h.lastBackups == nil || len(h.lastBackups.Paths) == 0 {
+	if h.lastBackups == nil || h.lastBackups.Manifest == nil || len(h.lastBackups.Manifest.Entries) == 0 {
 		return "No backups available to restore.", false, nil
 	}
 
-	restored, err := forest.UndoFromBackups(h.model.Root, h.lastBackups.Paths)
+	restored, err := forest.UndoFromBackups(h.lastBackups.Manifest)
 	if err != nil {
 		return fmt.Sprintf("undoing changes: %v", err), true, nil
 	}
@@ -1947,6 +1957,21 @@ func (h *Handler) handleRenameFile(args map[string]any) (string, bool, error) {
 	root := m.Root
 	absFrom := filepath.Join(root, from)
 	absTo := filepath.Join(root, to)
+
+	// Confine the destination to the project root. filepath.Join cleans a
+	// leading "/" away (so an absolute `to` lands inside root), but a `to`
+	// containing ".." can still escape — and the rename runs outside the
+	// backup machinery, so an escaped destination overwrites an arbitrary file
+	// with no way to undo it. Reject anything that resolves outside root.
+	rel, relErr := filepath.Rel(root, absTo)
+	if relErr != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(os.PathSeparator)) {
+		return fmt.Sprintf("destination %q escapes the project root", to), true, nil
+	}
+	// Refuse to clobber an existing file: the rename is a bare os.Rename that
+	// is not backed up, so an overwrite would be unrecoverable data loss.
+	if _, err := os.Stat(absTo); err == nil {
+		return fmt.Sprintf("destination %q already exists; refusing to overwrite", to), true, nil
+	}
 
 	// Verify the source file exists among tracked files.
 	allAccessors, err := m.FileAccessors("")

@@ -68,6 +68,14 @@ type CodebaseModel struct {
 	// nil if no embedder or no summaries yet.
 	SummaryVecs map[int64][]float32
 
+	// applyMu serialises apply operations across every session sharing this
+	// model. The daemon pools one CodebaseModel per project root, so two MCP
+	// sessions targeting the same root would otherwise run ApplyWithBackup
+	// concurrently (each holds only its own per-Handler mutex) and interleave
+	// writes/backups to the same files. Holding this lock for the whole apply
+	// makes check-then-write atomic against sibling sessions.
+	applyMu sync.Mutex
+
 	// forest is only set for ephemeral models (no manager goroutine).
 	forest *forest.Forest
 	// w watches root for file changes (nil for ephemeral models).
@@ -81,6 +89,14 @@ type CodebaseModel struct {
 	// stopped is closed when the manager goroutine exits.
 	stopped chan struct{}
 }
+
+// LockApply acquires the model-wide apply lock. Callers (MCP apply handlers)
+// must hold it for the full apply — content backup, write, and rename — so
+// concurrent same-root sessions cannot interleave writes to shared files.
+func (m *CodebaseModel) LockApply() { m.applyMu.Lock() }
+
+// UnlockApply releases the lock taken by LockApply.
+func (m *CodebaseModel) UnlockApply() { m.applyMu.Unlock() }
 
 // Load loads a codebase model for the given directory.
 //

@@ -101,15 +101,33 @@ func (p *Pattern) matchFrom(source string, srcPos int, segIdx int, captures map[
 		return true
 	}
 
-	// Try shortest match: from srcPos to the first occurrence of nextLiteral.
+	// Try shortest match: from srcPos to the first occurrence of nextLiteral,
+	// but only split at bracket-balanced boundaries. Without the depth guard a
+	// placeholder capture for "foo($a, $b)" against "foo(bar(1, 2), 3)" binds
+	// $a to "bar(1" — splitting on the FIRST comma, straddling the inner
+	// parens — and emits corrupt code. Tracking (), [], {} depth relative to
+	// srcPos and only accepting boundaries at depth 0 keeps each capture on
+	// balanced brackets.
+	depth := 0
 	for end := srcPos; end <= len(source); end++ {
-		if nextLiteral != "" && !hasAtPos(source, end, nextLiteral) {
-			continue
+		if depth == 0 && (nextLiteral == "" || hasAtPos(source, end, nextLiteral)) {
+			// Try this capture length.
+			captures[seg.Placeholder] = source[srcPos:end]
+			if p.matchFrom(source, end, segIdx+1, captures) {
+				return true
+			}
 		}
-		// Try this capture length.
-		captures[seg.Placeholder] = source[srcPos:end]
-		if p.matchFrom(source, end, segIdx+1, captures) {
-			return true
+		// Advance the bracket depth over the character at `end` so the next
+		// iteration reflects the nesting of source[srcPos:end+1].
+		if end < len(source) {
+			switch source[end] {
+			case '(', '[', '{':
+				depth++
+			case ')', ']', '}':
+				if depth > 0 {
+					depth--
+				}
+			}
 		}
 	}
 

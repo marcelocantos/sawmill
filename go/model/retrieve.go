@@ -170,15 +170,31 @@ func (m *CodebaseModel) cosineSearchOnIndex(ctx context.Context, query, kind, pa
 	if m.Embedder == nil {
 		return nil, nil
 	}
+	// Snapshot the vector entries under the lock. Copying only the map header
+	// (vecs = m.SummaryVecs) and ranging it after RUnlock is a data race: the
+	// summariser inserts into SummaryVecs in place under vecsMu.Lock, so an
+	// unlocked range races a concurrent write and the runtime aborts the whole
+	// process with "fatal error: concurrent map read and map write". Ranging
+	// under the RLock into a local slice makes the read safe; the vector slices
+	// themselves are only ever replaced wholesale, never mutated in place, so
+	// copying the slice headers is enough.
+	type idVec struct {
+		id  int64
+		vec []float32
+	}
 	m.vecsMu.RLock()
-	var vecs map[int64][]float32
+	var src map[int64][]float32
 	if useSummary {
-		vecs = m.SummaryVecs
+		src = m.SummaryVecs
 	} else {
-		vecs = m.Vecs
+		src = m.Vecs
+	}
+	snapshot := make([]idVec, 0, len(src))
+	for id, v := range src {
+		snapshot = append(snapshot, idVec{id: id, vec: v})
 	}
 	m.vecsMu.RUnlock()
-	if len(vecs) == 0 {
+	if len(snapshot) == 0 {
 		return nil, nil
 	}
 
@@ -192,9 +208,9 @@ func (m *CodebaseModel) cosineSearchOnIndex(ctx context.Context, query, kind, pa
 		id    int64
 		score float32
 	}
-	scored := make([]idScore, 0, len(vecs))
-	for id, v := range vecs {
-		scored = append(scored, idScore{id: id, score: embed.Cosine(queryVec, v)})
+	scored := make([]idScore, 0, len(snapshot))
+	for _, e := range snapshot {
+		scored = append(scored, idScore{id: e.id, score: embed.Cosine(queryVec, e.vec)})
 	}
 	sort.Slice(scored, func(i, j int) bool { return scored[i].score > scored[j].score })
 

@@ -32,10 +32,10 @@ type PendingChanges struct {
 	Renames []FileRename // file renames to perform on apply
 }
 
-// LastBackups holds the backup paths written by the most recent apply, so
-// that undo can restore them.
+// LastBackups holds the undo manifest written by the most recent apply, so
+// that undo can restore the pre-apply state.
 type LastBackups struct {
-	Paths []string
+	Manifest *forest.ApplyManifest
 }
 
 // ModelLoader resolves a project root to a CodebaseModel and a release

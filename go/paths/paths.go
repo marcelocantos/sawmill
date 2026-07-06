@@ -52,40 +52,21 @@ func BackupDir(root string) string {
 	return filepath.Join(Base(), "backups", rootHash(root))
 }
 
-// BackupPath maps an original file path to its backup location under the
-// central backup directory.
-// e.g. /home/user/project/src/main.py → ~/.sawmill/backups/<hash>/src/main.py.bak
-func BackupPath(root, originalPath string) string {
-	rel, err := filepath.Rel(root, originalPath)
-	if err != nil {
-		// Fallback: use the full path hash.
-		h := sha256.Sum256([]byte(originalPath))
-		rel = hex.EncodeToString(h[:16])
+// NewApplyDir creates and returns a fresh, uniquely-named staging/backup
+// directory for a single apply operation, e.g.
+// ~/.sawmill/backups/<roothash>/apply-1234567890.
+//
+// Uniqueness matters for correctness, not just tidiness: a previous design
+// derived staging and backup paths deterministically from (root, relpath), so
+// two concurrent (or repeated) applies touching the same file collided on the
+// same .new/.bak paths — last-writer-wins corrupted backups and broke undo.
+// A per-apply directory guarantees every in-flight apply owns its own staging
+// and backup files, so no two applies can clobber each other's originals.
+func NewApplyDir(root string) (string, error) {
+	base := BackupDir(root)
+	if err := os.MkdirAll(base, 0o755); err != nil {
+		return "", err
 	}
-	return filepath.Join(BackupDir(root), rel+".bak")
-}
-
-// TempPath maps an original file path to a staging location for atomic writes.
-// e.g. /home/user/project/src/main.py → ~/.sawmill/backups/<hash>/src/main.py.new
-func TempPath(root, originalPath string) string {
-	rel, err := filepath.Rel(root, originalPath)
-	if err != nil {
-		h := sha256.Sum256([]byte(originalPath))
-		rel = hex.EncodeToString(h[:16])
-	}
-	return filepath.Join(BackupDir(root), rel+".new")
-}
-
-// OriginalPath recovers the original file path from a backup path.
-// e.g. ~/.sawmill/backups/<hash>/src/main.py.bak → /root/src/main.py
-func OriginalPath(root, backupPath string) string {
-	rel, err := filepath.Rel(BackupDir(root), backupPath)
-	if err != nil {
-		return ""
-	}
-	// Strip .bak suffix.
-	if len(rel) > 4 && rel[len(rel)-4:] == ".bak" {
-		rel = rel[:len(rel)-4]
-	}
-	return filepath.Join(root, rel)
+	// MkdirTemp guarantees a unique directory name even under concurrency.
+	return os.MkdirTemp(base, "apply-")
 }
