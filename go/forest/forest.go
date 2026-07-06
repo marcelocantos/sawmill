@@ -6,6 +6,8 @@
 package forest
 
 import (
+	"bytes"
+	"errors"
 	"fmt"
 	"io/fs"
 
@@ -173,118 +175,192 @@ type QueryResult struct {
 	Text      string
 }
 
+// ErrStaleContent is returned by ApplyWithBackup when a target file's on-disk
+// content no longer matches the FileChange.Original it was previewed against —
+// i.e. the file changed between preview and apply (a concurrent apply, an
+// external edit, or a watcher-observed reparse). Applying anyway would silently
+// clobber the newer content (a lost update), so the whole apply is aborted.
+var ErrStaleContent = errors.New("file changed on disk since preview")
+
+// BackupEntry records everything needed to reverse one file's change on undo.
+type BackupEntry struct {
+	// OriginalPath is the absolute path of the changed file.
+	OriginalPath string
+	// BackupFile is the absolute path of the saved pre-apply copy. Empty when
+	// Existed is false (the file was created by this apply and undo removes it).
+	BackupFile string
+	// Existed reports whether OriginalPath existed before the apply. Tracked
+	// explicitly rather than inferred from empty backup content, so an
+	// originally-empty file is restored to empty on undo instead of deleted.
+	Existed bool
+	// Mode is the original file mode, re-applied on both apply and undo so a
+	// transform never silently strips (e.g.) the execute bit. Meaningful only
+	// when Existed is true.
+	Mode fs.FileMode
+}
+
+// ApplyManifest is the undo record produced by ApplyWithBackup: the per-apply
+// staging/backup directory plus one entry per changed file.
+type ApplyManifest struct {
+	Dir     string
+	Entries []BackupEntry
+}
+
 // ApplyWithBackup applies a set of file changes atomically with backups stored
-// under the central ~/.sawmill/backups/ directory (not in the project tree).
+// under a fresh per-apply directory inside ~/.sawmill/backups/ (never in the
+// project tree).
 //
 // Strategy:
-//  1. Write all new content to staging files under ~/.sawmill/backups/<hash>/
-//  2. Back up all originals to the same directory
-//  3. Rename staging files to their final paths
+//  0. Pre-flight: verify each existing target still matches FileChange.Original
+//     (optimistic-concurrency guard); abort the whole apply on mismatch before
+//     writing anything.
+//  1. Write all new content to staging files, carrying the original file mode.
+//  2. Back up all originals, recording existence + mode in the manifest.
+//  3. Rename staging files into place; on a partial failure, roll every
+//     already-renamed file back to its pre-apply state.
 //
-// If anything fails during step 3 the backup files allow recovery.
-// Returns the list of backup paths on success.
-func ApplyWithBackup(root string, changes []FileChange) ([]string, error) {
-	tempPaths := make([]string, 0, len(changes))
-	backupPaths := make([]string, 0, len(changes))
-
-	// Step 1: Write new content to staging files.
+// Returns the manifest (consumed by UndoFromBackups) on success.
+func ApplyWithBackup(root string, changes []FileChange) (*ApplyManifest, error) {
+	// Step 0: Optimistic-concurrency pre-flight. Read-only; nothing is written
+	// until every target is confirmed to still match what the preview saw.
 	for _, change := range changes {
-		temp := paths.TempPath(root, change.Path)
-		if err := os.MkdirAll(filepath.Dir(temp), 0o755); err != nil {
-			return nil, fmt.Errorf("creating staging dir: %w", err)
+		info, err := os.Stat(change.Path)
+		if err != nil || info.IsDir() {
+			continue // new file (or a directory we can't back up) — no baseline
 		}
-		if err := os.WriteFile(temp, change.NewSource, 0o644); err != nil {
+		current, rerr := os.ReadFile(change.Path)
+		if rerr != nil {
+			return nil, fmt.Errorf("reading %s for concurrency check: %w", change.Path, rerr)
+		}
+		if !bytes.Equal(current, change.Original) {
+			return nil, fmt.Errorf("%s: %w", change.Path, ErrStaleContent)
+		}
+	}
+
+	dir, err := paths.NewApplyDir(root)
+	if err != nil {
+		return nil, fmt.Errorf("creating apply dir: %w", err)
+	}
+
+	manifest := &ApplyManifest{Dir: dir}
+	tempPaths := make([]string, len(changes))
+
+	// Step 1: Write new content to staging files, preserving the original mode
+	// so the post-rename inode keeps its permission bits.
+	for i, change := range changes {
+		mode := fs.FileMode(0o644)
+		if info, err := os.Stat(change.Path); err == nil {
+			mode = info.Mode().Perm()
+		}
+		temp := filepath.Join(dir, fmt.Sprintf("%d.new", i))
+		if err := os.WriteFile(temp, change.NewSource, mode); err != nil {
 			return nil, fmt.Errorf("writing temp %s: %w", temp, err)
 		}
-		tempPaths = append(tempPaths, temp)
+		tempPaths[i] = temp
 	}
 
-	// Step 2: Back up originals.
-	for _, change := range changes {
-		backup := paths.BackupPath(root, change.Path)
-		if err := os.MkdirAll(filepath.Dir(backup), 0o755); err != nil {
-			return nil, fmt.Errorf("creating backup dir: %w", err)
-		}
-		if _, err := os.Stat(change.Path); err == nil {
-			if err := copyFile(change.Path, backup); err != nil {
+	// Step 2: Back up originals with explicit existence + mode.
+	manifest.Entries = make([]BackupEntry, len(changes))
+	for i, change := range changes {
+		entry := BackupEntry{OriginalPath: change.Path}
+		if info, err := os.Stat(change.Path); err == nil {
+			entry.Existed = true
+			entry.Mode = info.Mode().Perm()
+			entry.BackupFile = filepath.Join(dir, fmt.Sprintf("%d.bak", i))
+			if err := copyFile(change.Path, entry.BackupFile); err != nil {
 				return nil, fmt.Errorf("backing up %s: %w", change.Path, err)
 			}
-		} else {
-			// New file — write an empty marker so undo knows to delete it.
-			if err := os.WriteFile(backup, []byte{}, 0o644); err != nil {
-				return nil, fmt.Errorf("creating backup marker %s: %w", backup, err)
-			}
 		}
-		backupPaths = append(backupPaths, backup)
+		manifest.Entries[i] = entry
 	}
 
-	// Step 3: Rename staging files to final paths.
+	// Step 3: Rename staging files into place. On any failure, restore every
+	// file already renamed this pass so the tree is left in its pre-apply state.
+	var renamed []int
 	for i, change := range changes {
 		if parent := filepath.Dir(change.Path); parent != "" {
 			if err := os.MkdirAll(parent, 0o755); err != nil {
+				rollbackRenames(manifest, renamed)
 				return nil, fmt.Errorf("creating directory %s: %w", parent, err)
 			}
 		}
 		if err := os.Rename(tempPaths[i], change.Path); err != nil {
+			rollbackRenames(manifest, renamed)
 			return nil, fmt.Errorf("renaming temp to %s: %w", change.Path, err)
 		}
+		// os.Rename replaces the inode with the staging temp's; re-assert the
+		// original mode exactly so umask can't alter it.
+		if manifest.Entries[i].Existed {
+			_ = os.Chmod(change.Path, manifest.Entries[i].Mode)
+		}
+		renamed = append(renamed, i)
 	}
 
-	return backupPaths, nil
+	return manifest, nil
 }
 
-// UndoFromBackups restores files from their central backup locations.
-// root is the project root used to derive original paths from backup paths.
+// rollbackRenames reverses the already-completed renames of a failed apply,
+// restoring each file from its backup (or removing it if it was newly created),
+// then discards the per-apply directory. Best effort: rolling back a
+// half-applied change must not itself abort partway and leave things worse.
+func rollbackRenames(manifest *ApplyManifest, renamed []int) {
+	for j := len(renamed) - 1; j >= 0; j-- {
+		e := manifest.Entries[renamed[j]]
+		if !e.Existed {
+			_ = os.Remove(e.OriginalPath)
+			continue
+		}
+		if data, err := os.ReadFile(e.BackupFile); err == nil {
+			_ = os.WriteFile(e.OriginalPath, data, e.Mode)
+			_ = os.Chmod(e.OriginalPath, e.Mode)
+		}
+	}
+	_ = os.RemoveAll(manifest.Dir)
+}
+
+// UndoFromBackups restores every file recorded in the manifest to its
+// pre-apply state and removes the per-apply directory. Files that did not
+// exist before the apply are deleted; files that existed (including
+// originally-empty ones) are rewritten with their saved content and mode.
 // Returns the number of files successfully restored.
-func UndoFromBackups(root string, backupPaths []string) (int, error) {
+func UndoFromBackups(manifest *ApplyManifest) (int, error) {
+	if manifest == nil {
+		return 0, nil
+	}
 	restored := 0
-	for _, backup := range backupPaths {
-		if !strings.HasSuffix(backup, ".bak") {
-			continue
-		}
-
-		original := paths.OriginalPath(root, backup)
-		if original == "" {
-			continue
-		}
-
-		if _, err := os.Stat(backup); os.IsNotExist(err) {
-			continue
-		}
-
-		backupContent, err := os.ReadFile(backup)
-		if err != nil {
-			return restored, fmt.Errorf("reading backup %s: %w", backup, err)
-		}
-
-		_, origErr := os.Stat(original)
-		origExists := !os.IsNotExist(origErr)
-
-		if len(backupContent) == 0 && !origExists {
-			_ = os.Remove(backup)
-			continue
-		}
-
-		if len(backupContent) == 0 {
-			// File was newly created — remove it.
-			_ = os.Remove(original)
-		} else {
-			if err := os.WriteFile(original, backupContent, 0o644); err != nil {
-				return restored, fmt.Errorf("restoring %s: %w", original, err)
+	for i := len(manifest.Entries) - 1; i >= 0; i-- {
+		e := manifest.Entries[i]
+		if !e.Existed {
+			// File was created by the apply — remove it.
+			if err := os.Remove(e.OriginalPath); err != nil && !os.IsNotExist(err) {
+				return restored, fmt.Errorf("removing %s: %w", e.OriginalPath, err)
 			}
+			restored++
+			continue
 		}
-
-		_ = os.Remove(backup)
+		data, err := os.ReadFile(e.BackupFile)
+		if err != nil {
+			return restored, fmt.Errorf("reading backup %s: %w", e.BackupFile, err)
+		}
+		if err := os.WriteFile(e.OriginalPath, data, e.Mode); err != nil {
+			return restored, fmt.Errorf("restoring %s: %w", e.OriginalPath, err)
+		}
+		if err := os.Chmod(e.OriginalPath, e.Mode); err != nil {
+			return restored, fmt.Errorf("chmod %s: %w", e.OriginalPath, err)
+		}
 		restored++
 	}
+	_ = os.RemoveAll(manifest.Dir)
 	return restored, nil
 }
 
-// CleanupBackups removes backup and staging files.
-func CleanupBackups(backupPaths []string) {
-	for _, backup := range backupPaths {
-		_ = os.Remove(backup)
+// CleanupBackups removes a completed apply's staging/backup directory, called
+// when the backups are no longer needed for undo.
+func CleanupBackups(manifest *ApplyManifest) {
+	if manifest == nil {
+		return
 	}
+	_ = os.RemoveAll(manifest.Dir)
 }
 
 // copyFile copies src to dst, preserving content and permissions.
