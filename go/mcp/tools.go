@@ -1256,8 +1256,8 @@ func (h *Handler) handleApply(args map[string]any) (string, bool, error) {
 		}
 	}
 
-	// Notify the model manager to re-parse changed files immediately,
-	// bypassing the watcher's debounce delay.
+	// Re-parse changed files synchronously so the next preview in this
+	// session sees the just-written content instead of racing the watcher.
 	var changedPaths []string
 	for _, c := range h.pending.Changes {
 		changedPaths = append(changedPaths, c.Path)
@@ -1270,7 +1270,7 @@ func (h *Handler) handleApply(args map[string]any) (string, bool, error) {
 	h.pending = nil
 
 	if len(changedPaths) > 0 {
-		h.model.NotifyChanged(changedPaths)
+		h.model.ReindexNow(changedPaths)
 	}
 
 	return fmt.Sprintf("Applied %d change(s). Backups created. Call undo to revert.", applied), false, nil
