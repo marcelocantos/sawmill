@@ -41,6 +41,19 @@ func findBodyInsertPos(source []byte, node tree_sitter.Node) (uint, bool) {
 		node       tree_sitter.Node
 	}
 
+	// Ruby class/module bodies close with an `end` keyword, not a brace —
+	// insert immediately before the final `end` token.
+	if kind := node.Kind(); kind == "class" || kind == "module" {
+		cursor := node.Walk()
+		children := node.Children(cursor)
+		cursor.Close()
+		for i := len(children) - 1; i >= 0; i-- {
+			if children[i].Kind() == "end" {
+				return children[i].StartByte(), true
+			}
+		}
+	}
+
 	// Check the node itself first.
 	if bodyKinds[node.Kind()] {
 		pos := findClosingBrace(source, node.StartByte(), node.EndByte())

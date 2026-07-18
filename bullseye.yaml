@@ -1198,6 +1198,22 @@ targets:
     origin: user goal (session 2026-07-18)
     discovered: 2026-07-18
     achieved: 2026-07-18
+  T54:
+    name: Every supported language has tool-level smoke coverage — parse, find_symbol, rename, add_field, and apply are exercised per language in CI
+    status: achieved
+    value: 5.0
+    cost: 1.0
+    acceptance:
+    - A table-driven MCP-handler test (TestLanguageMatrixSmoke) drives parse → find_symbol → rename → apply → add_field → apply for all 13 languages and asserts each step's on-disk outcome
+    - Every language passes every step — no skip escape hatch in the matrix
+    - Adding a language to ForExtension without a matrix row is a review-visible gap
+    context: 'Before this, only Go/Python had deep tool-level coverage; the 8 newest languages were grammar-verified only. Writing the matrix immediately surfaced a real bug: add_field assumed brace-delimited type bodies, so Ruby class/module (end-keyword bodies) failed — fixed by inserting before the final end token.'
+    tags:
+    - languages
+    - testing
+    origin: user request (session 2026-07-18)
+    discovered: 2026-07-18
+    achieved: 2026-07-18
   T6:
     name: Git history is semantically indexed — commits are parsed with Tree-sitter and symbol changes are queryable via MCP tools
     status: achieved
