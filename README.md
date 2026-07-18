@@ -315,4 +315,5 @@ rationale.
 
 ## License
 
-[Apache 2.0](LICENSE)
+[Apache 2.0](LICENSE). Binary distributions bundle permissively-licensed
+third-party components — see [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
