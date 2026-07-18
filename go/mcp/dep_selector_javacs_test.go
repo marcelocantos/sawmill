@@ -69,3 +69,36 @@ func TestDepSelectorQueryCSharp(t *testing.T) {
 		t.Errorf("captured Other.X despite alias filter: %v", fields)
 	}
 }
+
+func TestDepSelectorQueryJavaScript(t *testing.T) {
+	src := []byte(`const x = util.format(1); other.y();`)
+	fields := runSelectorQuery(t, &adapters.JavaScriptAdapter{}, "util", src)
+	if !slices.Contains(fields, "format") {
+		t.Errorf("expected util.format capture, got %v", fields)
+	}
+	if slices.Contains(fields, "y") {
+		t.Errorf("captured other.y despite alias filter: %v", fields)
+	}
+}
+
+func TestDepSelectorQueryRuby(t *testing.T) {
+	src := []byte("JSON.dump(1)\nOther.x\n")
+	fields := runSelectorQuery(t, &adapters.RubyAdapter{}, "JSON", src)
+	if !slices.Contains(fields, "dump") {
+		t.Errorf("expected JSON.dump capture, got %v", fields)
+	}
+	if slices.Contains(fields, "x") {
+		t.Errorf("captured Other.x despite alias filter: %v", fields)
+	}
+}
+
+func TestDepSelectorQueryC(t *testing.T) {
+	src := []byte("int f(void) { return cfg.port + other.x; }\n")
+	fields := runSelectorQuery(t, &adapters.CAdapter{}, "cfg", src)
+	if !slices.Contains(fields, "port") {
+		t.Errorf("expected cfg.port capture, got %v", fields)
+	}
+	if slices.Contains(fields, "x") {
+		t.Errorf("captured other.x despite alias filter: %v", fields)
+	}
+}

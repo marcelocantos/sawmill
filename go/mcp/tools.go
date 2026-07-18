@@ -3095,6 +3095,21 @@ func depSelectorQuery(adapter adapters.LanguageAdapter, alias string) string {
 			`(member_access_expression expression: (identifier) @obj name: (identifier) @field (#eq? @obj %q))`,
 			alias,
 		)
+	case *adapters.JavaScriptAdapter:
+		return fmt.Sprintf(
+			`(member_expression object: (identifier) @obj property: (property_identifier) @field (#eq? @obj %q))`,
+			alias,
+		)
+	case *adapters.RubyAdapter:
+		return fmt.Sprintf(
+			`(call receiver: (constant) @obj method: (identifier) @field (#eq? @obj %q))`,
+			alias,
+		)
+	case *adapters.CAdapter:
+		return fmt.Sprintf(
+			`(field_expression argument: (identifier) @obj field: (field_identifier) @field (#eq? @obj %q))`,
+			alias,
+		)
 	default:
 		return ""
 	}

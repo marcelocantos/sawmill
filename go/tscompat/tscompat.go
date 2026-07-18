@@ -337,4 +337,10 @@ var (
 	CppLanguage        = grammars.CppLanguage
 	JavaLanguage       = grammars.JavaLanguage
 	CSharpLanguage     = grammars.CSharpLanguage
+	JavascriptLanguage = grammars.JavascriptLanguage
+	RubyLanguage       = grammars.RubyLanguage
+	PhpLanguage        = grammars.PhpLanguage
+	KotlinLanguage     = grammars.KotlinLanguage
+	SwiftLanguage      = grammars.SwiftLanguage
+	CLanguage          = grammars.CLanguage
 )

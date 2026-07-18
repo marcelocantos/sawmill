@@ -1181,6 +1181,23 @@ targets:
     origin: user goal (session 2026-07-18)
     discovered: 2026-07-18
     achieved: 2026-07-18
+  T53:
+    name: Sawmill fully supports JavaScript, Ruby, PHP, Kotlin, Swift, and C — parsing, symbol indexing, queries, and codegen on par with the other seven languages
+    status: achieved
+    value: 8.0
+    cost: 3.0
+    acceptance:
+    - Six new adapters implement the full LanguageAdapter interface; ForExtension routes js/jsx/mjs/cjs, rb/rake/gemspec, php, kt/kts, swift, and c (with .h remaining on the C++ adapter)
+    - codegen genForLang and the JS ctx.addImport extension map dispatch all six langIds
+    - dependency_usage alias.member queries added where the grammar supports them (JS member_expression, Ruby constant-receiver call, C field_expression)
+    - Import-path resolution implemented where the language maps imports to files (JS relative imports, Ruby require/require_relative, Kotlin source roots); namespace/module-based languages (PHP, Swift) intentionally return no resolution
+    - Adapter query tests parse real samples per language and assert captures; the model-layer test proves all six file types land in the symbol index end-to-end
+    context: 'Java/C# (🎯T52) established the pattern: CST-dump-first query authoring against the gotreesitter grammars, then capture-asserting tests as the oracle. This round surfaced two engine gotchas now pinned by regression tests: tree-sitter patterns match field children in child order (the C/C++ field query listed declarator: before type: and silently matched nothing — pre-existing C++ bug fixed here), and gotreesitter bracket alternation over Ruby class/module nodes matches nothing (worked around with two separate patterns).'
+    tags:
+    - languages
+    origin: user goal (session 2026-07-18)
+    discovered: 2026-07-18
+    achieved: 2026-07-18
   T6:
     name: Git history is semantically indexed — commits are parsed with Tree-sitter and symbol changes are queryable via MCP tools
     status: achieved

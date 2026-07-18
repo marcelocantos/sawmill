@@ -49,7 +49,9 @@ func (a *CppAdapter) LSPCommand() []string { return []string{"clangd"} }
 func (a *CppAdapter) LSPLanguageID() string { return "cpp" }
 
 func (a *CppAdapter) FieldQuery() string {
-	return "(field_declaration declarator: (field_identifier) @name type: (_) @type) @field"
+	// type: must precede declarator: — pattern children match in child order;
+	// the declarator-first form silently matched nothing.
+	return "(field_declaration type: (_) @type declarator: (field_identifier) @name) @field"
 }
 
 func (a *CppAdapter) MethodQuery() string {
