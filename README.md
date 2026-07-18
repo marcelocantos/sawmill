@@ -139,7 +139,7 @@ AI Agent ──HTTP──▶ sawmill serve (HTTP MCP server, port 8765)
                        │    ├─ Store (SQLite)
                        │    └─ Watcher (fsnotify)
                        ├─ GitIndex (lazy AST snapshots per commit)
-                       └─ MCP Server (57 tools, streamable HTTP)
+                       └─ MCP Server (66 tools, streamable HTTP)
 ```
 
 - `sawmill serve` is the HTTP MCP server, listening on `127.0.0.1:8765`
@@ -253,7 +253,8 @@ call `apply` to write changes, `undo` to revert.
 | TypeScript | Yes | `prettier` | — |
 | Rust | Yes | `rustfmt` | — |
 | Go | Yes | `gofmt` | Yes |
-| C/C++ | Yes | `clang-format` | — |
+| C++ | Yes | `clang-format` | — |
+| C | Yes | `clang-format` | — |
 | Java | Yes | `clang-format` | — |
 | C# | Yes | `clang-format` | — |
 | JavaScript | Yes | `prettier` | — |
