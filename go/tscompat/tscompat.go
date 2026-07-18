@@ -335,4 +335,6 @@ var (
 	TypescriptLanguage = grammars.TypescriptLanguage
 	TsxLanguage        = grammars.TsxLanguage
 	CppLanguage        = grammars.CppLanguage
+	JavaLanguage       = grammars.JavaLanguage
+	CSharpLanguage     = grammars.CSharpLanguage
 )

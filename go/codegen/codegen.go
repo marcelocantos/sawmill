@@ -182,6 +182,8 @@ const ctxSetupTemplate = `
         else if (ext === "ts" || ext === "tsx") langId = "typescript";
         else if (ext === "go") langId = "go";
         else if (ext === "cpp" || ext === "cc" || ext === "h") langId = "cpp";
+        else if (ext === "java") langId = "java";
+        else if (ext === "cs") langId = "csharp";
         var code = __genImport(langId, importPath);
         if (code) {
             __editFile(filePath, 0, 0, code);
@@ -728,6 +730,10 @@ func genForLang(langID string, f func(adapters.LanguageAdapter) string) string {
 		adapter = &adapters.CppAdapter{}
 	case "go":
 		adapter = &adapters.GoAdapter{}
+	case "java":
+		adapter = &adapters.JavaAdapter{}
+	case "csharp":
+		adapter = &adapters.CSharpAdapter{}
 	default:
 		return ""
 	}

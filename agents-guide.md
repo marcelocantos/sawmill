@@ -11,7 +11,7 @@ describe the transformation they want and Sawmill performs the
 mechanical rewriting -- producing minimal, diff-friendly changes that
 preserve formatting, comments, and whitespace.
 
-Supported languages: Python, TypeScript, Rust, Go, C/C++.
+Supported languages: Python, TypeScript, Rust, Go, C/C++, Java, C#.
 
 ## Installation
 

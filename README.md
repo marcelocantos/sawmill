@@ -12,7 +12,7 @@ changes that preserve formatting, comments, and whitespace.
 
 ## Features
 
-- **Multi-language**: Python, TypeScript, Rust, Go, C/C++ via Tree-sitter
+- **Multi-language**: Python, TypeScript, Rust, Go, C/C++, Java, C# via Tree-sitter
 - **MCP server**: Runs over stdio; works with any MCP-compatible AI agent
 - **Persistent daemon**: Background process shares parsed state across
   sessions via Unix socket — auto-started on first use
@@ -254,6 +254,8 @@ call `apply` to write changes, `undo` to revert.
 | Rust | Yes | `rustfmt` | — |
 | Go | Yes | `gofmt` | Yes |
 | C/C++ | Yes | `clang-format` | — |
+| Java | Yes | `clang-format` | — |
+| C# | Yes | `clang-format` | — |
 
 ## Git merge integration
 

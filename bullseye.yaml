@@ -1164,6 +1164,23 @@ targets:
     - research
     origin: manual
     discovered: 2026-07-03
+  T52:
+    name: Sawmill fully supports Java and C# — parsing, symbol indexing, queries, codegen, and dependency analysis on par with the existing five languages
+    status: achieved
+    value: 8.0
+    cost: 3.0
+    acceptance:
+    - JavaAdapter and CSharpAdapter implement the full LanguageAdapter interface, including FieldQuery, MethodQuery, DecoratorQuery, TypeUseQuery, and StructLiteralQuery
+    - ForExtension routes .java and .cs files so the model, forest, index, and watcher layers pick them up with no further changes
+    - codegen genForLang and the JS ctx.addImport extension map dispatch java/csharp
+    - dependency_usage alias.member queries work for Java (field_access + method_invocation) and C# (member_access_expression)
+    - Adapter query tests parse real Java and C# samples and assert every query's captures; a model-layer test proves .java/.cs files land in the symbol index end-to-end
+    context: Java and C# grammars ship with gotreesitter (pure Go, no CGo), so support is adapter-plus-registration work. Java import paths resolve against conventional source roots (src/main/java, src/test/java, src); C# using directives name namespaces with no filesystem correspondence, so import resolution stays unsupported there by design.
+    tags:
+    - languages
+    origin: user goal (session 2026-07-18)
+    discovered: 2026-07-18
+    achieved: 2026-07-18
   T6:
     name: Git history is semantically indexed — commits are parsed with Tree-sitter and symbol changes are queryable via MCP tools
     status: achieved
