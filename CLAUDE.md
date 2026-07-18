@@ -9,10 +9,14 @@ with Tree-sitter, QuickJS, and SQLite (all pure Go, no CGo).
 cd go
 go build ./...                    # Build all packages
 go build ./cmd/sawmill            # Build the CLI binary
-go test ./... -count=1            # Run all tests (80 tests)
+go test ./... -count=1 -race      # Run all tests — always -race: CI uses it,
+                                  # and omitting it hides races locally
 make build                        # Build binary to bin/sawmill (from repo root)
-make test                         # Run all tests (from repo root)
+make test                         # Run all tests (from repo root, CI-identical)
 ```
+
+A pre-push hook (`scripts/hooks/pre-push`) runs `make test` so CI failures
+surface locally first. Enable with `git config core.hooksPath scripts/hooks`.
 
 Requires Go 1.26+.
 
