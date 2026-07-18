@@ -11,7 +11,7 @@ describe the transformation they want and Sawmill performs the
 mechanical rewriting -- producing minimal, diff-friendly changes that
 preserve formatting, comments, and whitespace.
 
-Supported languages: Python, TypeScript, Rust, Go, C/C++.
+Supported languages: Python, TypeScript, JavaScript, Rust, Go, C, C++, Java, C#, Ruby, PHP, Kotlin, Swift.
 
 ## Installation
 
@@ -24,38 +24,67 @@ steps succeed — installing the binary alone is not enough.
 brew install marcelocantos/tap/sawmill
 ```
 
-**Step 2 — Start the background service:**
+**Step 2 — Start the background HTTP server:**
 
 ```bash
 brew services start sawmill
 ```
 
-This starts the sawmill daemon which manages parsed codebases and
-persists state across sessions. The daemon starts automatically on
-login.
+This launches `sawmill serve --addr 127.0.0.1:8765`, an HTTP MCP server
+on port 8765 that manages parsed codebases and persists state across
+sessions. The server starts automatically on login.
 
-**Step 3 — Register as an MCP server:**
-
-For Claude Code (global install — available in all projects):
+**Step 3 — Confirm the server is listening:**
 
 ```bash
-claude mcp add --scope user sawmill -- sawmill
+lsof -iTCP:8765 -sTCP:LISTEN
 ```
 
-For other MCP clients, add to the client's MCP configuration
-(e.g. `.mcp.json` for project scope):
+You should see one `sawmill` process. **Do not use `curl`** to probe
+the endpoint — MCP only accepts POST requests with a JSON-RPC body, so
+plain `curl` returns nothing and reads as "server not ready" when it's
+actually fine.
+
+**Step 4 — Register as an MCP server.**
+
+Sawmill speaks the MCP streamable HTTP transport natively at
+`http://127.0.0.1:8765/mcp`.
+
+**Claude Code** (one command — global install for all projects):
+
+```bash
+claude mcp add --scope user --transport http sawmill http://127.0.0.1:8765/mcp
+```
+
+**Grok Build** (writes `~/.grok/config.toml`):
+
+```bash
+grok mcp add --transport http sawmill http://127.0.0.1:8765/mcp
+```
+
+**Generic MCP client** (e.g. `.mcp.json` in a project, or another
+client's config) — every MCP client that supports streamable HTTP can
+use the same JSON shape:
 
 ```json
 {
   "mcpServers": {
     "sawmill": {
-      "command": "sawmill"
+      "transport": "http",
+      "url": "http://127.0.0.1:8765/mcp"
     }
   }
 }
 ```
 
-**Step 4 — Restart the agent session.** MCP servers are loaded at
+Stdio-only clients can route through a transparent gateway such as
+[mcpbridge](https://github.com/marcelocantos/mcpbridge):
+
+```bash
+claude mcp add --scope user sawmill -- mcpbridge http://127.0.0.1:8765/mcp
+```
+
+**Step 5 — Restart the agent session.** MCP servers are loaded at
 session start — sawmill won't be available until the next session.
 
 **Verification:** After restarting, call the `get_agent_prompt` tool to
@@ -64,12 +93,15 @@ is complete.
 
 ## Recommended Workflow
 
-1. **Parse first.** Call `parse` with the project root. This loads and
-   indexes all source files. Subsequent `parse` calls are incremental.
+1. **Parse first.** Call `parse` with the project root path on the first
+   call in each MCP session — this binds the session to a project root
+   and loads/indexes all source files. Subsequent `parse` calls re-use
+   the loaded model. Sessions targeting the same root share one model
+   internally (amortised parsing).
 2. **Query/find.** Use `query`, `find_symbol`, or `find_references` to
    locate the code you need to change.
 3. **Transform.** Use `rename`, `transform`, `codegen`,
-   `add_parameter`, etc. Every transform returns a unified diff
+   `add_parameter`, `rename_file`, `add_field`, `migrate_type`, etc. Every transform returns a unified diff
    preview -- no files are modified yet.
 4. **Review the diff.** Inspect the returned diff before proceeding.
 5. **Apply.** Call `apply` with `confirm: true` to write changes to
@@ -103,6 +135,7 @@ replaces any unapplied pending changes.
 | `graph_expand` | Walk the symbol reference graph (forward/reverse) over call, type-use, and import-use edges; pass `source` to switch between the syntactic Tree-sitter graph (default) and the LLM-extracted knowledge graph | `symbol`, `direction`, `edge_kind`, `symbol_kind`, `source` |
 | `central_symbols` | Rank load-bearing symbols by weighted PageRank over the reference graph | `path_glob`, `kind`, `limit` |
 | `index_status` | Per-tier status snapshot: file/vector/summary counts, prompt id, running cost, failure totals | `format` |
+| `dependency_usage` | Analyse package imports, symbols used, public API exposure | `package` |
 
 The discovery tools are the load-bearing way to find code: use
 `search_code` when you know roughly what you're looking for,
@@ -140,6 +173,13 @@ and failures with `index_status`. Summaries also feed `semantic_search`
 | `codegen` | JavaScript program against the codebase | `program` |
 | `add_parameter` | Add a parameter to a function | `function`, `param_name`, `param_type`, `position` |
 | `remove_parameter` | Remove a parameter from a function | `function`, `param_name` |
+| `rename_file` | Rename a file and update all imports | `from`, `to` |
+| `add_field` | Add a field to a struct/class, propagate to constructors | `type_name`, `field_name`, `field_type`, `default_value` |
+| `clone_and_adapt` | Copy a symbol with string substitutions | `source`, `substitutions`, `target_file` |
+| `migrate_type` | Rewrite all usage sites of a type | `type_name`, `rules` |
+| `promote_constant` | Replace every occurrence of a literal with a named constant; declares it in idiomatic per-language form | `literal`, `name`, `path`, `format` |
+| `extract_to_env` | Replace a literal with an env-var read (os.Getenv / os.environ.get / process.env / std::getenv); scaffold .env.example + .gitignore | `literal`, `var_name`, `path`, `format` |
+| `migrate_pattern` | Generalised pattern rewriting with import management (add the new symbol's import; drop the old one if unused) | `old_pattern`, `new_pattern`, `add_import`, `drop_import`, `path`, `format` |
 
 ### Teaching
 
@@ -150,8 +190,28 @@ and failures with `index_status`. Summaries also feed `semantic_search`
 | `instantiate` | Create code from a taught recipe | `recipe`, `params` |
 | `teach_convention` | Define an enforceable project rule | `name`, `check_program` |
 | `check_conventions` | Scan for convention violations | `path` |
+| `teach_fix` | Save a diagnostic-pattern → fix-action mapping (regex with named captures + recipe or transform; auto/suggest confidence) | `name`, `diagnostic_regex`, `action`, `confidence` |
+| `auto_fix` | Convergence loop: pull diagnostics → match the catalogue → apply auto fixes / report suggestions / detect cycles. Returns structured per-iteration JSON | `file`, `max_iterations`, `dry_run` |
+| `seed_fixes` | Install the curated starter catalogue (Go + TypeScript common errors). Idempotent — preserves user customisations | -- |
+| `learn_from_observation` | Infer candidate fix entries from a pre/post diagnostic snapshot — the resolved diagnostics become draft regex+action stubs the user can promote via `teach_fix` | `pre_diagnostics`, `post_diagnostics` |
+| `list_fixes` | List all saved fix entries | -- |
+| `delete_fix` | Delete a saved fix entry by name | `name` |
+| `teach_equivalence` | Save a bidirectional code-pattern pair (e.g. `errors.Is(err, X) ↔ err == X`) | `name`, `left_pattern`, `right_pattern`, `preferred_direction` |
+| `apply_equivalence` | Rewrite all matches of an equivalence in the chosen direction (`left_to_right` or `right_to_left`); produces a diff preview | `name`, `direction`, `path`, `format` |
+| `check_equivalences` | Scan the codebase for matches of any equivalence's non-preferred side; reports as violations | `path` |
+| `list_equivalences` | List all saved equivalence pairs | -- |
+| `delete_equivalence` | Delete a saved equivalence by name | `name` |
 | `list_recipes` | List all taught recipes | -- |
 | `list_conventions` | List all taught conventions | -- |
+
+### Structural Invariants
+
+| Tool | Purpose | Key params |
+|---|---|---|
+| `teach_invariant` | Define a structural rule (JSON) for types/functions | `name`, `rule` |
+| `check_invariants` | Scan for invariant violations | `path` |
+| `list_invariants` | List all taught invariants | -- |
+| `delete_invariant` | Remove an invariant | `name` |
 
 ### LSP (when language servers are available)
 
@@ -160,7 +220,44 @@ and failures with `index_status`. Summaries also feed `semantic_search`
 | `hover` | Type info at a position | `file`, `line`, `column` (1-based) |
 | `definition` | Go to definition | `file`, `line`, `column` |
 | `lsp_references` | Find all references via LSP | `file`, `line`, `column` |
-| `diagnostics` | Get compile errors/warnings | `file`, `content` (optional) |
+| `diagnostics` | Get compile errors/warnings (set `format=json` for structured `{file, line, column, severity, code, source, message}` array) | `file`, `format` |
+
+### Git History
+
+| Tool | Purpose | Key params |
+|---|---|---|
+| `git_log` | Structured commit history with file-change metadata | `ref`, `limit`, `path` |
+| `git_diff_summary` | Symbol-level diff (added/removed/modified) between two refs | `base`, `head`, `path` |
+| `git_blame_symbol` | Find which commit last modified or introduced a symbol | `path`, `symbol`, `ref` |
+| `git_index` | Index commit history for structural queries | `ref`, `limit` |
+| `semantic_diff` | Structural AST diff — detects moves, renames, signature changes, key-level data format changes | `base`, `head`, `path` |
+| `api_changelog` | Markdown API surface changelog between two refs | `base`, `head` |
+| `git_semantic_bisect` | Find the commit where a structural predicate flipped (binary search, no code execution) | `predicate` (JSON), `good`, `bad` |
+
+### Multi-repo orchestration
+
+| Tool | Purpose | Key params |
+|---|---|---|
+| `transform_multi_root` | Run an ordered list of transforms across multiple project roots in a single call; returns per-root diff bundles. Does not modify any session's pending state | `roots` (JSON array of absolute paths), `transforms` (JSON array, same shape as `transform_batch`), `format` |
+| `apply_multi_root_pr` | Take per-root `{root, diff}` bundles (typically from `transform_multi_root`), create per-repo feature branches, commit, push, and open PRs via `git`/`gh`. Per-repo errors do not abort siblings; idempotent on existing branches/PRs | `bundles`, `branch_template`, `title_template`, `body_template`, `commit_message` (templates support `{root}` and `{repo}` placeholders) |
+
+### Merge
+
+| Tool | Purpose | Key params |
+|---|---|---|
+| `merge_three_way` | AST-aware three-way merge of (base, ours, theirs). Edits that touch disjoint declarations always commute (parallel method additions, parallel imports, format vs logic). True body conflicts fall through to git-style markers. **Stateless** — does not require `parse` first; safe to call before binding the session | one of `base_content`/`base_path`, one of `ours_content`/`ours_path`, one of `theirs_content`/`theirs_path`, optional `language` (`py`/`go`/...), optional `path` (used in conflict labels and adapter inference), optional `marker_style` (`diff3` default, or `merge`) |
+
+Returns JSON `{merged, conflicts: [...], stats, clean}`. AST-level
+resolution covers Python and Go today; other languages fall through to
+a whole-file diff3.
+
+The same engine ships as two CLI subcommands for direct git
+integration — see the README's "Git merge integration" section.
+`sawmill merge` plugs in as a `git mergetool` driver; `sawmill
+merge-driver` plugs in as a `[merge "sawmill"] driver = ...` entry
+gated by `.gitattributes`. Both are useful in agent rebase/PR
+workflows: chain `merge_three_way` with `apply_multi_root_pr` for
+fully-automated cross-repo rebases.
 
 ### Application
 
@@ -287,6 +384,127 @@ for (var i = 0; i < types.length; i++) {
 }
 ```
 
+## The `migrate_type` Tool
+
+The `migrate_type` tool rewrites all usage sites of a type based on
+declarative rules. It uses a pattern language with `$placeholder`
+captures.
+
+**Rules** (JSON object):
+
+- `construction`: Rewrite struct literals and constructor calls.
+  - `old`: Pattern to match (e.g. `"EqArgs{Eq: $eq, Hash: $hash}"`)
+  - `new`: Replacement (e.g. `"NewDefaultEqOps($eq, $hash)"`)
+- `field_access`: Map of old access patterns to new ones. `$` represents
+  the instance variable.
+  - `"$.Eq($a, $b)"` → `"$.Equal($a, $b)"`
+  - `"$.FullHash"` → `"$.IsFullHash()"`
+- `type_rename`: Optional new type name (string).
+
+**Example:**
+```json
+{
+  "type_name": "EqArgs",
+  "rules": "{\"construction\":{\"old\":\"EqArgs{Eq: $eq, Hash: $hash}\",\"new\":\"NewDefaultEqOps($eq, $hash)\"},\"field_access\":{\"$.Eq($a, $b)\":\"$.Equal($a, $b)\"},\"type_rename\":\"EqOps\"}"
+}
+```
+
+## Structural Invariants
+
+Invariants are declarative rules that check structural properties of
+code entities (types, functions). They are stored alongside recipes and
+conventions and persist across sessions.
+
+**Rule format** (JSON):
+
+```json
+{
+  "for_each": {"kind": "type", "name": "*Config"},
+  "require": [
+    {"has_field": {"name": "Name"}},
+    {"has_method": {"name": "Validate"}}
+  ]
+}
+```
+
+- `for_each.kind`: `"type"` or `"function"`
+- `for_each.name`: glob pattern (`*` matches anything)
+- `for_each.implementing`: optional interface name (requires LSP)
+- `require`: list of assertions — `has_field` (with optional `type`)
+  or `has_method` (with optional `returns`)
+
+## Structured Output for Programmatic Consumers
+
+`check_conventions`, `check_invariants`, and `query` all support a
+`format` parameter. The default `"text"` returns the human-readable
+prose unchanged. Setting `format: "json"` returns a structured array
+suitable for orchestrators that need machine-readable diagnostics.
+
+**Violation schema** (returned by check_conventions and check_invariants):
+
+```jsonc
+{
+  "source":   "convention:no-bare-except"  | "invariant:config-needs-name",
+  "file":     "src/foo.go",
+  "line":     42,                  // 1-based; omitted if zero
+  "column":   10,                  // 1-based; omitted if zero
+  "severity": "error" | "warning", // defaults to "error"
+  "rule":     "no-bare-except",    // short stable identifier
+  "message":  "use specific exception",
+  "snippet":      "except:",       // optional source excerpt
+  "suggested_fix": "except Exception:"  // optional rewrite
+}
+```
+
+**QueryMatch schema** (returned by query):
+
+```jsonc
+{
+  "file":    "src/foo.go",
+  "line":    7,
+  "column":  3,
+  "kind":    "function_definition",  // raw tree-sitter node type
+  "name":    "Foo",                  // identifier if applicable
+  "snippet": "def Foo(): ..."
+}
+```
+
+**Convention check programs** can return either an array of plain
+strings (legacy contract — strings become `Violation.Message`) or an
+array of structured objects matching the Violation schema above.
+Sawmill normalises both into the same JSON output:
+
+```javascript
+// Legacy: just messages.
+return ["unused import in main.py", "TODO: cleanup"];
+
+// New: full structured violations.
+return [{
+  file: "src/foo.go",
+  line: 42, column: 10,
+  severity: "warning",
+  rule: "no-bare-except",
+  message: "use specific exception",
+  suggested_fix: "except Exception:"
+}];
+```
+
+**Worked example — orchestrator consuming the JSON output:**
+
+```python
+import json, subprocess
+out = subprocess.check_output([
+    "claude", "mcp", "call", "sawmill", "check_invariants",
+    "--arg", "format=json",
+])
+violations = json.loads(out)
+for v in violations:
+    print(f"{v['source']}: {v['file']}:{v['line']}: {v['message']}")
+    if v.get("suggested_fix"):
+        # Hand off to an automated fix flow.
+        ...
+```
+
 ## Tips and Gotchas
 
 - **Always `parse` first.** Every other tool requires the codebase
@@ -336,6 +554,21 @@ for (var i = 0; i < types.length; i++) {
   several transforms to land together (e.g., rename + add import),
   use `transform_batch` so they share a single pending changeset and
   a single `apply`.
+
+- **Invariants persist like recipes.** Taught invariants survive server
+  restarts. Use `list_invariants` to see what exists, `delete_invariant`
+  to remove.
+
+- **`migrate_type` is for type-level refactoring.** When changing a
+  type's shape (renaming fields, changing constructors, converting
+  field access to method calls), use `migrate_type` instead of manual
+  `transform` calls. It handles construction sites, field access
+  patterns, and type renaming in one operation.
+
+- **`dependency_usage` for impact analysis.** Before upgrading or
+  removing a dependency, call `dependency_usage` to see every import
+  site, which symbols are used, and whether the dependency leaks into
+  public APIs.
 
 - **Indexing scopes (owned/library/ignored).** Sawmill classifies each
   file into one of three scopes at index time. Owned files (project

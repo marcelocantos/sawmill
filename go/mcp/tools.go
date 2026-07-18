@@ -37,6 +37,10 @@ import (
 //go:embed agents-guide.md
 var embeddedAgentsGuide string
 
+// AgentsGuide returns the embedded agents-guide.md content, for callers
+// outside the package (notably the CLI's --help-agent flag).
+func AgentsGuide() string { return embeddedAgentsGuide }
+
 // requireString returns the string argument named key, or an error if absent/empty.
 func requireString(args map[string]any, key string) (string, error) {
 	v, ok := args[key].(string)

@@ -18,6 +18,7 @@ import (
 	"os"
 
 	"github.com/marcelocantos/sawmill/daemon"
+	"github.com/marcelocantos/sawmill/mcp"
 	"github.com/marcelocantos/sawmill/paths"
 )
 
@@ -126,6 +127,8 @@ CLIENT INTEGRATION
   amortises parsing across sessions targeting the same root.
 
 AGENT GUIDE
-  See agents-guide.md (embedded, also served via get_agent_prompt tool).
+  The full agent guide follows (also served via the get_agent_prompt tool).
+
 `, version, paths.DefaultListenAddr)
+	fmt.Print(mcp.AgentsGuide())
 }

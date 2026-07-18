@@ -56,6 +56,12 @@ Sawmill speaks the MCP streamable HTTP transport natively at
 claude mcp add --scope user --transport http sawmill http://127.0.0.1:8765/mcp
 ```
 
+**Grok Build** (writes `~/.grok/config.toml`):
+
+```bash
+grok mcp add --transport http sawmill http://127.0.0.1:8765/mcp
+```
+
 **Generic MCP client** (e.g. `.mcp.json` in a project, or another
 client's config) — every MCP client that supports streamable HTTP can
 use the same JSON shape:
