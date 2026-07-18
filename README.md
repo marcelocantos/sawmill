@@ -12,7 +12,7 @@ changes that preserve formatting, comments, and whitespace.
 
 ## Features
 
-- **Multi-language**: Python, TypeScript, Rust, Go, C/C++ via Tree-sitter
+- **Multi-language**: Python, TypeScript, JavaScript, Rust, Go, C, C++, Java, C#, Ruby, PHP, Kotlin, Swift via Tree-sitter
 - **MCP server**: Runs over stdio; works with any MCP-compatible AI agent
 - **Persistent daemon**: Background process shares parsed state across
   sessions via Unix socket — auto-started on first use
@@ -139,7 +139,7 @@ AI Agent ──HTTP──▶ sawmill serve (HTTP MCP server, port 8765)
                        │    ├─ Store (SQLite)
                        │    └─ Watcher (fsnotify)
                        ├─ GitIndex (lazy AST snapshots per commit)
-                       └─ MCP Server (57 tools, streamable HTTP)
+                       └─ MCP Server (66 tools, streamable HTTP)
 ```
 
 - `sawmill serve` is the HTTP MCP server, listening on `127.0.0.1:8765`
@@ -253,7 +253,15 @@ call `apply` to write changes, `undo` to revert.
 | TypeScript | Yes | `prettier` | — |
 | Rust | Yes | `rustfmt` | — |
 | Go | Yes | `gofmt` | Yes |
-| C/C++ | Yes | `clang-format` | — |
+| C++ | Yes | `clang-format` | — |
+| C | Yes | `clang-format` | — |
+| Java | Yes | `clang-format` | — |
+| C# | Yes | `clang-format` | — |
+| JavaScript | Yes | `prettier` | — |
+| Ruby | Yes | — | — |
+| PHP | Yes | — | — |
+| Kotlin | Yes | — | — |
+| Swift | Yes | `swift-format` | — |
 
 ## Git merge integration
 
@@ -307,4 +315,5 @@ rationale.
 
 ## License
 
-[Apache 2.0](LICENSE)
+[Apache 2.0](LICENSE). Binary distributions bundle permissively-licensed
+third-party components — see [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).

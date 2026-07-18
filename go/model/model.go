@@ -82,8 +82,10 @@ type CodebaseModel struct {
 	w *watcher.Watcher
 	// events is the channel of debounced file events from w.
 	events <-chan watcher.FileEvent
-	// notify receives post-apply re-parse requests (file paths).
-	notify chan []string
+	// reindex receives post-apply re-parse requests. Each request's done
+	// channel is closed once the manager has re-parsed every path, making
+	// ReindexNow synchronous.
+	reindex chan reindexReq
 	// done signals the manager goroutine to exit.
 	done chan struct{}
 	// stopped is closed when the manager goroutine exits.
@@ -183,7 +185,7 @@ func Load(root string) (*CodebaseModel, error) {
 		SummaryVecs: summaryVecs,
 		w:           w,
 		events:      events,
-		notify:      make(chan []string, 16),
+		reindex:     make(chan reindexReq),
 		done:        make(chan struct{}),
 		stopped:     make(chan struct{}),
 	}
@@ -390,14 +392,35 @@ func (m *CodebaseModel) ForestSnapshot() *forest.Forest {
 // NotifyChanged tells the manager to immediately re-parse the given paths.
 // Call this after applying changes to disk so the model reflects the new
 // content without waiting for the watcher's debounce delay.
-func (m *CodebaseModel) NotifyChanged(changedPaths []string) {
-	if m.notify == nil {
+// reindexReq carries a post-apply re-parse request; done is closed when the
+// manager goroutine has re-parsed every path.
+type reindexReq struct {
+	paths []string
+	done  chan struct{}
+}
+
+// ReindexNow re-parses the given files and updates the store and cache,
+// returning only when the update is complete. Called after apply so that
+// subsequent previews in the same session see the just-written content
+// instead of racing the watcher's debounce. (The previous fire-and-forget
+// NotifyChanged left a window in which a preview captured stale source and
+// the next apply failed the ErrStaleContent pre-flight.)
+func (m *CodebaseModel) ReindexNow(changedPaths []string) {
+	if m.reindex == nil {
+		// Ephemeral model: no manager goroutine owns the state; update inline.
+		for _, p := range changedPaths {
+			m.reparse(p)
+		}
 		return
 	}
+	req := reindexReq{paths: changedPaths, done: make(chan struct{})}
 	select {
-	case m.notify <- changedPaths:
-	default:
-		// Channel full — watcher will catch up.
+	case m.reindex <- req:
+		select {
+		case <-req.done:
+		case <-m.stopped:
+		}
+	case <-m.stopped:
 	}
 }
 
@@ -494,10 +517,11 @@ func (m *CodebaseModel) runManager() {
 				return
 			}
 			m.applyEvent(ev)
-		case changedPaths := <-m.notify:
-			for _, p := range changedPaths {
+		case req := <-m.reindex:
+			for _, p := range req.paths {
 				m.reparse(p)
 			}
+			close(req.done)
 		case <-m.done:
 			return
 		}

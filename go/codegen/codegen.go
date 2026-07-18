@@ -182,6 +182,14 @@ const ctxSetupTemplate = `
         else if (ext === "ts" || ext === "tsx") langId = "typescript";
         else if (ext === "go") langId = "go";
         else if (ext === "cpp" || ext === "cc" || ext === "h") langId = "cpp";
+        else if (ext === "java") langId = "java";
+        else if (ext === "cs") langId = "csharp";
+        else if (ext === "js" || ext === "jsx" || ext === "mjs" || ext === "cjs") langId = "javascript";
+        else if (ext === "rb") langId = "ruby";
+        else if (ext === "php") langId = "php";
+        else if (ext === "kt" || ext === "kts") langId = "kotlin";
+        else if (ext === "swift") langId = "swift";
+        else if (ext === "c") langId = "c";
         var code = __genImport(langId, importPath);
         if (code) {
             __editFile(filePath, 0, 0, code);
@@ -728,6 +736,22 @@ func genForLang(langID string, f func(adapters.LanguageAdapter) string) string {
 		adapter = &adapters.CppAdapter{}
 	case "go":
 		adapter = &adapters.GoAdapter{}
+	case "java":
+		adapter = &adapters.JavaAdapter{}
+	case "csharp":
+		adapter = &adapters.CSharpAdapter{}
+	case "javascript":
+		adapter = &adapters.JavaScriptAdapter{}
+	case "ruby":
+		adapter = &adapters.RubyAdapter{}
+	case "php":
+		adapter = &adapters.PhpAdapter{}
+	case "kotlin":
+		adapter = &adapters.KotlinAdapter{}
+	case "swift":
+		adapter = &adapters.SwiftAdapter{}
+	case "c":
+		adapter = &adapters.CAdapter{}
 	default:
 		return ""
 	}

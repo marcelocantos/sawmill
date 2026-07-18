@@ -1164,6 +1164,56 @@ targets:
     - research
     origin: manual
     discovered: 2026-07-03
+  T52:
+    name: Sawmill fully supports Java and C# — parsing, symbol indexing, queries, codegen, and dependency analysis on par with the existing five languages
+    status: achieved
+    value: 8.0
+    cost: 3.0
+    acceptance:
+    - JavaAdapter and CSharpAdapter implement the full LanguageAdapter interface, including FieldQuery, MethodQuery, DecoratorQuery, TypeUseQuery, and StructLiteralQuery
+    - ForExtension routes .java and .cs files so the model, forest, index, and watcher layers pick them up with no further changes
+    - codegen genForLang and the JS ctx.addImport extension map dispatch java/csharp
+    - dependency_usage alias.member queries work for Java (field_access + method_invocation) and C# (member_access_expression)
+    - Adapter query tests parse real Java and C# samples and assert every query's captures; a model-layer test proves .java/.cs files land in the symbol index end-to-end
+    context: Java and C# grammars ship with gotreesitter (pure Go, no CGo), so support is adapter-plus-registration work. Java import paths resolve against conventional source roots (src/main/java, src/test/java, src); C# using directives name namespaces with no filesystem correspondence, so import resolution stays unsupported there by design.
+    tags:
+    - languages
+    origin: user goal (session 2026-07-18)
+    discovered: 2026-07-18
+    achieved: 2026-07-18
+  T53:
+    name: Sawmill fully supports JavaScript, Ruby, PHP, Kotlin, Swift, and C — parsing, symbol indexing, queries, and codegen on par with the other seven languages
+    status: achieved
+    value: 8.0
+    cost: 3.0
+    acceptance:
+    - Six new adapters implement the full LanguageAdapter interface; ForExtension routes js/jsx/mjs/cjs, rb/rake/gemspec, php, kt/kts, swift, and c (with .h remaining on the C++ adapter)
+    - codegen genForLang and the JS ctx.addImport extension map dispatch all six langIds
+    - dependency_usage alias.member queries added where the grammar supports them (JS member_expression, Ruby constant-receiver call, C field_expression)
+    - Import-path resolution implemented where the language maps imports to files (JS relative imports, Ruby require/require_relative, Kotlin source roots); namespace/module-based languages (PHP, Swift) intentionally return no resolution
+    - Adapter query tests parse real samples per language and assert captures; the model-layer test proves all six file types land in the symbol index end-to-end
+    context: 'Java/C# (🎯T52) established the pattern: CST-dump-first query authoring against the gotreesitter grammars, then capture-asserting tests as the oracle. This round surfaced two engine gotchas now pinned by regression tests: tree-sitter patterns match field children in child order (the C/C++ field query listed declarator: before type: and silently matched nothing — pre-existing C++ bug fixed here), and gotreesitter bracket alternation over Ruby class/module nodes matches nothing (worked around with two separate patterns).'
+    tags:
+    - languages
+    origin: user goal (session 2026-07-18)
+    discovered: 2026-07-18
+    achieved: 2026-07-18
+  T54:
+    name: Every supported language has tool-level smoke coverage — parse, find_symbol, rename, add_field, and apply are exercised per language in CI
+    status: achieved
+    value: 5.0
+    cost: 1.0
+    acceptance:
+    - A table-driven MCP-handler test (TestLanguageMatrixSmoke) drives parse → find_symbol → rename → apply → add_field → apply for all 13 languages and asserts each step's on-disk outcome
+    - Every language passes every step — no skip escape hatch in the matrix
+    - Adding a language to ForExtension without a matrix row is a review-visible gap
+    context: 'Before this, only Go/Python had deep tool-level coverage; the 8 newest languages were grammar-verified only. Writing the matrix immediately surfaced a real bug: add_field assumed brace-delimited type bodies, so Ruby class/module (end-keyword bodies) failed — fixed by inserting before the final end token.'
+    tags:
+    - languages
+    - testing
+    origin: user request (session 2026-07-18)
+    discovered: 2026-07-18
+    achieved: 2026-07-18
   T6:
     name: Git history is semantically indexed — commits are parsed with Tree-sitter and symbol changes are queryable via MCP tools
     status: achieved

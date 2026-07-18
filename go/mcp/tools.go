@@ -37,6 +37,10 @@ import (
 //go:embed agents-guide.md
 var embeddedAgentsGuide string
 
+// AgentsGuide returns the embedded agents-guide.md content, for callers
+// outside the package (notably the CLI's --help-agent flag).
+func AgentsGuide() string { return embeddedAgentsGuide }
+
 // requireString returns the string argument named key, or an error if absent/empty.
 func requireString(args map[string]any, key string) (string, error) {
 	v, ok := args[key].(string)
@@ -1252,8 +1256,8 @@ func (h *Handler) handleApply(args map[string]any) (string, bool, error) {
 		}
 	}
 
-	// Notify the model manager to re-parse changed files immediately,
-	// bypassing the watcher's debounce delay.
+	// Re-parse changed files synchronously so the next preview in this
+	// session sees the just-written content instead of racing the watcher.
 	var changedPaths []string
 	for _, c := range h.pending.Changes {
 		changedPaths = append(changedPaths, c.Path)
@@ -1266,7 +1270,7 @@ func (h *Handler) handleApply(args map[string]any) (string, bool, error) {
 	h.pending = nil
 
 	if len(changedPaths) > 0 {
-		h.model.NotifyChanged(changedPaths)
+		h.model.ReindexNow(changedPaths)
 	}
 
 	return fmt.Sprintf("Applied %d change(s). Backups created. Call undo to revert.", applied), false, nil
@@ -3082,6 +3086,32 @@ func depSelectorQuery(adapter adapters.LanguageAdapter, alias string) string {
 	case *adapters.TypeScriptAdapter:
 		return fmt.Sprintf(
 			`(member_expression object: (identifier) @obj property: (property_identifier) @field (#eq? @obj %q))`,
+			alias,
+		)
+	case *adapters.JavaAdapter:
+		return fmt.Sprintf(
+			`[(field_access object: (identifier) @obj field: (identifier) @field (#eq? @obj %q)) `+
+				`(method_invocation object: (identifier) @obj name: (identifier) @field (#eq? @obj %q))]`,
+			alias, alias,
+		)
+	case *adapters.CSharpAdapter:
+		return fmt.Sprintf(
+			`(member_access_expression expression: (identifier) @obj name: (identifier) @field (#eq? @obj %q))`,
+			alias,
+		)
+	case *adapters.JavaScriptAdapter:
+		return fmt.Sprintf(
+			`(member_expression object: (identifier) @obj property: (property_identifier) @field (#eq? @obj %q))`,
+			alias,
+		)
+	case *adapters.RubyAdapter:
+		return fmt.Sprintf(
+			`(call receiver: (constant) @obj method: (identifier) @field (#eq? @obj %q))`,
+			alias,
+		)
+	case *adapters.CAdapter:
+		return fmt.Sprintf(
+			`(field_expression argument: (identifier) @obj field: (field_identifier) @field (#eq? @obj %q))`,
 			alias,
 		)
 	default:

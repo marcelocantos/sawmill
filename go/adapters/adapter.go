@@ -153,6 +153,22 @@ func ForExtension(ext string) LanguageAdapter {
 		return &TypeScriptAdapter{}
 	case "cpp", "cc", "cxx", "hpp", "hxx", "h":
 		return &CppAdapter{}
+	case "java":
+		return &JavaAdapter{}
+	case "cs":
+		return &CSharpAdapter{}
+	case "js", "jsx", "mjs", "cjs":
+		return &JavaScriptAdapter{}
+	case "rb", "rake", "gemspec":
+		return &RubyAdapter{}
+	case "php":
+		return &PhpAdapter{}
+	case "kt", "kts":
+		return &KotlinAdapter{}
+	case "swift":
+		return &SwiftAdapter{}
+	case "c":
+		return &CAdapter{}
 	default:
 		return nil
 	}
