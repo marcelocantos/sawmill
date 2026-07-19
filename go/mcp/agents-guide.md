@@ -13,6 +13,12 @@ preserve formatting, comments, and whitespace.
 
 Supported languages: Python, TypeScript, JavaScript, Rust, Go, C, C++, Java, C#, Ruby, PHP, Kotlin, Swift, Lua, Protobuf, Zig, Bash/Shell, SQL.
 
+**Capability cards:** do not assume every language has Go/Python-tier support.
+Call `languages` with no argument to list all languages, or
+`languages(language="bash")` / `languages(language=".proto")` for the full
+capability card and caveats (rename quality, add_field availability, merge
+tier, generated field numbers, dialect notes).
+
 ## Installation
 
 Installation is a **multi-step process**. It is not complete until all
@@ -265,6 +271,7 @@ fully-automated cross-repo rebases.
 |---|---|---|
 | `apply` | Write pending changes to disk | `confirm: true` |
 | `undo` | Revert the last apply | -- |
+| `languages` | List language support, or detail one language's capability card and caveats | optional `language` (id/name/ext), optional `format` |
 
 ## The `transform` Tool
 

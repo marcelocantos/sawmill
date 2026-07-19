@@ -244,6 +244,7 @@ call `apply` to write changes, `undo` to revert.
 | `apply` | Write pending changes to disk (with backup) |
 | `undo` | Revert the last apply from backups |
 | `get_agent_prompt` | Return the agent guide |
+| `languages` | List language support, or detail one language's capability card and caveats |
 
 ## Supported languages
 

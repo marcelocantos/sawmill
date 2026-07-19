@@ -155,6 +155,8 @@ func (h *Handler) Call(name string, args map[string]any) (string, bool, error) {
 		return h.handleListConventions(args)
 	case "get_agent_prompt":
 		return h.handleGetAgentPrompt(args)
+	case "languages":
+		return h.handleLanguages(args)
 	case "teach_by_example":
 		return h.handleTeachByExample(args)
 	case "add_parameter":
@@ -647,6 +649,17 @@ func Definitions() []mcpgo.Tool {
 		// get_agent_prompt
 		mcpgo.NewTool("get_agent_prompt",
 			mcpgo.WithDescription("Return the Sawmill agent guide — a detailed reference for AI coding agents on how to use all Sawmill tools."),
+		),
+
+		// languages
+		mcpgo.NewTool("languages",
+			mcpgo.WithDescription("Report Sawmill language support and capability caveats. Call with no language to list every supported language and a one-line summary; pass language (id, name, or extension, e.g. \"lua\", \"bash\", \".proto\") for the full capability card including notes agents must read before rename/add_field. Prefer this over assuming every language has full Go/Python-tier support."),
+			mcpgo.WithString("language",
+				mcpgo.Description("Optional language id, name, or file extension (e.g. \"go\", \"SQL\", \"sh\", \".proto\"). Omit to list all."),
+			),
+			mcpgo.WithString("format",
+				mcpgo.Description("Output format: \"text\" (default) or \"json\""),
+			),
 		),
 
 		// teach_by_example

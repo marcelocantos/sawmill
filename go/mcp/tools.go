@@ -1682,6 +1682,113 @@ func (h *Handler) handleListConventions(_ map[string]any) (string, bool, error) 
 	return sb.String(), false, nil
 }
 
+// ---- languages ------------------------------------------------------------
+
+// handleLanguages implements the languages MCP tool — list or detail language
+// capability cards so agents see caveats without reading the agents guide.
+func (h *Handler) handleLanguages(args map[string]any) (string, bool, error) {
+	format, _ := args["format"].(string)
+	if format == "" {
+		format = "text"
+	}
+	if format != "text" && format != "json" {
+		return fmt.Sprintf("invalid format %q (want \"text\" or \"json\")", format), true, nil
+	}
+
+	langKey, _ := args["language"].(string)
+	langKey = strings.TrimSpace(langKey)
+
+	if langKey != "" {
+		info := adapters.LookupLanguage(langKey)
+		if info == nil {
+			return fmt.Sprintf("unknown language %q — call languages with no argument to list supported ids", langKey), true, nil
+		}
+		if format == "json" {
+			b, err := json.MarshalIndent(info, "", "  ")
+			if err != nil {
+				return fmt.Sprintf("marshalling language info: %v", err), true, nil
+			}
+			return string(b), false, nil
+		}
+		return formatLanguageDetail(info), false, nil
+	}
+
+	all := adapters.AllLanguages()
+	if format == "json" {
+		b, err := json.MarshalIndent(all, "", "  ")
+		if err != nil {
+			return fmt.Sprintf("marshalling languages: %v", err), true, nil
+		}
+		return string(b), false, nil
+	}
+	return formatLanguageList(all), false, nil
+}
+
+func formatLanguageList(all []adapters.LanguageInfo) string {
+	var sb strings.Builder
+	fmt.Fprintf(&sb, "Supported languages (%d). Call languages(language=<id>) for full capability cards and caveats.\n\n", len(all))
+	for _, info := range all {
+		caps := languageCapSummary(info)
+		note := ""
+		if len(info.Notes) > 0 {
+			note = " — " + info.Notes[0]
+		}
+		fmt.Fprintf(&sb, "  %-12s  ext=%-20s  %s%s\n",
+			info.ID, strings.Join(info.Extensions, ","), caps, note)
+	}
+	return sb.String()
+}
+
+func formatLanguageDetail(info *adapters.LanguageInfo) string {
+	var sb strings.Builder
+	fmt.Fprintf(&sb, "%s (%s)\n", info.Name, info.ID)
+	fmt.Fprintf(&sb, "  extensions:      %s\n", strings.Join(info.Extensions, ", "))
+	fmt.Fprintf(&sb, "  parse:           %v\n", info.Parse)
+	fmt.Fprintf(&sb, "  find_symbol:     %v\n", info.FindSymbol)
+	fmt.Fprintf(&sb, "  rename:          %v\n", info.Rename)
+	fmt.Fprintf(&sb, "  add_field:       %v\n", info.AddField)
+	fmt.Fprintf(&sb, "  import_rewrite:  %v\n", info.ImportRewrite)
+	fmt.Fprintf(&sb, "  ast_merge:       %s\n", info.ASTMerge)
+	if len(info.Formatter) > 0 {
+		fmt.Fprintf(&sb, "  formatter:       %s\n", strings.Join(info.Formatter, " "))
+	} else {
+		sb.WriteString("  formatter:       (none)\n")
+	}
+	if len(info.LSP) > 0 {
+		fmt.Fprintf(&sb, "  lsp:             %s\n", strings.Join(info.LSP, " "))
+	} else {
+		sb.WriteString("  lsp:             (none)\n")
+	}
+	if len(info.Notes) > 0 {
+		sb.WriteString("  notes:\n")
+		for _, n := range info.Notes {
+			fmt.Fprintf(&sb, "    - %s\n", n)
+		}
+	}
+	return sb.String()
+}
+
+func languageCapSummary(info adapters.LanguageInfo) string {
+	var parts []string
+	if info.Parse {
+		parts = append(parts, "parse")
+	}
+	if info.FindSymbol {
+		parts = append(parts, "find_symbol")
+	}
+	if info.Rename {
+		parts = append(parts, "rename")
+	}
+	if info.AddField {
+		parts = append(parts, "add_field")
+	}
+	if info.ImportRewrite {
+		parts = append(parts, "import_rewrite")
+	}
+	parts = append(parts, "merge="+info.ASTMerge)
+	return strings.Join(parts, ",")
+}
+
 // ---- get_agent_prompt -----------------------------------------------------
 
 func (h *Handler) handleGetAgentPrompt(_ map[string]any) (string, bool, error) {
