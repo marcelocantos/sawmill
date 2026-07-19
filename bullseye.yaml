@@ -768,7 +768,6 @@ targets:
     achieved: 2026-05-17
   T36:
     name: find_by_concept resolves real-world concept queries from the grep-audit corpus in a single call, with measurable reduction in observed grep-and-read cycles
-    kind: verify
     status: achieved
     value: 0.0
     cost: 0.0
@@ -778,8 +777,6 @@ targets:
     - Recall vs. a hand-curated ground-truth set is recorded and documented in docs/
     - Precision is high enough that the top-5 results are dominated by genuinely concept-relevant symbols, not incidental keyword hits
     context: 'Concept search is the first Sawmill capability whose value is largely empirical (does it actually replace grep cycles?) rather than structural (does the AST transform produce the right tree?). The audit corpus gives us a ground-truth set: real queries Claude ran, the symbols Claude ultimately found, and the number of grep rounds it took. A verify checkpoint anchored on that corpus turns the capability from "we shipped a tool" into "the tool measurably collapses the workflow."'
-    verifies:
-    - T35
     tags:
     - search
     - concept
@@ -1214,6 +1211,25 @@ targets:
     origin: user request (session 2026-07-18)
     discovered: 2026-07-18
     achieved: 2026-07-18
+  T55:
+    name: Sawmill supports Lua, Protobuf, Zig, Bash, and SQL at matrix floor (parse, find_symbol, rename; add_field where the language has types)
+    status: achieved
+    value: 8.0
+    cost: 5.0
+    actual_cost: 3.0
+    acceptance:
+    - Lua/Protobuf/Zig/Bash/SQL adapters implement LanguageAdapter and are registered in ForExtension
+    - tscompat exports grammars for all five languages
+    - Adapter query unit tests cover function/type/import/field captures for languages where applicable
+    - language_matrix_test exercises each language (add_field skip allowed for Bash)
+    - README supported-languages table lists all five with accurate capability notes
+    context: 'Follow-up to language-coverage discussion: priorities 1–5 (Lua, Protobuf, Zig, Bash, SQL). Bash is T1+ (no real types/fields); SQL maps tables/columns onto type/field.'
+    tags:
+    - languages
+    - adapters
+    origin: manual
+    discovered: 2026-07-19
+    achieved: 2026-07-19
   T6:
     name: Git history is semantically indexed — commits are parsed with Tree-sitter and symbol changes are queryable via MCP tools
     status: achieved
