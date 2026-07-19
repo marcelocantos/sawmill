@@ -21,6 +21,9 @@ type languageMatrixCase struct {
 	typeName     string // Widget, or the language's casing of it
 	fieldType    string
 	defaultValue string
+	// skipAddField documents languages with no type/field model (e.g. Bash).
+	// When true, the matrix still requires find_symbol + rename + apply.
+	skipAddField bool
 }
 
 var languageMatrix = []languageMatrixCase{
@@ -205,6 +208,84 @@ let r = calc(x: 1)
 `,
 		typeName: "Widget", fieldType: "Int", defaultValue: "0",
 	},
+	{
+		lang:     "lua",
+		filename: "app.lua",
+		source: `Widget = {
+  w = 1,
+}
+
+function calc(x)
+  return x
+end
+
+calc(1)
+`,
+		typeName: "Widget", fieldType: "number", defaultValue: "0",
+	},
+	{
+		lang:     "protobuf",
+		filename: "app.proto",
+		source: `syntax = "proto3";
+
+message Widget {
+  int32 w = 1;
+}
+
+message Req {
+  int32 x = 1;
+}
+
+service Math {
+  rpc calc(Req) returns (Req);
+}
+`,
+		typeName: "Widget", fieldType: "int32", defaultValue: "0",
+	},
+	{
+		lang:     "zig",
+		filename: "app.zig",
+		source: `const Widget = struct {
+    w: i32,
+};
+
+fn calc(x: i32) i32 {
+    return x;
+}
+
+pub fn main() void {
+    _ = calc(1);
+}
+`,
+		typeName: "Widget", fieldType: "i32", defaultValue: "0",
+	},
+	{
+		lang:     "bash",
+		filename: "app.sh",
+		source: `calc() {
+  echo "$1"
+}
+
+use() {
+  calc 1
+}
+`,
+		// Shell has functions but no types/fields.
+		skipAddField: true,
+	},
+	{
+		lang:     "sql",
+		filename: "app.sql",
+		source: `CREATE TABLE Widget (
+  w INTEGER
+);
+
+CREATE OR REPLACE FUNCTION calc(x int) RETURNS int AS 'SELECT $1' LANGUAGE sql;
+
+SELECT calc(1);
+`,
+		typeName: "Widget", fieldType: "INTEGER", defaultValue: "0",
+	},
 }
 
 // TestLanguageMatrixSmoke drives parse → find_symbol → rename → add_field →
@@ -248,6 +329,10 @@ func TestLanguageMatrixSmoke(t *testing.T) {
 			}
 			if !strings.Contains(string(content), "compute") {
 				t.Errorf("'compute' missing after rename apply:\n%s", content)
+			}
+
+			if tc.skipAddField {
+				return
 			}
 
 			// 4. add_field inserts a new field into the type.

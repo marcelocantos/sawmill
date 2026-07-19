@@ -10,37 +10,40 @@ import (
 	"github.com/marcelocantos/sawmill/rewrite"
 )
 
-// bodyKinds are tree-sitter node kinds that represent a struct/class body.
-var bodyKinds = map[string]bool{
-	"field_declaration_list": true,
-	"struct_body":            true,
-	"class_body":             true,
-	"block":                  true,
-	"body":                   true,
-	"declaration_list":       true,
+// bodyKinds maps tree-sitter node kinds that represent a type body to the
+// closing delimiter to insert before (usually '}' ; SQL table params use ')').
+var bodyKinds = map[string]byte{
+	"field_declaration_list": '}',
+	"struct_body":            '}',
+	"class_body":             '}',
+	"block":                  '}',
+	"body":                   '}',
+	"declaration_list":       '}',
+	"message_body":           '}', // protobuf
+	"struct_declaration":     '}', // zig: fields are direct children
+	"table_constructor":      '}', // lua tables used as type stand-ins
+	"table_parameters":        ')', // sql CREATE TABLE (...)
 }
 
-// findClosingBrace walks backwards from endByte to find the '}' character.
-func findClosingBrace(source []byte, startByte, endByte uint) uint {
+// findClosingDelimiter walks backwards from endByte to find close.
+func findClosingDelimiter(source []byte, startByte, endByte uint, close byte) uint {
 	for i := endByte - 1; i > startByte; i-- {
-		if source[i] == '}' {
+		if source[i] == close {
 			return i
 		}
 	}
 	return endByte
 }
 
-// findBodyInsertPos searches the subtree rooted at node for a body-like child
-// and returns the byte position just before its closing brace. Returns 0 and
-// false if no body is found.
-func findBodyInsertPos(source []byte, node tree_sitter.Node) (uint, bool) {
-	// BFS through children up to 4 levels deep.
-	type entry struct {
-		start, end uint
-		kind       string
-		node       tree_sitter.Node
-	}
+// findClosingBrace walks backwards from endByte to find the '}' character.
+func findClosingBrace(source []byte, startByte, endByte uint) uint {
+	return findClosingDelimiter(source, startByte, endByte, '}')
+}
 
+// findBodyInsertPos searches the subtree rooted at node for a body-like child
+// and returns the byte position just before its closing delimiter. Returns 0
+// and false if no body is found.
+func findBodyInsertPos(source []byte, node tree_sitter.Node) (uint, bool) {
 	// Ruby class/module bodies close with an `end` keyword, not a brace —
 	// insert immediately before the final `end` token.
 	if kind := node.Kind(); kind == "class" || kind == "module" {
@@ -55,9 +58,8 @@ func findBodyInsertPos(source []byte, node tree_sitter.Node) (uint, bool) {
 	}
 
 	// Check the node itself first.
-	if bodyKinds[node.Kind()] {
-		pos := findClosingBrace(source, node.StartByte(), node.EndByte())
-		return pos, true
+	if close, ok := bodyKinds[node.Kind()]; ok {
+		return findClosingDelimiter(source, node.StartByte(), node.EndByte(), close), true
 	}
 
 	queue := []tree_sitter.Node{node}
@@ -66,8 +68,8 @@ func findBodyInsertPos(source []byte, node tree_sitter.Node) (uint, bool) {
 		for _, n := range queue {
 			cursor := n.Walk()
 			for _, child := range n.Children(cursor) {
-				if bodyKinds[child.Kind()] {
-					pos := findClosingBrace(source, child.StartByte(), child.EndByte())
+				if close, ok := bodyKinds[child.Kind()]; ok {
+					pos := findClosingDelimiter(source, child.StartByte(), child.EndByte(), close)
 					cursor.Close()
 					return pos, true
 				}

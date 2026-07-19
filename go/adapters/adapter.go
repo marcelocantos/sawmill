@@ -169,6 +169,16 @@ func ForExtension(ext string) LanguageAdapter {
 		return &SwiftAdapter{}
 	case "c":
 		return &CAdapter{}
+	case "lua":
+		return &LuaAdapter{}
+	case "proto":
+		return &ProtoAdapter{}
+	case "zig":
+		return &ZigAdapter{}
+	case "sh", "bash":
+		return &BashAdapter{}
+	case "sql":
+		return &SqlAdapter{}
 	default:
 		return nil
 	}
