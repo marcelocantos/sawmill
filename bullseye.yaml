@@ -1136,20 +1136,23 @@ targets:
     achieved: 2026-04-26
   T50:
     name: sawmill rename is scope-aware, renaming only the intended binding rather than every matching identifier
-    status: identified
+    status: achieved
     value: 8.0
     cost: 5.0
+    actual_cost: 5.0
     acceptance:
     - rename resolves the target binding/scope and renames only references to it, not all text matches
     - A shadowed or unrelated same-named identifier is left untouched; regression test added
     context: 'HIGH. go/rewrite/rewrite.go:79: rename is scope-blind — it renames every identifier whose text matches, across all bindings and the whole codebase. Unverified Fable-5 finder-stage candidate; verify before implementing. See docs/audit/fable-2026-07.md. 2026-07-06 remediation: reproduced (RenameInFile matches identifiers by pure string equality with no binding or scope resolution — confirmed real), but ESCALATED, not fixed here: a correct fix needs true binding resolution (LSP-backed semantic rename or scope analysis), a feature-sized change rather than a defensive patch; the audit itself rated this UNCERTAIN. Kept identified; recommend scoping as its own semantic-rename target.'
     origin: manual
     discovered: 2026-07-02
+    achieved: 2026-07-25
   T51:
     name: 'sawmill checks cross-implementation behavioural equivalence: two implementations, a common seeded input suite, trace divergence reported'
-    status: identified
+    status: achieved
     value: 0.0
     cost: 0.0
+    actual_cost: 8.0
     acceptance:
     - 'A tool (generalisation of semantic_diff, or a sibling) accepts two runnable implementations plus an input-tape specification and reports per-step trace divergence: percentiles as a function of horizon, plus first-divergence localisation with paired state'
     - 'Acceptance semantics support the Lyapunov split: per-step epsilon gates plus distributional/qualitative invariants at long horizons (bit-exact long-horizon match across engines is explicitly not the bar)'
@@ -1161,6 +1164,7 @@ targets:
     - research
     origin: manual
     discovered: 2026-07-03
+    achieved: 2026-07-25
   T52:
     name: Sawmill fully supports Java and C# — parsing, symbol indexing, queries, codegen, and dependency analysis on par with the existing five languages
     status: achieved
