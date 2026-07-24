@@ -294,7 +294,7 @@ func Definitions() []mcpgo.Tool {
 
 		// rename
 		mcpgo.NewTool("rename",
-			mcpgo.WithDescription("AST-level rename of an identifier across the codebase. Produces a diff preview; call apply to write changes."),
+			mcpgo.WithDescription("Scope-aware AST rename of an identifier. For Go and Python, renames only the targeted binding (not every text match): without an anchor, module/file-scope bindings of `from` plus free references; nested/shadowing same-named locals are left alone. Pass offset or line+column to select a specific binding (e.g. a parameter or shadowed local). Other languages fall back to identifier-query text matching. Produces a diff preview; call apply to write changes."),
 			mcpgo.WithString("from",
 				mcpgo.Required(),
 				mcpgo.Description("Identifier to rename"),
@@ -308,6 +308,15 @@ func Definitions() []mcpgo.Tool {
 			),
 			mcpgo.WithBoolean("format",
 				mcpgo.Description("Run the language formatter after renaming"),
+			),
+			mcpgo.WithNumber("offset",
+				mcpgo.Description("Byte offset of an identifier occurrence that anchors which binding to rename (Go/Python). Prefer this or line+column when renaming a local/parameter."),
+			),
+			mcpgo.WithNumber("line",
+				mcpgo.Description("1-based line of an identifier occurrence that anchors the binding (Go/Python). Used with column; ignored if offset is set."),
+			),
+			mcpgo.WithNumber("column",
+				mcpgo.Description("1-based column (default 1) for the line anchor."),
 			),
 		),
 

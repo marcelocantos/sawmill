@@ -172,6 +172,25 @@ func (h *Handler) handleRename(args map[string]any) (string, bool, error) {
 	pathFilter := optString(args, "path")
 	format := optBool(args, "format")
 
+	// Optional binding anchor: byte offset, or 1-based line + column.
+	hasOffset := false
+	var fixedOffset uint
+	if rawOff, ok := args["offset"]; ok && rawOff != nil {
+		fixedOffset = uint(optInt(args, "offset"))
+		hasOffset = true
+	}
+	line, col := 0, 0
+	if _, hasLine := args["line"]; hasLine && !hasOffset {
+		line = optInt(args, "line")
+		if line < 1 {
+			return "line must be 1-based (>= 1)", true, nil
+		}
+		col = optInt(args, "column")
+		if col < 1 {
+			col = 1
+		}
+	}
+
 	h.mu.Lock()
 	defer h.mu.Unlock()
 
@@ -190,7 +209,18 @@ func (h *Handler) handleRename(args map[string]any) (string, bool, error) {
 
 	for _, acc := range accessors {
 		err := acc.WithTree(func(source []byte, tree *tree_sitter.Tree) error {
-			newSource, rerr := rewrite.RenameInFile(source, tree, acc.Adapter(), from, to)
+			var opts *rewrite.RenameOpts
+			if hasOffset {
+				off := fixedOffset
+				opts = &rewrite.RenameOpts{Offset: &off}
+			} else if line > 0 {
+				off, ok := byteOffsetForLineCol(source, line, col)
+				if !ok {
+					return nil // line past EOF in this file — skip
+				}
+				opts = &rewrite.RenameOpts{Offset: &off}
+			}
+			newSource, rerr := rewrite.RenameInFileOpts(source, tree, acc.Adapter(), from, to, opts)
 			if rerr != nil {
 				return rerr
 			}
@@ -227,6 +257,41 @@ func (h *Handler) handleRename(args map[string]any) (string, bool, error) {
 		sb.WriteString("\n")
 	}
 	return sb.String(), false, nil
+}
+
+// byteOffsetForLineCol converts a 1-based line and column to a byte offset.
+// column 1 is the first character on the line. Returns ok=false if line is
+// past the end of source.
+func byteOffsetForLineCol(source []byte, line, col int) (uint, bool) {
+	if line < 1 {
+		return 0, false
+	}
+	if col < 1 {
+		col = 1
+	}
+	curLine := 1
+	lineStart := 0
+	for i := 0; i < len(source); i++ {
+		if curLine == line {
+			off := lineStart + (col - 1)
+			if off > len(source) {
+				off = len(source)
+			}
+			return uint(off), true
+		}
+		if source[i] == '\n' {
+			curLine++
+			lineStart = i + 1
+		}
+	}
+	if curLine == line {
+		off := lineStart + (col - 1)
+		if off > len(source) {
+			off = len(source)
+		}
+		return uint(off), true
+	}
+	return 0, false
 }
 
 // ---- query ----------------------------------------------------------------

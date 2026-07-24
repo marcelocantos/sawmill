@@ -49,6 +49,9 @@ var languageCatalog = []LanguageInfo{
 		Formatter: []string{"ruff", "format", "-"},
 		LSP:       []string{"pyright-langserver", "--stdio"},
 		ASTMerge:  "full",
+		Notes: []string{
+			"Rename is scope-aware (module/function/class LEGB): without offset/line, renames module-level bindings of `from` and free refs, leaving nested/shadowing locals alone. Pass offset or line+column to target a specific local/parameter.",
+		},
 	},
 	{
 		ID: "go", Name: "Go", Extensions: []string{"go"},
@@ -56,6 +59,9 @@ var languageCatalog = []LanguageInfo{
 		Formatter: []string{"gofmt"},
 		LSP:       []string{"gopls"},
 		ASTMerge:  "full",
+		Notes: []string{
+			"Rename is scope-aware (package/func/block + struct fields keyed by owner type): without offset/line, renames package-level bindings of `from` and free refs; shadowed locals and same-named fields on other types are left alone. Pass offset or line+column to target a parameter, local, or field.",
+		},
 	},
 	{
 		ID: "rust", Name: "Rust", Extensions: []string{"rs"},

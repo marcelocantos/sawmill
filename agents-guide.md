@@ -173,7 +173,7 @@ and failures with `index_status`. Summaries also feed `semantic_search`
 
 | Tool | Purpose | Key params |
 |---|---|---|
-| `rename` | Rename a symbol across files | `from`, `to` |
+| `rename` | Scope-aware rename (Go/Python binding resolution; other langs identifier-query match). Optional `offset` or `line`+`column` anchors a specific binding | `from`, `to`, optional `path`, `offset`, `line`, `column`, `format` |
 | `transform` | Match/act structural transform | See below |
 | `transform_batch` | Multiple transforms in sequence | `transforms` (array) |
 | `codegen` | JavaScript program against the codebase | `program` |
