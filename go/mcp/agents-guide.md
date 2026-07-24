@@ -239,6 +239,7 @@ and failures with `index_status`. Summaries also feed `semantic_search`
 | `semantic_diff` | Structural AST diff — detects moves, renames, signature changes, key-level data format changes | `base`, `head`, `path` |
 | `api_changelog` | Markdown API surface changelog between two refs | `base`, `head` |
 | `git_semantic_bisect` | Find the commit where a structural predicate flipped (binary search, no code execution) | `predicate` (JSON), `good`, `bad` |
+| `behavioural_equiv` | **Behavioural/trace** equivalence of two runnable implementations (not AST). Per-horizon percentiles, first-divergence localisation, Lyapunov-bounded accept. **Goodhart guard:** fixes must cite structural reference divergences — never constant-tune against the diff. | `mode` (batch/study/accept), `instance` (particle), `n_scenarios`, `ticks`, `port_damping`, `seed`, `format` |
 
 ### Multi-repo orchestration
 

@@ -235,6 +235,8 @@ func (h *Handler) Call(name string, args map[string]any) (string, bool, error) {
 		return h.handleApplyMultiRootPR(args)
 	case "merge_three_way":
 		return h.handleMergeThreeWay(args)
+	case "behavioural_equiv":
+		return h.handleBehaviouralEquiv(args)
 	case "teach_concept":
 		return h.handleTeachConcept(args)
 	case "list_concepts":
@@ -1343,6 +1345,48 @@ Returns JSON: {merged: string, conflicts: [...], stats: {...}, clean: bool}.`),
 			),
 			mcpgo.WithString("marker_style",
 				mcpgo.Description(`Conflict marker style: "diff3" (default, includes ||||||| base) or "merge" (ours/theirs only).`),
+			),
+		),
+
+		// behavioural_equiv — migration-fidelity oracle (🎯T51)
+		mcpgo.NewTool("behavioural_equiv",
+			mcpgo.WithDescription(`Behavioural/trace equivalence oracle for two runnable implementations.
+
+Drives both with a single materialised input tape, reports per-horizon divergence percentiles (p50/p90/p99/max), first-divergence localisation with paired states, and optionally gates acceptance via the Lyapunov split: short-horizon per-step epsilon (p99 ≤ ε) plus long-horizon distributional/qualitative invariants. Bit-exact long-horizon match across engines is explicitly NOT the bar.
+
+NOT semantic_diff (AST structure) and NOT teach_equivalence (syntactic pattern pairs). This tool is runtime behaviour.
+
+GOODHART GUARD: fixes that improve the report MUST trace to a structural divergence in the reference source (different equations, missing constraints, collapsed discrete states). Never constant-tune against the diff merely because a percentile shrinks. Acceptance refuses the tune seed pool — only holdout seeds can certify (mode=accept).
+
+First-slice instance "particle": 1-D box with exponential damping (ref) vs linear drag (port) — the TiltBuggy damper-divergence class in miniature (horizons {1,3,10,30,60,90}). Set port_damping=0.8 (default) for the correct port; 0.6 for a mutant that must fail accept. Custom engines: use the Go package github.com/marcelocantos/sawmill/diffharness (Engine/Tape/Differ interfaces).
+
+Modes: batch (tune-pool report + worst seeds), study (paired replay for one seed), accept (holdout pool + policy gate). Stateless — no parse() required.`),
+			mcpgo.WithString("mode",
+				mcpgo.Description(`"batch" (default: tune-pool report), "study" (paired replay; requires seed), "accept" (holdout pool + Lyapunov/Goodhart gate).`),
+			),
+			mcpgo.WithString("instance",
+				mcpgo.Description(`Built-in instance. Default/only: "particle" (TiltBuggy-shape demo).`),
+			),
+			mcpgo.WithNumber("n_scenarios",
+				mcpgo.Description("Number of scenarios for batch/accept. Default 200."),
+			),
+			mcpgo.WithNumber("ticks",
+				mcpgo.Description("Ticks (horizon ladder max) per scenario. Default 90."),
+			),
+			mcpgo.WithNumber("threads",
+				mcpgo.Description("Parallel workers for batch/accept. Default GOMAXPROCS."),
+			),
+			mcpgo.WithNumber("port_damping",
+				mcpgo.Description("Particle port linear-drag coefficient. 0.8 = correct (default); 0.6 = biased mutant for mutation checks."),
+			),
+			mcpgo.WithString("seed",
+				mcpgo.Description("Hex (or decimal) scenario seed for mode=study. Copy from batch worst-offenders."),
+			),
+			mcpgo.WithString("pool",
+				mcpgo.Description(`For mode=batch only: "tune" (default) or "holdout". mode=accept always uses holdout.`),
+			),
+			mcpgo.WithString("format",
+				mcpgo.Description(`"text" (default) or "json".`),
 			),
 		),
 	}
