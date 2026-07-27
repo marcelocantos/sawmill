@@ -105,6 +105,15 @@ func New(version string) *Server {
 		version,
 		mcpsrv.WithToolCapabilities(false),
 		mcpsrv.WithHooks(hooks),
+		// Initialize-time instructions: agents see this without calling
+		// get_agent_prompt. Keep short; full capability cards are languages.
+		mcpsrv.WithInstructions(
+			"Sawmill is an AST transform server. First call parse(path=...) to bind a project root. "+
+				"Before renaming or adding fields in an unfamiliar language, call languages(language=<id or ext>) "+
+				"for capability caveats (Bash rename is best-effort; SQL is dialect-agnostic; add_field is unavailable on Bash; "+
+				"AST merge is full only for Python and Go). Call languages with no argument to list all supported languages. "+
+				"Call get_agent_prompt for the full agent guide.",
+		),
 	)
 
 	resolve := func(ctx context.Context) *mcp.Handler {

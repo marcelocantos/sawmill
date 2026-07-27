@@ -26,17 +26,72 @@ type Edit struct {
 	Replacement string
 }
 
-// RenameInFile renames all identifier occurrences of from to to within the
-// given parsed source.
+// RenameOpts controls scope-aware rename behaviour.
 //
-// It operates at the AST level — only nodes captured by the adapter's
-// identifier query are considered, so string literals and comments are left
-// untouched.
+// Offset, when non-nil, is a byte offset into source that selects which
+// binding to rename: the identifier covering that offset is resolved, and
+// only definition/reference sites of that same binding are rewritten.
+//
+// When Offset is nil (the default), rename targets file/module-scope bindings
+// of From plus free references of that name, leaving nested/shadowing locals
+// and unrelated same-named bindings untouched. If there is no module-level
+// binding but exactly one nested binding of From, that unique binding is
+// renamed. Multiple nested bindings without an Offset produce no edits
+// (ambiguous) rather than rewriting every text match.
+//
+// Languages without a scope analyser (everything except Go and Python today)
+// fall back to renaming every identifier-query capture whose text equals From.
+type RenameOpts struct {
+	Offset *uint
+}
+
+// RenameInFile renames identifier occurrences of from to to within the given
+// parsed source. It is equivalent to RenameInFileOpts with a nil Offset.
+//
+// For Go and Python it is scope-aware (see RenameOpts). Other languages use
+// AST-level text matching of the adapter's identifier query (string literals
+// and comments are still left untouched).
 //
 // The function accepts the individual fields of a ParsedFile rather than a
 // *forest.ParsedFile directly, to avoid a circular import between the forest
 // and rewrite packages.
 func RenameInFile(
+	source []byte,
+	tree *tree_sitter.Tree,
+	adapter adapters.LanguageAdapter,
+	from, to string,
+) ([]byte, error) {
+	return RenameInFileOpts(source, tree, adapter, from, to, nil)
+}
+
+// RenameInFileOpts is RenameInFile with explicit RenameOpts.
+func RenameInFileOpts(
+	source []byte,
+	tree *tree_sitter.Tree,
+	adapter adapters.LanguageAdapter,
+	from, to string,
+	opts *RenameOpts,
+) ([]byte, error) {
+	var offset *uint
+	if opts != nil {
+		offset = opts.Offset
+	}
+
+	if analysis := analyseFile(source, tree, adapter); analysis != nil {
+		targets := selectTargets(analysis, from, offset)
+		edits := editsForTargets(analysis, from, to, targets)
+		if len(edits) == 0 {
+			return source, nil
+		}
+		return ApplyEdits(source, edits), nil
+	}
+
+	return renameByIdentifierQuery(source, tree, adapter, from, to)
+}
+
+// renameByIdentifierQuery is the legacy scope-blind path used for languages
+// that have no binding analyser.
+func renameByIdentifierQuery(
 	source []byte,
 	tree *tree_sitter.Tree,
 	adapter adapters.LanguageAdapter,

@@ -11,7 +11,13 @@ describe the transformation they want and Sawmill performs the
 mechanical rewriting -- producing minimal, diff-friendly changes that
 preserve formatting, comments, and whitespace.
 
-Supported languages: Python, TypeScript, JavaScript, Rust, Go, C, C++, Java, C#, Ruby, PHP, Kotlin, Swift.
+Supported languages: Python, TypeScript, JavaScript, Rust, Go, C, C++, Java, C#, Ruby, PHP, Kotlin, Swift, Lua, Protobuf, Zig, Bash/Shell, SQL.
+
+**Capability cards:** do not assume every language has Go/Python-tier support.
+Call `languages` with no argument to list all languages, or
+`languages(language="bash")` / `languages(language=".proto")` for the full
+capability card and caveats (rename quality, add_field availability, merge
+tier, generated field numbers, dialect notes).
 
 ## Installation
 
@@ -167,7 +173,7 @@ and failures with `index_status`. Summaries also feed `semantic_search`
 
 | Tool | Purpose | Key params |
 |---|---|---|
-| `rename` | Rename a symbol across files | `from`, `to` |
+| `rename` | Scope-aware rename (Go/Python binding resolution; other langs identifier-query match). Optional `offset` or `line`+`column` anchors a specific binding | `from`, `to`, optional `path`, `offset`, `line`, `column`, `format` |
 | `transform` | Match/act structural transform | See below |
 | `transform_batch` | Multiple transforms in sequence | `transforms` (array) |
 | `codegen` | JavaScript program against the codebase | `program` |
@@ -233,6 +239,7 @@ and failures with `index_status`. Summaries also feed `semantic_search`
 | `semantic_diff` | Structural AST diff — detects moves, renames, signature changes, key-level data format changes | `base`, `head`, `path` |
 | `api_changelog` | Markdown API surface changelog between two refs | `base`, `head` |
 | `git_semantic_bisect` | Find the commit where a structural predicate flipped (binary search, no code execution) | `predicate` (JSON), `good`, `bad` |
+| `behavioural_equiv` | **Behavioural/trace** equivalence of two runnable implementations (not AST). Per-horizon percentiles, first-divergence localisation, Lyapunov-bounded accept. **Goodhart guard:** fixes must cite structural reference divergences — never constant-tune against the diff. | `mode` (batch/study/accept), `instance` (particle), `n_scenarios`, `ticks`, `port_damping`, `seed`, `format` |
 
 ### Multi-repo orchestration
 
@@ -265,6 +272,7 @@ fully-automated cross-repo rebases.
 |---|---|---|
 | `apply` | Write pending changes to disk | `confirm: true` |
 | `undo` | Revert the last apply | -- |
+| `languages` | List language support, or detail one language's capability card and caveats | optional `language` (id/name/ext), optional `format` |
 
 ## The `transform` Tool
 

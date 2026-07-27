@@ -34,7 +34,7 @@ go/
   daemon/daemon.go  — HTTP MCP server (mcp-go streamable HTTP transport)
   forest/forest.go  — Forest/ParsedFile, apply_with_backup, undo
   store/store.go    — SQLite store (files, symbols, recipes, conventions)
-  adapters/         — Language adapters (Python, Rust, TS, JS, Go, C, C++, Java, C#, Ruby, PHP, Kotlin, Swift)
+  adapters/         — Language adapters (Python, Rust, TS, JS, Go, C, C++, Java, C#, Ruby, PHP, Kotlin, Swift, Lua, Protobuf, Zig, Bash, SQL)
   transform/        — Match/act engine
   rewrite/          — Range-based source rewriting, AST rename, diff
   codegen/          — JavaScript code generation runtime (ctx API)

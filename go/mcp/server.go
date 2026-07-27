@@ -155,6 +155,8 @@ func (h *Handler) Call(name string, args map[string]any) (string, bool, error) {
 		return h.handleListConventions(args)
 	case "get_agent_prompt":
 		return h.handleGetAgentPrompt(args)
+	case "languages":
+		return h.handleLanguages(args)
 	case "teach_by_example":
 		return h.handleTeachByExample(args)
 	case "add_parameter":
@@ -233,6 +235,8 @@ func (h *Handler) Call(name string, args map[string]any) (string, bool, error) {
 		return h.handleApplyMultiRootPR(args)
 	case "merge_three_way":
 		return h.handleMergeThreeWay(args)
+	case "behavioural_equiv":
+		return h.handleBehaviouralEquiv(args)
 	case "teach_concept":
 		return h.handleTeachConcept(args)
 	case "list_concepts":
@@ -292,7 +296,7 @@ func Definitions() []mcpgo.Tool {
 
 		// rename
 		mcpgo.NewTool("rename",
-			mcpgo.WithDescription("AST-level rename of an identifier across the codebase. Produces a diff preview; call apply to write changes."),
+			mcpgo.WithDescription("Scope-aware AST rename of an identifier. For Go and Python, renames only the targeted binding (not every text match): without an anchor, module/file-scope bindings of `from` plus free references; nested/shadowing same-named locals are left alone. Pass offset or line+column to select a specific binding (e.g. a parameter or shadowed local). Other languages fall back to identifier-query text matching. Produces a diff preview; call apply to write changes."),
 			mcpgo.WithString("from",
 				mcpgo.Required(),
 				mcpgo.Description("Identifier to rename"),
@@ -306,6 +310,15 @@ func Definitions() []mcpgo.Tool {
 			),
 			mcpgo.WithBoolean("format",
 				mcpgo.Description("Run the language formatter after renaming"),
+			),
+			mcpgo.WithNumber("offset",
+				mcpgo.Description("Byte offset of an identifier occurrence that anchors which binding to rename (Go/Python). Prefer this or line+column when renaming a local/parameter."),
+			),
+			mcpgo.WithNumber("line",
+				mcpgo.Description("1-based line of an identifier occurrence that anchors the binding (Go/Python). Used with column; ignored if offset is set."),
+			),
+			mcpgo.WithNumber("column",
+				mcpgo.Description("1-based column (default 1) for the line anchor."),
 			),
 		),
 
@@ -647,6 +660,17 @@ func Definitions() []mcpgo.Tool {
 		// get_agent_prompt
 		mcpgo.NewTool("get_agent_prompt",
 			mcpgo.WithDescription("Return the Sawmill agent guide — a detailed reference for AI coding agents on how to use all Sawmill tools."),
+		),
+
+		// languages
+		mcpgo.NewTool("languages",
+			mcpgo.WithDescription("Report Sawmill language support and capability caveats. Call with no language to list every supported language and a one-line summary; pass language (id, name, or extension, e.g. \"lua\", \"bash\", \".proto\") for the full capability card including notes agents must read before rename/add_field. Prefer this over assuming every language has full Go/Python-tier support."),
+			mcpgo.WithString("language",
+				mcpgo.Description("Optional language id, name, or file extension (e.g. \"go\", \"SQL\", \"sh\", \".proto\"). Omit to list all."),
+			),
+			mcpgo.WithString("format",
+				mcpgo.Description("Output format: \"text\" (default) or \"json\""),
+			),
 		),
 
 		// teach_by_example
@@ -1321,6 +1345,48 @@ Returns JSON: {merged: string, conflicts: [...], stats: {...}, clean: bool}.`),
 			),
 			mcpgo.WithString("marker_style",
 				mcpgo.Description(`Conflict marker style: "diff3" (default, includes ||||||| base) or "merge" (ours/theirs only).`),
+			),
+		),
+
+		// behavioural_equiv — migration-fidelity oracle (🎯T51)
+		mcpgo.NewTool("behavioural_equiv",
+			mcpgo.WithDescription(`Behavioural/trace equivalence oracle for two runnable implementations.
+
+Drives both with a single materialised input tape, reports per-horizon divergence percentiles (p50/p90/p99/max), first-divergence localisation with paired states, and optionally gates acceptance via the Lyapunov split: short-horizon per-step epsilon (p99 ≤ ε) plus long-horizon distributional/qualitative invariants. Bit-exact long-horizon match across engines is explicitly NOT the bar.
+
+NOT semantic_diff (AST structure) and NOT teach_equivalence (syntactic pattern pairs). This tool is runtime behaviour.
+
+GOODHART GUARD: fixes that improve the report MUST trace to a structural divergence in the reference source (different equations, missing constraints, collapsed discrete states). Never constant-tune against the diff merely because a percentile shrinks. Acceptance refuses the tune seed pool — only holdout seeds can certify (mode=accept).
+
+First-slice instance "particle": 1-D box with exponential damping (ref) vs linear drag (port) — the TiltBuggy damper-divergence class in miniature (horizons {1,3,10,30,60,90}). Set port_damping=0.8 (default) for the correct port; 0.6 for a mutant that must fail accept. Custom engines: use the Go package github.com/marcelocantos/sawmill/diffharness (Engine/Tape/Differ interfaces).
+
+Modes: batch (tune-pool report + worst seeds), study (paired replay for one seed), accept (holdout pool + policy gate). Stateless — no parse() required.`),
+			mcpgo.WithString("mode",
+				mcpgo.Description(`"batch" (default: tune-pool report), "study" (paired replay; requires seed), "accept" (holdout pool + Lyapunov/Goodhart gate).`),
+			),
+			mcpgo.WithString("instance",
+				mcpgo.Description(`Built-in instance. Default/only: "particle" (TiltBuggy-shape demo).`),
+			),
+			mcpgo.WithNumber("n_scenarios",
+				mcpgo.Description("Number of scenarios for batch/accept. Default 200."),
+			),
+			mcpgo.WithNumber("ticks",
+				mcpgo.Description("Ticks (horizon ladder max) per scenario. Default 90."),
+			),
+			mcpgo.WithNumber("threads",
+				mcpgo.Description("Parallel workers for batch/accept. Default GOMAXPROCS."),
+			),
+			mcpgo.WithNumber("port_damping",
+				mcpgo.Description("Particle port linear-drag coefficient. 0.8 = correct (default); 0.6 = biased mutant for mutation checks."),
+			),
+			mcpgo.WithString("seed",
+				mcpgo.Description("Hex (or decimal) scenario seed for mode=study. Copy from batch worst-offenders."),
+			),
+			mcpgo.WithString("pool",
+				mcpgo.Description(`For mode=batch only: "tune" (default) or "holdout". mode=accept always uses holdout.`),
+			),
+			mcpgo.WithString("format",
+				mcpgo.Description(`"text" (default) or "json".`),
 			),
 		),
 	}

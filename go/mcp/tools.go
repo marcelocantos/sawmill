@@ -172,6 +172,25 @@ func (h *Handler) handleRename(args map[string]any) (string, bool, error) {
 	pathFilter := optString(args, "path")
 	format := optBool(args, "format")
 
+	// Optional binding anchor: byte offset, or 1-based line + column.
+	hasOffset := false
+	var fixedOffset uint
+	if rawOff, ok := args["offset"]; ok && rawOff != nil {
+		fixedOffset = uint(optInt(args, "offset"))
+		hasOffset = true
+	}
+	line, col := 0, 0
+	if _, hasLine := args["line"]; hasLine && !hasOffset {
+		line = optInt(args, "line")
+		if line < 1 {
+			return "line must be 1-based (>= 1)", true, nil
+		}
+		col = optInt(args, "column")
+		if col < 1 {
+			col = 1
+		}
+	}
+
 	h.mu.Lock()
 	defer h.mu.Unlock()
 
@@ -190,7 +209,18 @@ func (h *Handler) handleRename(args map[string]any) (string, bool, error) {
 
 	for _, acc := range accessors {
 		err := acc.WithTree(func(source []byte, tree *tree_sitter.Tree) error {
-			newSource, rerr := rewrite.RenameInFile(source, tree, acc.Adapter(), from, to)
+			var opts *rewrite.RenameOpts
+			if hasOffset {
+				off := fixedOffset
+				opts = &rewrite.RenameOpts{Offset: &off}
+			} else if line > 0 {
+				off, ok := byteOffsetForLineCol(source, line, col)
+				if !ok {
+					return nil // line past EOF in this file — skip
+				}
+				opts = &rewrite.RenameOpts{Offset: &off}
+			}
+			newSource, rerr := rewrite.RenameInFileOpts(source, tree, acc.Adapter(), from, to, opts)
 			if rerr != nil {
 				return rerr
 			}
@@ -227,6 +257,41 @@ func (h *Handler) handleRename(args map[string]any) (string, bool, error) {
 		sb.WriteString("\n")
 	}
 	return sb.String(), false, nil
+}
+
+// byteOffsetForLineCol converts a 1-based line and column to a byte offset.
+// column 1 is the first character on the line. Returns ok=false if line is
+// past the end of source.
+func byteOffsetForLineCol(source []byte, line, col int) (uint, bool) {
+	if line < 1 {
+		return 0, false
+	}
+	if col < 1 {
+		col = 1
+	}
+	curLine := 1
+	lineStart := 0
+	for i := 0; i < len(source); i++ {
+		if curLine == line {
+			off := lineStart + (col - 1)
+			if off > len(source) {
+				off = len(source)
+			}
+			return uint(off), true
+		}
+		if source[i] == '\n' {
+			curLine++
+			lineStart = i + 1
+		}
+	}
+	if curLine == line {
+		off := lineStart + (col - 1)
+		if off > len(source) {
+			off = len(source)
+		}
+		return uint(off), true
+	}
+	return 0, false
 }
 
 // ---- query ----------------------------------------------------------------
@@ -1680,6 +1745,113 @@ func (h *Handler) handleListConventions(_ map[string]any) (string, bool, error) 
 		sb.WriteString("\n")
 	}
 	return sb.String(), false, nil
+}
+
+// ---- languages ------------------------------------------------------------
+
+// handleLanguages implements the languages MCP tool — list or detail language
+// capability cards so agents see caveats without reading the agents guide.
+func (h *Handler) handleLanguages(args map[string]any) (string, bool, error) {
+	format, _ := args["format"].(string)
+	if format == "" {
+		format = "text"
+	}
+	if format != "text" && format != "json" {
+		return fmt.Sprintf("invalid format %q (want \"text\" or \"json\")", format), true, nil
+	}
+
+	langKey, _ := args["language"].(string)
+	langKey = strings.TrimSpace(langKey)
+
+	if langKey != "" {
+		info := adapters.LookupLanguage(langKey)
+		if info == nil {
+			return fmt.Sprintf("unknown language %q — call languages with no argument to list supported ids", langKey), true, nil
+		}
+		if format == "json" {
+			b, err := json.MarshalIndent(info, "", "  ")
+			if err != nil {
+				return fmt.Sprintf("marshalling language info: %v", err), true, nil
+			}
+			return string(b), false, nil
+		}
+		return formatLanguageDetail(info), false, nil
+	}
+
+	all := adapters.AllLanguages()
+	if format == "json" {
+		b, err := json.MarshalIndent(all, "", "  ")
+		if err != nil {
+			return fmt.Sprintf("marshalling languages: %v", err), true, nil
+		}
+		return string(b), false, nil
+	}
+	return formatLanguageList(all), false, nil
+}
+
+func formatLanguageList(all []adapters.LanguageInfo) string {
+	var sb strings.Builder
+	fmt.Fprintf(&sb, "Supported languages (%d). Call languages(language=<id>) for full capability cards and caveats.\n\n", len(all))
+	for _, info := range all {
+		caps := languageCapSummary(info)
+		note := ""
+		if len(info.Notes) > 0 {
+			note = " — " + info.Notes[0]
+		}
+		fmt.Fprintf(&sb, "  %-12s  ext=%-20s  %s%s\n",
+			info.ID, strings.Join(info.Extensions, ","), caps, note)
+	}
+	return sb.String()
+}
+
+func formatLanguageDetail(info *adapters.LanguageInfo) string {
+	var sb strings.Builder
+	fmt.Fprintf(&sb, "%s (%s)\n", info.Name, info.ID)
+	fmt.Fprintf(&sb, "  extensions:      %s\n", strings.Join(info.Extensions, ", "))
+	fmt.Fprintf(&sb, "  parse:           %v\n", info.Parse)
+	fmt.Fprintf(&sb, "  find_symbol:     %v\n", info.FindSymbol)
+	fmt.Fprintf(&sb, "  rename:          %v\n", info.Rename)
+	fmt.Fprintf(&sb, "  add_field:       %v\n", info.AddField)
+	fmt.Fprintf(&sb, "  import_rewrite:  %v\n", info.ImportRewrite)
+	fmt.Fprintf(&sb, "  ast_merge:       %s\n", info.ASTMerge)
+	if len(info.Formatter) > 0 {
+		fmt.Fprintf(&sb, "  formatter:       %s\n", strings.Join(info.Formatter, " "))
+	} else {
+		sb.WriteString("  formatter:       (none)\n")
+	}
+	if len(info.LSP) > 0 {
+		fmt.Fprintf(&sb, "  lsp:             %s\n", strings.Join(info.LSP, " "))
+	} else {
+		sb.WriteString("  lsp:             (none)\n")
+	}
+	if len(info.Notes) > 0 {
+		sb.WriteString("  notes:\n")
+		for _, n := range info.Notes {
+			fmt.Fprintf(&sb, "    - %s\n", n)
+		}
+	}
+	return sb.String()
+}
+
+func languageCapSummary(info adapters.LanguageInfo) string {
+	var parts []string
+	if info.Parse {
+		parts = append(parts, "parse")
+	}
+	if info.FindSymbol {
+		parts = append(parts, "find_symbol")
+	}
+	if info.Rename {
+		parts = append(parts, "rename")
+	}
+	if info.AddField {
+		parts = append(parts, "add_field")
+	}
+	if info.ImportRewrite {
+		parts = append(parts, "import_rewrite")
+	}
+	parts = append(parts, "merge="+info.ASTMerge)
+	return strings.Join(parts, ",")
 }
 
 // ---- get_agent_prompt -----------------------------------------------------

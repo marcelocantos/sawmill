@@ -343,4 +343,9 @@ var (
 	KotlinLanguage     = grammars.KotlinLanguage
 	SwiftLanguage      = grammars.SwiftLanguage
 	CLanguage          = grammars.CLanguage
+	LuaLanguage        = grammars.LuaLanguage
+	ProtoLanguage      = grammars.ProtoLanguage
+	ZigLanguage        = grammars.ZigLanguage
+	BashLanguage       = grammars.BashLanguage
+	SqlLanguage        = grammars.SqlLanguage
 )

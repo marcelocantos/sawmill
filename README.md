@@ -12,7 +12,7 @@ changes that preserve formatting, comments, and whitespace.
 
 ## Features
 
-- **Multi-language**: Python, TypeScript, JavaScript, Rust, Go, C, C++, Java, C#, Ruby, PHP, Kotlin, Swift via Tree-sitter
+- **Multi-language**: Python, TypeScript, JavaScript, Rust, Go, C, C++, Java, C#, Ruby, PHP, Kotlin, Swift, Lua, Protobuf, Zig, Bash/Shell, SQL via Tree-sitter
 - **MCP server**: Runs over stdio; works with any MCP-compatible AI agent
 - **Persistent daemon**: Background process shares parsed state across
   sessions via Unix socket — auto-started on first use
@@ -244,6 +244,7 @@ call `apply` to write changes, `undo` to revert.
 | `apply` | Write pending changes to disk (with backup) |
 | `undo` | Revert the last apply from backups |
 | `get_agent_prompt` | Return the agent guide |
+| `languages` | List language support, or detail one language's capability card and caveats |
 
 ## Supported languages
 
@@ -262,6 +263,11 @@ call `apply` to write changes, `undo` to revert.
 | PHP | Yes | — | — |
 | Kotlin | Yes | — | — |
 | Swift | Yes | `swift-format` | — |
+| Lua | Yes | `stylua` | — |
+| Protobuf | Yes | — | — |
+| Zig | Yes | `zig fmt` | — |
+| Bash / Shell | Yes | `shfmt` | — |
+| SQL | Yes | — | — |
 
 ## Git merge integration
 
