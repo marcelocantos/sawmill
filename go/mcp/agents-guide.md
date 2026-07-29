@@ -239,7 +239,7 @@ and failures with `index_status`. Summaries also feed `semantic_search`
 | `semantic_diff` | Structural AST diff — detects moves, renames, signature changes, key-level data format changes | `base`, `head`, `path` |
 | `api_changelog` | Markdown API surface changelog between two refs | `base`, `head` |
 | `git_semantic_bisect` | Find the commit where a structural predicate flipped (binary search, no code execution) | `predicate` (JSON), `good`, `bad` |
-| `behavioural_equiv` | **Behavioural/trace** equivalence of two runnable implementations (not AST). Per-horizon percentiles, first-divergence localisation, Lyapunov-bounded accept. **Goodhart guard:** fixes must cite structural reference divergences — never constant-tune against the diff. | `mode` (batch/study/accept), `instance` (particle), `n_scenarios`, `ticks`, `port_damping`, `seed`, `format` |
+| `behavioural_equiv` | **Behavioural/trace** equivalence of two runnable implementations (not AST `semantic_diff` / not pattern `teach_equivalence`). Per-horizon percentiles, first-divergence localisation, Lyapunov-bounded accept. **Stateless** — no `parse` required. **Goodhart guard:** fixes must cite structural reference divergences — never constant-tune against the diff. | `mode` (batch/study/accept), `instance` (particle), `n_scenarios`, `ticks`, `threads`, `port_damping`, `seed`, `pool` (tune/holdout), `format` |
 
 ### Multi-repo orchestration
 
@@ -515,8 +515,27 @@ for v in violations:
 
 ## Tips and Gotchas
 
-- **Always `parse` first.** Every other tool requires the codebase
+- **Always `parse` first.** Almost every tool requires the codebase
   model to be loaded. Call `parse` once at the start of a session.
+  Exceptions that are **stateless** (no `parse`): `merge_three_way`,
+  `behavioural_equiv`, and `languages`.
+
+- **Scope-aware `rename` (Go/Python).** Without `offset` or `line`+
+  `column`, rename targets module/package-level bindings of `from`
+  (plus free refs); shadowed locals and other independent same-named
+  bindings are left alone. When multiple nested bindings of the name
+  exist and no anchor is given, rename is a deliberate **no-op** —
+  pass a byte `offset` (preferred) or 1-based `line`+`column` on a use
+  or definition to select the binding. Other languages still match by
+  identifier text via the adapter query.
+
+- **`behavioural_equiv` is a migration-fidelity oracle**, not a
+  syntactic rewrite. Modes: `batch` (percentiles × horizon), `study`
+  (paired states + first-divergence), `accept` (ε step bounds +
+  long-horizon distributional gates). Use `pool=holdout` for acceptance;
+  tune-pool batches are refused by policy (Goodhart guard). First-slice
+  demo instance is `particle` (`port_damping=0.8` correct / `0.6`
+  systematically biased).
 
 - **One pending changeset at a time.** Calling a transform tool
   replaces any unapplied pending changes. Apply or discard before

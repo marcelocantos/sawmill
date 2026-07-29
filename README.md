@@ -13,17 +13,16 @@ changes that preserve formatting, comments, and whitespace.
 ## Features
 
 - **Multi-language**: Python, TypeScript, JavaScript, Rust, Go, C, C++, Java, C#, Ruby, PHP, Kotlin, Swift, Lua, Protobuf, Zig, Bash/Shell, SQL via Tree-sitter
-- **MCP server**: Runs over stdio; works with any MCP-compatible AI agent
-- **Persistent daemon**: Background process shares parsed state across
-  sessions via Unix socket — auto-started on first use
+- **MCP server**: Streamable HTTP MCP on `127.0.0.1:8765` (stdio clients use a gateway such as [mcpbridge](https://github.com/marcelocantos/mcpbridge))
+- **Persistent daemon**: `brew services start sawmill` keeps one process sharing parsed state across sessions
 - **Code discovery**: Full-text (`search_code`), natural-language hybrid
   retrieval fusing BM25 + vector embeddings + graph (`semantic_search`),
   curated concept search (`find_by_concept`), a typed reference graph
   (`graph_expand`), and PageRank symbol ranking (`central_symbols`) — all
   returning precise CST ranges. Optional LLM-distilled summaries and
   knowledge-graph edges layer on top
-- **Structural transforms**: Rename, query, match/act with declarative
-  actions or JavaScript transform functions
+- **Structural transforms**: Scope-aware rename (Go/Python binding resolution with optional position anchors), query, match/act with declarative actions or JavaScript transform functions
+- **Behavioural equivalence**: `behavioural_equiv` drives two implementations on a shared input tape and reports per-horizon divergence (migration-fidelity oracle; not AST `semantic_diff`)
 - **Teach by example**: Point at existing code, name the variable parts,
   get a reusable template
 - **Conventions**: Define enforceable rules as JavaScript checks, verified
@@ -139,7 +138,7 @@ AI Agent ──HTTP──▶ sawmill serve (HTTP MCP server, port 8765)
                        │    ├─ Store (SQLite)
                        │    └─ Watcher (fsnotify)
                        ├─ GitIndex (lazy AST snapshots per commit)
-                       └─ MCP Server (66 tools, streamable HTTP)
+                       └─ MCP Server (68 tools, streamable HTTP)
 ```
 
 - `sawmill serve` is the HTTP MCP server, listening on `127.0.0.1:8765`
@@ -152,7 +151,7 @@ AI Agent ──HTTP──▶ sawmill serve (HTTP MCP server, port 8765)
 
 ## MCP tools
 
-66 tools, grouped by purpose. Every transform returns a diff preview;
+68 tools, grouped by purpose. Every transform returns a diff preview;
 call `apply` to write changes, `undo` to revert.
 
 **Discovery & navigation**
@@ -176,7 +175,7 @@ call `apply` to write changes, `undo` to revert.
 
 | Tool | Description |
 |---|---|
-| `rename` / `rename_file` | Rename an identifier or a file (with import cascade) |
+| `rename` / `rename_file` | Scope-aware identifier rename (Go/Python binding resolution; optional `offset` or `line`+`column` anchors) or file rename with import cascade |
 | `transform` / `transform_batch` | Match/act with declarative or JS actions |
 | `codegen` | JavaScript program against the whole codebase |
 | `add_parameter` / `remove_parameter` | Modify function signatures across call sites |
@@ -216,6 +215,7 @@ call `apply` to write changes, `undo` to revert.
 | `semantic_diff` | Structural AST diff: detects moves, renames, signature changes, key-level data format changes |
 | `api_changelog` | Markdown API surface changelog between two refs |
 | `git_semantic_bisect` | Binary-search the commit where a structural predicate flipped — without running the code |
+| `behavioural_equiv` | Behavioural/trace equivalence of two runnable implementations on a shared input tape (per-horizon percentiles, first-divergence localisation; not AST) |
 
 **LSP**
 
