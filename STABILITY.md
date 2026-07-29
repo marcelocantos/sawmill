@@ -9,7 +9,7 @@ pre-1.0 period exists to get these right.
 
 ## Interaction surface catalogue
 
-Snapshot as of v0.13.0. 251 public surface items.
+Snapshot as of v0.18.0.
 
 ### CLI
 
@@ -23,12 +23,12 @@ Snapshot as of v0.13.0. 251 public surface items.
 | `sawmill merge --base --local --remote --output [--language] [--marker-style]` | git mergetool driver | **Needs review** — new in v0.12.0; CLI shape may settle after real-world mergetool use |
 | `sawmill merge-driver %O %A %B %P` | git low-level merge driver | **Needs review** — new in v0.12.0; positional contract follows gitattributes(5) but error/exit semantics may evolve |
 
-### MCP tools (57 tools, 174 parameters)
+### MCP tools (68 tools)
 
 | Tool | Required params | Optional params | Stability |
 |---|---|---|---|
 | `parse` | — | `path` | **Stable** |
-| `rename` | `from`, `to` | `path`, `format` | **Stable** |
+| `rename` | `from`, `to` | `path`, `format`, `offset`, `line`, `column` | **Stable** — Go/Python binding-aware since v0.18.0 (`offset` or `line`+`column` select a binding; other languages keep identifier-query match) |
 | `rename_file` | `from`, `to` | `format` | **Stable** |
 | `query` | — | `kind`, `name`, `file`, `raw_query`, `capture`, `path`, `format` | **Stable** |
 | `find_symbol` | `symbol` | `kind` | **Stable** |
@@ -69,6 +69,8 @@ Snapshot as of v0.13.0. 251 public surface items.
 | `semantic_diff` | `base` | `head`, `path` | **Stable** |
 | `api_changelog` | `base` | `head` | **Stable** |
 | `git_semantic_bisect` | `predicate`, `good`, `bad` | — | **Stable** |
+| `behavioural_equiv` | — | `mode`, `instance`, `n_scenarios`, `ticks`, `threads`, `port_damping`, `seed`, `pool`, `format` | **Needs review** — new in v0.18.0; particle demo first slice; subprocess engines deferred |
+| `languages` | — | `language`, `format` | **Stable** — new in v0.18.0; capability cards (additive) |
 | `teach_equivalence` | `name`, `left_pattern`, `right_pattern` | `description`, `preferred_direction` | **Stable** |
 | `list_equivalences` | — | — | **Stable** |
 | `delete_equivalence` | `name` | — | **Stable** |
@@ -95,7 +97,7 @@ Snapshot as of v0.13.0. 251 public surface items.
 | Backup dir | `~/.sawmill/backups/<hash>/` | **Stable** |
 | Backup suffix | `.bak` | **Stable** |
 | Staging suffix | `.new` | **Stable** |
-| Languages | Python, TypeScript, Rust, Go, C/C++ | **Stable** (additive only) |
+| Languages | Python, TypeScript, JavaScript, Rust, Go, C/C++, Java, C#, Ruby, PHP, Kotlin, Swift, Lua, Protobuf, Zig, Bash/Shell, SQL | **Stable** (additive only; use `languages` for per-language capability caveats) |
 | JS runtime | QuickJS ES5 | **Needs review** — may upgrade to ES2020+ |
 
 ### Wire format
@@ -161,8 +163,10 @@ Snapshot as of v0.13.0. 251 public surface items.
 
 ## Out of scope for 1.0
 
-- Windows support (Unix socket architecture)
+- Windows-native service packaging (HTTP transport itself is OS-agnostic)
 - Remote/networked daemon access
 - Multi-user access control
 - Plugin system for custom language adapters
 - LSP server mode (sawmill as an LSP, not just MCP)
+- Full multi-language binding-aware rename (Go/Python only in v0.18.0)
+- Subprocess adapters for real Chipmunk/Box2D (or other) engines in `behavioural_equiv`

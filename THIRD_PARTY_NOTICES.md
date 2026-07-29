@@ -28,6 +28,7 @@ at `https://pkg.go.dev/<module>?tab=licenses`).
 | github.com/marcelocantos/claudia | Apache-2.0 |
 | github.com/mark3labs/mcp-go | MIT |
 | github.com/mattn/go-isatty | MIT |
+| github.com/Microsoft/go-winio | MIT |
 | github.com/ncruces/go-strftime | MIT |
 | github.com/odvcencio/gotreesitter | MIT (see grammar note below) |
 | github.com/pjbgf/sha1cd | Apache-2.0 |
