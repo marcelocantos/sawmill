@@ -34,6 +34,12 @@ func rootHash(root string) string {
 // sawmill MCP server.
 const DefaultListenAddr = "127.0.0.1:8765"
 
+// DefaultDebugAddr is the default listen address for the diagnostics
+// endpoint (net/http/pprof). It is on by default because the failure it
+// exists to diagnose — a wedged daemon — is destroyed by the restart that
+// turning it on would require. Loopback only.
+const DefaultDebugAddr = "127.0.0.1:8766"
+
 // StoreDir returns the directory for a project's SQLite store.
 // e.g. ~/.sawmill/stores/a1b2c3d4e5f6a7b8/
 func StoreDir(root string) string {

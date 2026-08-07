@@ -67,7 +67,11 @@ func main() {
 func runServe(args []string) {
 	fs := flag.NewFlagSet("serve", flag.ExitOnError)
 	addr := fs.String("addr", paths.DefaultListenAddr, "HTTP listen address")
+	debugAddr := fs.String("debug-addr", paths.DefaultDebugAddr,
+		"diagnostics (pprof) listen address; empty to disable")
 	fs.Parse(args) //nolint:errcheck
+
+	daemon.StartDebugServer(*debugAddr)
 
 	srv := daemon.New(version)
 	if err := srv.Start(*addr); err != nil {
@@ -80,10 +84,12 @@ func printAgentHelp() {
 	fmt.Printf(`sawmill %s — HTTP MCP server for AST-level multi-language code transformations
 
 USAGE
-  sawmill serve [--addr HOST:PORT]
+  sawmill serve [--addr HOST:PORT] [--debug-addr HOST:PORT]
                             Start the HTTP MCP server. Default address is
                             %s. The streamable HTTP MCP transport is
-                            served at /mcp.
+                            served at /mcp. Diagnostics (pprof) are served on
+                            a separate loopback listener, %s by default;
+                            pass --debug-addr= to disable.
 
   sawmill merge --base PATH --local PATH --remote PATH --output PATH \
                 [--language NAME] [--marker-style {diff3,merge}]
@@ -129,6 +135,6 @@ CLIENT INTEGRATION
 AGENT GUIDE
   The full agent guide follows (also served via the get_agent_prompt tool).
 
-`, version, paths.DefaultListenAddr)
+`, version, paths.DefaultListenAddr, paths.DefaultDebugAddr)
 	fmt.Print(mcp.AgentsGuide())
 }

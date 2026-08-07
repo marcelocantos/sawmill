@@ -11,6 +11,7 @@ package model
 import (
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -506,6 +507,36 @@ func (m *CodebaseModel) CentralSymbols(pathGlob, kind string, limit int) ([]stor
 
 // --- Manager goroutine ---
 
+// SlowWorkThreshold is how long a single unit of manager work may take before
+// it is logged. The manager is one serial event loop per root, so anything
+// slow here stalls every later watcher event for that root — and a root whose
+// events stop draining goes stale silently, which is the failure mode worth
+// making loud. The threshold sits well above a normal parse and below
+// forest.MaxParseDuration, so a file that burns the parse deadline always
+// reports itself.
+const SlowWorkThreshold = 3 * time.Second
+
+// logParseTimeout reports a file that exceeded forest.MaxParseDuration.
+// Once quarantined, the same content returns the timeout immediately, so
+// elapsed time is what distinguishes the parse that actually burned a core
+// from the cheap repeats — only the former is worth a line in the log.
+func logParseTimeout(path string, start time.Time) {
+	if time.Since(start) < SlowWorkThreshold {
+		return
+	}
+	log.Printf("sawmill: parse of %s exceeded %s — skipping it, and skipping this content "+
+		"on sight until the file changes (%d source(s) quarantined)",
+		path, forest.MaxParseDuration, forest.QuarantinedCount())
+}
+
+// logIfSlow reports manager work that ran past SlowWorkThreshold.
+func logIfSlow(what, path string, start time.Time) {
+	if d := time.Since(start); d > SlowWorkThreshold {
+		log.Printf("sawmill: slow %s for %s took %s; watcher events for this root were stalled meanwhile",
+			what, path, d.Round(time.Millisecond))
+	}
+}
+
 // runManager is the event loop that owns all mutable forest state. It
 // processes watcher events, post-apply notifications, and snapshot requests.
 func (m *CodebaseModel) runManager() {
@@ -516,10 +547,14 @@ func (m *CodebaseModel) runManager() {
 			if !ok {
 				return
 			}
+			start := time.Now()
 			m.applyEvent(ev)
+			logIfSlow("file event", ev.Path, start)
 		case req := <-m.reindex:
 			for _, p := range req.paths {
+				start := time.Now()
 				m.reparse(p)
+				logIfSlow("reindex", p, start)
 			}
 			close(req.done)
 		case <-m.done:
@@ -586,7 +621,12 @@ func (m *CodebaseModel) parseAndIndexFile(path string) {
 	}
 
 	// Parse to extract symbols, then discard the tree.
+	parseStart := time.Now()
 	tree, err := forest.ParseSource(source, adapter)
+	if errors.Is(err, forest.ErrParseTimeout) {
+		logParseTimeout(path, parseStart)
+		return
+	}
 	if err != nil || tree == nil {
 		return
 	}
@@ -675,7 +715,12 @@ func incrementalParse(root string, s *store.Store, classifier *scope.Classifier)
 		}
 
 		// Parse to extract symbols, then discard.
+		parseStart := time.Now()
 		tree, err := forest.ParseSource(source, adapter)
+		if errors.Is(err, forest.ErrParseTimeout) {
+			logParseTimeout(path, parseStart)
+			return nil
+		}
 		if err != nil || tree == nil {
 			return nil // skip unparseable files
 		}
