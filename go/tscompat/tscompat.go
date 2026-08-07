@@ -41,6 +41,16 @@ func (t *Tree) RootNode() *Node {
 	return wrapNode(t.inner.RootNode(), t.lang)
 }
 
+// ParseStopReason reports why the parse that produced this tree ended.
+// It is the only channel through which a timeout surfaces — Parse itself
+// returns no error in that case.
+func (t *Tree) ParseStopReason() string {
+	if t == nil || t.inner == nil {
+		return ""
+	}
+	return string(t.inner.ParseStopReason())
+}
+
 // HasError delegates to the inner tree.
 func (t *Tree) HasError() bool {
 	if t == nil || t.inner == nil {
@@ -300,9 +310,15 @@ func (c *QueryCursor) Matches(query *Query, node *Node, source []byte) *matchesI
 // Close is a no-op (gotreesitter has no Close on QueryCursor).
 func (c *QueryCursor) Close() {}
 
+// ParseStopTimeout is the stop reason gotreesitter records on a tree whose
+// parse hit the parser's timeout.
+const ParseStopTimeout = string(gts.ParseStopTimeout)
+
 // Parser wraps a gotreesitter Parser.
 type Parser struct {
-	lang *gts.Language
+	lang          *gts.Language
+	timeoutMicros uint64
+	cancelFlag    *uint32
 }
 
 // NewParser returns a parser. SetLanguage must be called before parsing.
@@ -316,10 +332,35 @@ func (p *Parser) SetLanguage(lang *gts.Language) error {
 	return nil
 }
 
+// SetTimeoutMicros bounds how long a single Parse may run. Zero, the default,
+// leaves the parse unbounded. A parse that hits the bound is not an error —
+// it returns a partial tree whose ParseStopReason is ParseStopTimeout.
+//
+// The bound is best-effort: it is honoured inside the primary parse loop but
+// not throughout the full-reparse retry path, so a long bound can be missed
+// entirely. Use SetCancellationFlag for a dependable wall-clock limit.
+func (p *Parser) SetTimeoutMicros(micros uint64) {
+	p.timeoutMicros = micros
+}
+
+// SetCancellationFlag installs a caller-owned flag; the parse stops once the
+// flag is non-zero. Unlike SetTimeoutMicros this is honoured promptly no
+// matter how far into a parse it is tripped, which makes it the reliable way
+// to bound one. The stop reason it leaves behind is not trustworthy, though —
+// the retry path can overwrite it with "accepted" — so a caller that trips the
+// flag must treat the tree as truncated on its own authority.
+func (p *Parser) SetCancellationFlag(flag *uint32) {
+	p.cancelFlag = flag
+}
+
 // Parse parses source and returns a Tree. The old-tree argument is ignored;
 // gotreesitter incremental parsing is not used in sawmill's hot path.
 func (p *Parser) Parse(source []byte, _ *Tree) *Tree {
 	parser := gts.NewParser(p.lang)
+	parser.SetTimeoutMicros(p.timeoutMicros)
+	if p.cancelFlag != nil {
+		parser.SetCancellationFlag(p.cancelFlag)
+	}
 	tree, _ := parser.Parse(source)
 	return wrapTree(tree, p.lang)
 }

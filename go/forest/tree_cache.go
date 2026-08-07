@@ -6,6 +6,8 @@ package forest
 import (
 	"container/list"
 	"sync"
+	"sync/atomic"
+	"time"
 
 	tree_sitter "github.com/marcelocantos/sawmill/tscompat"
 
@@ -137,7 +139,27 @@ func (c *TreeCache) removeLocked(elem *list.Element) {
 // ParseSource parses source bytes with the given adapter and returns a new tree.
 // This is a convenience function — callers that don't need caching can use it
 // directly.
+//
+// A parse that outruns MaxParseDuration yields ErrParseTimeout and no tree.
+// The check is on the stop reason rather than tree.ParseStoppedEarly() so that
+// ordinary malformed source, which stops early for its own reasons and still
+// produces a useful ERROR-bearing tree, keeps being indexed.
 func ParseSource(source []byte, adapter adapters.LanguageAdapter) (*tree_sitter.Tree, error) {
+	return ParseSourceWithTimeout(source, adapter, MaxParseDuration)
+}
+
+// ParseSourceWithTimeout is ParseSource with an explicit deadline, so that
+// tests can exercise the timeout path without waiting out MaxParseDuration.
+// A timeout of zero leaves the parse unbounded.
+func ParseSourceWithTimeout(
+	source []byte,
+	adapter adapters.LanguageAdapter,
+	timeout time.Duration,
+) (*tree_sitter.Tree, error) {
+	if timeout > 0 && quarantine.has(source) {
+		return nil, ErrParseTimeout
+	}
+
 	parser := tree_sitter.NewParser()
 	defer parser.Close()
 
@@ -145,9 +167,41 @@ func ParseSource(source []byte, adapter adapters.LanguageAdapter) (*tree_sitter.
 		return nil, err
 	}
 
+	// Two independent bounds, because neither is sufficient alone. The
+	// parser's own timeout reports itself accurately but is only consulted in
+	// the primary parse loop, so a long one can be missed entirely — a 16s
+	// bound on a known-pathological script was observed running 58s and then
+	// claiming success. The cancellation flag is honoured promptly wherever
+	// the parse has got to, but the retry path can overwrite the stop reason
+	// it leaves behind with "accepted".
+	//
+	// So the timeout supplies an early, well-labelled exit, and the flag
+	// supplies the dependable ceiling. Neither verdict is taken on trust:
+	// elapsed time is measured here, and a parse that reaches the ceiling is
+	// truncated no matter what the tree says about itself.
+	parser.SetTimeoutMicros(uint64(timeout / time.Microsecond))
+
+	var cancel uint32
+	if timeout > 0 {
+		parser.SetCancellationFlag(&cancel)
+		watchdog := time.AfterFunc(timeout, func() { atomic.StoreUint32(&cancel, 1) })
+		defer watchdog.Stop()
+	}
+
+	start := time.Now()
 	tree := parser.Parse(source, nil)
+	elapsed := time.Since(start)
+
 	if tree == nil {
 		return nil, nil
+	}
+	// Comparing elapsed against the bound, rather than reading the flag,
+	// keeps a watchdog that fires just as a good parse lands from discarding
+	// it — and quarantining it.
+	if (timeout > 0 && elapsed >= timeout) || tree.ParseStopReason() == tree_sitter.ParseStopTimeout {
+		tree.Close()
+		quarantine.add(source)
+		return nil, ErrParseTimeout
 	}
 	return tree, nil
 }
