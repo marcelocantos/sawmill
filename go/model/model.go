@@ -575,6 +575,23 @@ func (m *CodebaseModel) reparse(path string) {
 func (m *CodebaseModel) applyEvent(ev watcher.FileEvent) {
 	switch ev.Kind {
 	case watcher.Removed:
+		// A removal event does not mean the path is gone. ApplyWithBackup
+		// writes a temp file and renames it over the target, which is the
+		// right way to replace a file atomically but destroys the inode the
+		// watcher was holding — so kqueue reports a deletion for a path that
+		// very much still exists, and holds newer content than the store does.
+		//
+		// Taking that at face value deleted the file's row moments after every
+		// apply. ReindexNow re-added it first, and this event, arriving one
+		// debounce window later, removed it again; the file then stayed absent
+		// from the index until some unrelated edit brought it back. Nothing in
+		// the suite noticed because tests finish well inside the debounce.
+		//
+		// So confirm the path is actually gone before believing it.
+		if _, err := os.Stat(ev.Path); err == nil {
+			m.reparse(ev.Path)
+			return
+		}
 		if m.Cache != nil {
 			m.Cache.Evict(ev.Path)
 		}
