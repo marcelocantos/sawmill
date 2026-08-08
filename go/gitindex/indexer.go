@@ -8,9 +8,8 @@ import (
 	"path/filepath"
 	"strings"
 
-	tree_sitter "github.com/marcelocantos/sawmill/tscompat"
-
 	"github.com/marcelocantos/sawmill/adapters"
+	"github.com/marcelocantos/sawmill/forest"
 	"github.com/marcelocantos/sawmill/gitrepo"
 )
 
@@ -84,20 +83,22 @@ func (ix *Indexer) EnsureCommitIndexed(sha string) error {
 			continue
 		}
 
-		parser := tree_sitter.NewParser()
-		if err := parser.SetLanguage(adapter.Language()); err != nil {
-			parser.Close()
+		// Go through forest rather than driving a parser directly. Historic
+		// blobs are exactly as capable of hanging the parser as working-tree
+		// files — more so, since every revision of every file passes through
+		// here — and a parse that never returns would strand the whole commit
+		// walk. ParseSource carries the size and line-length guards, the
+		// wall-clock bound and the quarantine; none of that applied here.
+		if !forest.ShouldParse(source) {
 			continue
 		}
-		tree := parser.Parse(source, nil)
-		if tree == nil {
-			parser.Close()
-			continue
+		tree, err := forest.ParseSource(source, adapter)
+		if err != nil || tree == nil {
+			continue // unparseable, oversized, or past the parse deadline
 		}
 
 		indexErr := ix.store.IndexBlob(entry.BlobSHA, ext, tree)
 		tree.Close()
-		parser.Close()
 		if indexErr != nil {
 			return indexErr
 		}
