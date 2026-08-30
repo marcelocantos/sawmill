@@ -67,8 +67,8 @@ github.com/mattn/go-isatty v0.0.20 h1:xfD0iDuEKnDkl03q4limB+vH+GxLEtL/jb4xVJSWWE
 github.com/mattn/go-isatty v0.0.20/go.mod h1:W+V8PltTTMOvKvAeJH7IuucS94S2C6jfK/D7dTCTo3Y=
 github.com/ncruces/go-strftime v1.0.0 h1:HMFp8mLCTPp341M/ZnA4qaf7ZlsbTc+miZjCLOFAw7w=
 github.com/ncruces/go-strftime v1.0.0/go.mod h1:Fwc5htZGVVkseilnfgOVb9mKy6w1naJmn9CehxcKcls=
-github.com/odvcencio/gotreesitter v0.15.2 h1:XDNuSI1Gg738HGK62Mc06tornEfdteOTtLlpME0F5y4=
-github.com/odvcencio/gotreesitter v0.15.2/go.mod h1:Sx+iYJBfw5xSWkSttLSuFvguJctlH+ma1BTxZ0MPCqo=
+github.com/odvcencio/gotreesitter v0.47.1 h1:legFCs1A3HIpBNmaGW5oYj2QexAouxTshBlGifl9HSw=
+github.com/odvcencio/gotreesitter v0.47.1/go.mod h1:hBVkghd0paaYAVwd2087vfwdeU984bQbMo9LvpE0moo=
 github.com/onsi/gomega v1.34.1 h1:EUMJIKUjM8sKjYbtxQI9A4z2o+rruxnzNvpknOXie6k=
 github.com/onsi/gomega v1.34.1/go.mod h1:kU1QgUvBDLXBJq618Xvm2LUX6rSAfRaFRTcdOeDLwwY=
 github.com/pjbgf/sha1cd v0.3.2 h1:a9wb0bp1oC2TGwStyn0Umc/IGKQnEgF0vVaZ8QF8eo4=

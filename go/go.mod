@@ -8,7 +8,7 @@ require (
 	github.com/go-git/go-git/v5 v5.17.2
 	github.com/marcelocantos/claudia v0.12.0
 	github.com/mark3labs/mcp-go v0.47.0
-	github.com/odvcencio/gotreesitter v0.15.2
+	github.com/odvcencio/gotreesitter v0.47.1
 	github.com/pmezard/go-difflib v1.0.0
 	gopkg.in/yaml.v3 v3.0.1
 	modernc.org/quickjs v0.17.2

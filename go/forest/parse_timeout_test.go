@@ -5,6 +5,7 @@ package forest_test
 
 import (
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -15,33 +16,50 @@ import (
 	"github.com/marcelocantos/sawmill/forest"
 )
 
-// pathologicalBash builds a bash source that the GLR parser is superlinear on.
-// Runs of bare-word command lines are the cheapest reliable trigger: 40 of them
-// (~1.5 KB) take over eight seconds, against microseconds for ordinary script
-// syntax of the same size.
+// pathologicalC builds a C source the GLR parser is superlinear on: one large
+// static table of numeric literals, the shape codec tables take. 500 rows
+// (~53 KB) costs about 1.2s against microseconds for ordinary C of the same
+// size, and the generator is deterministic so that cost is reproducible.
 //
-// It is only good for the short-budget tests. The cost plateaus near eight
-// seconds however many lines are added, so it cannot exercise a bound set
-// above that — which is exactly where the interesting failure lives. Use
-// loadPathologicalFixture for those.
-func pathologicalBash(lines int) []byte {
+// It replaces the bash generator this file used to carry. Under gotreesitter
+// v0.15.2 runs of bare-word bash lines were the cheapest trigger; v0.22.0 made
+// that construct linear, so from the pinned v0.47.1 no bash input we know of
+// is slow enough to exercise a bound. Data tables still are.
+func pathologicalC(rows int) []byte {
 	var b strings.Builder
-	b.WriteString("#!/usr/bin/env bash\n")
-	for range lines {
-		b.WriteString("this is line of plain prose text without shell syntax\n")
+	b.WriteString("static const short t[] = {\n")
+	v := uint32(0x9e3779b9)
+	for r := range rows {
+		b.WriteString("    ")
+		for c := range 12 {
+			v = v*1664525 + 1013904223
+			if c > 0 {
+				b.WriteString(", ")
+			}
+			if v&1 == 0 {
+				fmt.Fprintf(&b, "-0x%04x", v>>16&0xffff)
+			} else {
+				fmt.Fprintf(&b, "0x%04x", v>>16&0xffff)
+			}
+		}
+		if r < rows-1 {
+			b.WriteString(",")
+		}
+		b.WriteString("\n")
 	}
+	b.WriteString("};\n")
 	return []byte(b.String())
 }
 
 // loadPathologicalFixture returns the script that actually wedged the daemon:
 // 19 KB, 483 lines, syntactically valid (bash -n passes), and nothing about it
 // looks unusual. No single construct is to blame — the GLR cost compounds
-// across the whole file, which is why no cheap property of the source predicts
-// it and why the bound has to be on the parse itself.
+// across the whole file.
 //
-// Left unbounded it ran for a minute in testing, and had pinned a core for
-// half an hour in production before anyone noticed. Synthetic sources do not
-// reproduce that, so this one is committed verbatim.
+// It is kept as a version witness rather than a slow input. Under v0.15.2 it
+// ran over a minute; under the pinned version it parses in milliseconds, and
+// TestBashFixtureIsNoLongerPathological fails if a bump ever reintroduces the
+// blowup.
 func loadPathologicalFixture(t *testing.T) []byte {
 	t.Helper()
 	src, err := os.ReadFile(filepath.Join("testdata", "pathological_glr.sh"))
@@ -54,14 +72,17 @@ func loadPathologicalFixture(t *testing.T) []byte {
 // TestParseSourceTimesOutOnPathologicalSource is the regression guard for the
 // daemon wedge: without a deadline this parse never returns.
 func TestParseSourceTimesOutOnPathologicalSource(t *testing.T) {
-	src := pathologicalBash(40)
+	forest.ResetQuarantine()
+	t.Cleanup(forest.ResetQuarantine)
+
+	src := pathologicalC(500)
 	if !forest.ShouldParse(src) {
 		t.Fatal("ShouldParse rejected the fixture; the timeout path would never be reached")
 	}
 
 	const budget = 100 * time.Millisecond
 	start := time.Now()
-	tree, err := forest.ParseSourceWithTimeout(src, adapters.ForExtension("sh"), budget)
+	tree, err := forest.ParseSourceWithTimeout(src, adapters.ForExtension("c"), budget)
 	elapsed := time.Since(start)
 
 	if !errors.Is(err, forest.ErrParseTimeout) {
@@ -77,29 +98,66 @@ func TestParseSourceTimesOutOnPathologicalSource(t *testing.T) {
 	}
 }
 
-// TestParseSourceBoundHoldsAtLongBudgets is the test that the obvious
-// implementation fails. Relying on the parser's own timeout looks correct at
-// the short budgets a fast test would use, but the parser only consults it in
-// the primary parse loop: at 12s and beyond the bound was missed entirely, and
-// a 16s budget on this input ran 58s and then reported success. Anything that
-// reintroduces that dependence passes every other test in this file.
-func TestParseSourceBoundHoldsAtLongBudgets(t *testing.T) {
-	if testing.Short() {
-		t.Skip("waits out a multi-second parse bound")
-	}
+// TestParseSourceBoundIsEnforcedOnItsOwnTerms checks that the bound comes from
+// ParseSource's own measurement, not from whatever the parser reports.
+//
+// Under gotreesitter v0.15.2 this distinction was load-bearing and directly
+// testable: the parser consulted its own timeout only in the primary parse
+// loop, so a 16s budget on the bash fixture ran 58s and then reported success,
+// and the watchdog was the only thing that actually capped it.
+//
+// The pinned v0.47.1 honours its timeout accurately at every budget we can
+// reach — measured at 100ms/500ms/1000ms, and no input we have found is slow
+// enough under it to probe the multi-second regime where the old leak lived.
+// So this test can no longer distinguish the watchdog from the parser's
+// timeout, and it is not claimed to. It pins the observable contract — the
+// parse is abandoned near the budget and reports ErrParseTimeout — while the
+// watchdog stays in place as defence in depth. That is not paranoia: v0.48.0
+// reintroduced a blowup of exactly this shape in C, so the property that no
+// single version is trusted to bound itself is worth keeping.
+func TestParseSourceBoundIsEnforcedOnItsOwnTerms(t *testing.T) {
 	forest.ResetQuarantine()
 	t.Cleanup(forest.ResetQuarantine)
 
-	const budget = 12 * time.Second
+	// Comfortably below the ~1.2s the input costs unbounded, and comfortably
+	// above the sub-millisecond regime where any implementation looks right.
+	const budget = 400 * time.Millisecond
 	start := time.Now()
-	_, err := forest.ParseSourceWithTimeout(loadPathologicalFixture(t), adapters.ForExtension("sh"), budget)
+	_, err := forest.ParseSourceWithTimeout(pathologicalC(500), adapters.ForExtension("c"), budget)
 	elapsed := time.Since(start)
 
 	if !errors.Is(err, forest.ErrParseTimeout) {
 		t.Fatalf("err = %v after %s, want ErrParseTimeout", err, elapsed)
 	}
-	if elapsed > budget+5*time.Second {
+	if elapsed > budget+2*time.Second {
 		t.Errorf("parse ran %s against a %s bound; the bound is not being enforced", elapsed, budget)
+	}
+}
+
+// TestBashFixtureIsNoLongerPathological is the version guard. The committed
+// fixture wedged the daemon under v0.15.2; v0.22.0 made the construct linear.
+// If a future bump reintroduces the bash blowup, this fails loudly rather than
+// leaving the parse bound to absorb it silently on every watcher event.
+func TestBashFixtureIsNoLongerPathological(t *testing.T) {
+	forest.ResetQuarantine()
+	t.Cleanup(forest.ResetQuarantine)
+
+	start := time.Now()
+	tree, err := forest.ParseSource(loadPathologicalFixture(t), adapters.ForExtension("sh"))
+	elapsed := time.Since(start)
+
+	if err != nil {
+		t.Fatalf("ParseSource on the bash fixture: %v after %s", err, elapsed)
+	}
+	if tree == nil {
+		t.Fatal("tree is nil")
+	}
+	defer tree.Close()
+
+	// Two orders of magnitude of headroom over the ~80ms observed, so this
+	// fails on a real regression rather than on a slow machine.
+	if elapsed > 5*time.Second {
+		t.Errorf("bash fixture parsed in %s; the GLR blowup appears to be back", elapsed)
 	}
 }
 
@@ -111,11 +169,11 @@ func TestParseSourceQuarantinesTimedOutSource(t *testing.T) {
 	forest.ResetQuarantine()
 	t.Cleanup(forest.ResetQuarantine)
 
-	src := pathologicalBash(40)
-	sh := adapters.ForExtension("sh")
+	src := pathologicalC(500)
+	c := adapters.ForExtension("c")
 	const budget = 100 * time.Millisecond
 
-	if _, err := forest.ParseSourceWithTimeout(src, sh, budget); !errors.Is(err, forest.ErrParseTimeout) {
+	if _, err := forest.ParseSourceWithTimeout(src, c, budget); !errors.Is(err, forest.ErrParseTimeout) {
 		t.Fatalf("first parse err = %v, want ErrParseTimeout", err)
 	}
 	if got := forest.QuarantinedCount(); got != 1 {
@@ -123,7 +181,7 @@ func TestParseSourceQuarantinesTimedOutSource(t *testing.T) {
 	}
 
 	start := time.Now()
-	_, err := forest.ParseSourceWithTimeout(src, sh, budget)
+	_, err := forest.ParseSourceWithTimeout(src, c, budget)
 	elapsed := time.Since(start)
 
 	if !errors.Is(err, forest.ErrParseTimeout) {
@@ -141,15 +199,15 @@ func TestQuarantineIsKeyedByContent(t *testing.T) {
 	forest.ResetQuarantine()
 	t.Cleanup(forest.ResetQuarantine)
 
-	sh := adapters.ForExtension("sh")
+	c := adapters.ForExtension("c")
 	const budget = 100 * time.Millisecond
 
-	if _, err := forest.ParseSourceWithTimeout(pathologicalBash(40), sh, budget); !errors.Is(err, forest.ErrParseTimeout) {
+	if _, err := forest.ParseSourceWithTimeout(pathologicalC(500), c, budget); !errors.Is(err, forest.ErrParseTimeout) {
 		t.Fatalf("setup parse err = %v, want ErrParseTimeout", err)
 	}
 
 	// The "edited" file: same path in practice, different bytes, parseable.
-	tree, err := forest.ParseSourceWithTimeout([]byte("echo fixed\n"), sh, budget)
+	tree, err := forest.ParseSourceWithTimeout([]byte("int fixed(void) { return 0; }\n"), c, budget)
 	if err != nil {
 		t.Fatalf("parse after edit: %v", err)
 	}
