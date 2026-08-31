@@ -1,5 +1,12 @@
 .PHONY: build test release-local bullseye
 
+# The gate must depend only on this repo. A go.work anywhere up the directory
+# tree that does not list go/ makes every target here fail with "directory
+# prefix . does not contain modules listed in go.work" — which silently took
+# out the pre-push hook while an unrelated sibling workspace existed. CI has
+# no go.work, so this is a no-op there and a correctness fix locally.
+export GOWORK = off
+
 build:
 	cd go && go build -ldflags="-s -w -X main.version=dev" -o ../bin/sawmill ./cmd/sawmill
 
