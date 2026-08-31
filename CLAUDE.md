@@ -74,7 +74,10 @@ while sharing the underlying model.
 Each model ties together:
 - A `Forest` of `ParsedFile`s (Tree-sitter CSTs + original source bytes)
 - A `Store` (SQLite: file metadata, symbol index, recipes, conventions)
-- A `Watcher` for live incremental updates (fsnotify with debouncing)
+- A `Watcher` for live incremental updates (fsnotify with debouncing),
+  confined to the project root and to owned scope: symlinks are not
+  followed out of the tree, and library dirs are indexed but not watched
+  (one descriptor per watched file on macOS)
 
 All transforms produce diff previews. Changes are only written on explicit
 `apply` (with backup files for `undo`).

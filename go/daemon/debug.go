@@ -4,11 +4,14 @@
 package daemon
 
 import (
+	"fmt"
 	"log"
 	"net"
 	"net/http"
 	"net/http/pprof"
 	"time"
+
+	"github.com/marcelocantos/sawmill/fdusage"
 )
 
 // debugReadHeaderTimeout bounds header reads on the diagnostics listener.
@@ -33,6 +36,16 @@ func StartDebugServer(addr string) {
 	}
 
 	mux := http.NewServeMux()
+	// Descriptor usage, so the question "is it about to wedge again?" has a
+	// one-line answer that does not require attaching to the process.
+	mux.HandleFunc("/debug/fds", func(w http.ResponseWriter, _ *http.Request) {
+		u, err := fdusage.Read()
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		fmt.Fprintf(w, "%s\nover_budget %v\nbudget %.2f\n", u, u.OverBudget(), fdusage.Budget)
+	})
 	mux.HandleFunc("/debug/pprof/", pprof.Index)
 	mux.HandleFunc("/debug/pprof/cmdline", pprof.Cmdline)
 	mux.HandleFunc("/debug/pprof/profile", pprof.Profile)

@@ -610,3 +610,12 @@ for v in violations:
   to widen the search. Override defaults per project with
   `.sawmill/scopes.yaml` (sections: `owned`, `library`, `ignored`,
   each a list of gitignore-style globs).
+
+  Library files are indexed but **not watched**. On macOS the file
+  watcher costs one OS file descriptor per watched file, and dependency
+  trees hold most of a repo's files while changing far less often than
+  project source, so watching them once put a daemon at the
+  per-process descriptor ceiling and made the server unreachable.
+  The practical consequence: edit something under `node_modules/` (or
+  another library path) and the index will not refresh on its own —
+  call `parse` again to pick it up. Owned files still update live.

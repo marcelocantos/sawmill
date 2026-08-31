@@ -114,6 +114,15 @@ func Load(root string) (*CodebaseModel, error) {
 		return nil, fmt.Errorf("resolving root %s: %w", root, err)
 	}
 
+	// Checked here rather than in the parse tool so every caller is covered:
+	// loading a root indexes and watches it, and a container of projects
+	// costs orders of magnitude more than the caller intended. One store per
+	// distinct root string also means a bad root is a permanent 25 GB
+	// footprint, not a transient mistake.
+	if err := paths.ValidateRoot(absRoot); err != nil {
+		return nil, err
+	}
+
 	storeDir := paths.StoreDir(absRoot)
 	if err := os.MkdirAll(storeDir, 0o755); err != nil {
 		return nil, fmt.Errorf("creating %s: %w", storeDir, err)

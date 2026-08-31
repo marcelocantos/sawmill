@@ -37,16 +37,35 @@ const debounceDuration = 100 * time.Millisecond
 
 // Watcher watches a directory tree for file changes.
 type Watcher struct {
-	fw         *fsnotify.Watcher
-	done       chan struct{}
-	closed     sync.Once
-	classifier *scope.Classifier
+	fw   *fsnotify.Watcher
+	done chan struct{}
+	// root is the absolute directory this watcher is confined to, left
+	// unresolved so paths match the classifier's own root.
+	root string
+	// rootResolved is root with symlinks resolved. Containment compares
+	// resolved paths, while the walk stays on the unresolved root so paths
+	// line up with the classifier, whose root is unresolved too. Conflating
+	// the two made every path look outside the classifier's root, which
+	// silently reclassified node_modules as owned.
+	rootResolved string
+	closed       sync.Once
+	classifier   *scope.Classifier
 }
 
-// Watch starts watching root and all non-ignored subdirectories. The
-// classifier decides which directories to watch and which to skip; library
-// and owned dirs are watched, ignored dirs are not. classifier must not be
-// nil.
+// Watch starts watching root and its non-ignored, non-library subdirectories.
+// classifier must not be nil.
+//
+// Two properties are load-bearing, both learned from a daemon that ended up
+// watching /Applications and / itself:
+//
+//   - Nothing outside root is ever watched. Directory symlinks are not
+//     followed, and every candidate path is re-checked against root, so a
+//     symlink inside the tree cannot drag an unrelated subtree into the watch
+//     set.
+//   - Library directories (node_modules, vendor, …) are indexed but not
+//     watched. On macOS, fsnotify's kqueue backend costs one file descriptor
+//     per watched *file*, and dependency trees dominate the file count by an
+//     order of magnitude while almost never changing under us.
 //
 // It returns a Watcher and a channel that receives debounced FileEvents.
 // The caller must call Close when done to release resources.
@@ -60,12 +79,26 @@ func Watch(root string, classifier *scope.Classifier) (*Watcher, <-chan FileEven
 		return nil, nil, err
 	}
 
+	// Resolve the root once, for containment comparisons only. On macOS a
+	// temp dir is reached through /var -> /private/var, so without this every
+	// path would resolve "outside" its own root.
+	rootResolved := absRoot
+	if resolved, err := filepath.EvalSymlinks(absRoot); err == nil {
+		rootResolved = resolved
+	}
+
 	fw, err := fsnotify.NewWatcher()
 	if err != nil {
 		return nil, nil, err
 	}
 
-	w := &Watcher{fw: fw, done: make(chan struct{}), classifier: classifier}
+	w := &Watcher{
+		fw:           fw,
+		done:         make(chan struct{}),
+		root:         absRoot,
+		rootResolved: rootResolved,
+		classifier:   classifier,
+	}
 
 	// Add root and all subdirectories recursively.
 	if err := w.addDirsRecursive(absRoot); err != nil {
@@ -154,16 +187,26 @@ func (w *Watcher) run(out chan<- FileEvent) {
 			switch {
 			case ev.Has(fsnotify.Create):
 				kind = Created
-				// If a new directory is created, start watching it.
-				if info, err := os.Stat(ev.Name); err == nil && info.IsDir() {
+				// If a new *real* directory is created, start watching it.
+				// Lstat, not Stat: Stat follows symlinks, so a link to an
+				// outside directory looked like a directory to watch and the
+				// walk then pulled that whole tree in — which is how a project
+				// watcher ended up holding /Applications.
+				if info, err := os.Lstat(ev.Name); err == nil && info.IsDir() {
 					_ = w.addDirsRecursive(ev.Name)
 					continue
 				}
-			case ev.Has(fsnotify.Write) || ev.Has(fsnotify.Chmod):
+			case ev.Has(fsnotify.Write):
 				kind = Modified
 			case ev.Has(fsnotify.Remove) || ev.Has(fsnotify.Rename):
 				kind = Removed
 			default:
+				// Chmod lands here deliberately. On macOS the kqueue backend
+				// reports NOTE_ATTRIB as Chmod, and an atime update counts —
+				// so treating it as a modification meant that merely *reading*
+				// a file scheduled a reparse. Anything that walks the tree
+				// (ripgrep, a backup pass, Spotlight) then triggered a reparse
+				// of everything it touched. Content changes arrive as Write.
 				continue
 			}
 
@@ -193,10 +236,55 @@ func (w *Watcher) run(out chan<- FileEvent) {
 	}
 }
 
-// addDirsRecursive adds dir and all non-ignored subdirectories to fw.
-// Ignored directories per the classifier are skipped; library and owned dirs
-// are watched alike (the indexer decides what to do with their files).
+// contains reports whether path is root itself or lies beneath it. Paths are
+// compared after symlink resolution, so a symlink pointing out of the tree is
+// rejected on where it leads rather than where it sits.
+//
+// A path that cannot be resolved (it was deleted between the event and this
+// check, most likely) is rejected: refusing to watch something that may be
+// outside the root is always the safe direction.
+func (w *Watcher) contains(path string) bool {
+	if w.rootResolved == "" {
+		return true
+	}
+	resolved, err := filepath.EvalSymlinks(path)
+	if err != nil {
+		return false
+	}
+	if resolved == w.rootResolved {
+		return true
+	}
+	rel, err := filepath.Rel(w.rootResolved, resolved)
+	if err != nil {
+		return false
+	}
+	return rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator))
+}
+
+// shouldWatchDir reports whether a directory belongs in the watch set.
+// Ignored directories are skipped outright; library directories are indexed
+// but deliberately not watched (see Watch).
+func (w *Watcher) shouldWatchDir(path string) bool {
+	if w.classifier == nil {
+		return true
+	}
+	switch w.classifier.Classify(path, true) {
+	case scope.Ignored, scope.Library:
+		return false
+	}
+	return true
+}
+
+// addDirsRecursive adds dir and its watchable subdirectories to fw.
+//
+// filepath.WalkDir does not follow symlinks, so a symlinked directory arrives
+// here as a non-directory entry and is skipped by the d.IsDir() test. The
+// explicit contains check covers the other way in — dir itself having been
+// reached through a link.
 func (w *Watcher) addDirsRecursive(dir string) error {
+	if !w.contains(dir) {
+		return nil
+	}
 	return filepath.WalkDir(dir, func(path string, d os.DirEntry, err error) error {
 		if err != nil {
 			return nil // skip unreadable entries
@@ -204,16 +292,32 @@ func (w *Watcher) addDirsRecursive(dir string) error {
 		if !d.IsDir() {
 			return nil
 		}
-		if w.classifier != nil && w.classifier.ShouldSkipDir(path) {
+		if !w.shouldWatchDir(path) {
+			return filepath.SkipDir
+		}
+		if !w.contains(path) {
 			return filepath.SkipDir
 		}
 		return w.fw.Add(path)
 	})
 }
 
-// isRelevant reports whether a file change should be forwarded. Hidden files
-// and files in ignored directories are dropped.
+// isRelevant reports whether a file change should be forwarded. Hidden files,
+// files in ignored directories, and symlinks are dropped.
+//
+// Symlinks are dropped for two reasons. Indexing one would follow it and pull
+// content from outside the root into the model. And on macOS the kqueue
+// backend opens the link path — which resolves to the target — so a change
+// anywhere in a linked-to directory surfaces as a modification of the link
+// itself. That happens inside fsnotify, below the containment check, so the
+// only place to stop it is here.
+//
+// A path that no longer exists is not treated as a symlink: removals must
+// still be reported.
 func (w *Watcher) isRelevant(path string) bool {
+	if info, err := os.Lstat(path); err == nil && info.Mode()&os.ModeSymlink != 0 {
+		return false
+	}
 	if w.classifier != nil && w.classifier.Classify(path, false) == scope.Ignored {
 		return false
 	}

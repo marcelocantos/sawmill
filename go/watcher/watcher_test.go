@@ -43,7 +43,6 @@ func receiveEvent(t *testing.T, ch <-chan watcher.FileEvent, match func(watcher.
 			t.Fatal("timed out waiting for expected file event")
 		}
 	}
-	panic("unreachable")
 }
 
 func TestWatchDetectsNewFile(t *testing.T) {
