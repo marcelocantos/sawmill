@@ -1,0 +1,830 @@
+// Copyright 2026 Marcelo Cantos
+// SPDX-License-Identifier: Apache-2.0
+
+// Package model provides the persistent codebase model. Source and metadata are
+// stored in SQLite; trees are parsed on demand via a bounded LRU cache. A
+// manager goroutine watches for file changes and updates the store. Handlers
+// access files via FileAccessors (scoped tree access) or ForestSnapshot
+// (transient full parse for codegen).
+package model
+
+import (
+	"crypto/sha256"
+	"encoding/hex"
+	"fmt"
+	"os"
+	"path/filepath"
+	"strings"
+	"time"
+
+	tree_sitter "github.com/marcelocantos/sawmill/tscompat"
+
+	"context"
+	"log"
+	"sync"
+
+	"github.com/marcelocantos/sawmill/adapters"
+	"github.com/marcelocantos/sawmill/embed"
+	"github.com/marcelocantos/sawmill/forest"
+	"github.com/marcelocantos/sawmill/gitindex"
+	"github.com/marcelocantos/sawmill/gitrepo"
+	"github.com/marcelocantos/sawmill/index"
+	"github.com/marcelocantos/sawmill/lspclient"
+	"github.com/marcelocantos/sawmill/paths"
+	"github.com/marcelocantos/sawmill/scope"
+	"github.com/marcelocantos/sawmill/store"
+	"github.com/marcelocantos/sawmill/watcher"
+)
+
+// CodebaseModel is a persistent, live-updating codebase model. A manager
+// goroutine watches for file changes and updates the store. Handlers access
+// files via FileAccessors (on-demand parsing) or ForestSnapshot (transient
+// full parse for codegen).
+type CodebaseModel struct {
+	// Root directory being tracked.
+	Root string
+	// SQLite-backed persistent store. Safe for concurrent reads under WAL.
+	Store *store.Store
+	// LSP is the pool of language server clients (may be nil).
+	LSP *lspclient.Pool
+	// Cache holds recently-parsed trees for on-demand access.
+	Cache *forest.TreeCache
+	// GitIndex is the lazy git commit indexer (nil if the root is not a git repo).
+	GitIndex *gitindex.Indexer
+	// Scope classifies files as owned/library/ignored.
+	Scope *scope.Classifier
+
+	// Embedder is the optional vector-embedding model. nil disables the
+	// semantic-search tier (FTS and graph tiers still work).
+	Embedder embed.Embedder
+
+	// vecsMu guards Vecs and SummaryVecs.
+	vecsMu sync.RWMutex
+	// Vecs is the in-memory map of symbol_id -> body embedding for the
+	// current Embedder.ModelID(). nil if no embedder is configured.
+	Vecs map[int64][]float32
+	// SummaryVecs is the in-memory map of symbol_id -> summary embedding
+	// for the current Embedder.ModelID(). Populated as LLM summaries land;
+	// nil if no embedder or no summaries yet.
+	SummaryVecs map[int64][]float32
+
+	// applyMu serialises apply operations across every session sharing this
+	// model. The daemon pools one CodebaseModel per project root, so two MCP
+	// sessions targeting the same root would otherwise run ApplyWithBackup
+	// concurrently (each holds only its own per-Handler mutex) and interleave
+	// writes/backups to the same files. Holding this lock for the whole apply
+	// makes check-then-write atomic against sibling sessions.
+	applyMu sync.Mutex
+
+	// forest is only set for ephemeral models (no manager goroutine).
+	forest *forest.Forest
+	// w watches root for file changes (nil for ephemeral models).
+	w *watcher.Watcher
+	// events is the channel of debounced file events from w.
+	events <-chan watcher.FileEvent
+	// reindex receives post-apply re-parse requests. Each request's done
+	// channel is closed once the manager has re-parsed every path, making
+	// ReindexNow synchronous.
+	reindex chan reindexReq
+	// done signals the manager goroutine to exit.
+	done chan struct{}
+	// stopped is closed when the manager goroutine exits.
+	stopped chan struct{}
+}
+
+// LockApply acquires the model-wide apply lock. Callers (MCP apply handlers)
+// must hold it for the full apply — content backup, write, and rename — so
+// concurrent same-root sessions cannot interleave writes to shared files.
+func (m *CodebaseModel) LockApply() { m.applyMu.Lock() }
+
+// UnlockApply releases the lock taken by LockApply.
+func (m *CodebaseModel) UnlockApply() { m.applyMu.Unlock() }
+
+// Load loads a codebase model for the given directory.
+//
+//  1. Opens (or creates) the SQLite store at ~/.sawmill/stores/<hash>/store.db
+//  2. Walks the directory, checks each file against the store
+//  3. Re-parses only files that have changed (mtime or content hash mismatch)
+//  4. Builds the symbol index for changed files
+//  5. Starts the manager goroutine to process watcher events
+func Load(root string) (*CodebaseModel, error) {
+	absRoot, err := filepath.Abs(root)
+	if err != nil {
+		return nil, fmt.Errorf("resolving root %s: %w", root, err)
+	}
+
+	storeDir := paths.StoreDir(absRoot)
+	if err := os.MkdirAll(storeDir, 0o755); err != nil {
+		return nil, fmt.Errorf("creating %s: %w", storeDir, err)
+	}
+
+	s, err := store.Open(paths.StorePath(absRoot))
+	if err != nil {
+		return nil, err
+	}
+
+	classifier, err := scope.New(absRoot)
+	if err != nil {
+		s.Close()
+		return nil, fmt.Errorf("building scope classifier: %w", err)
+	}
+
+	if err := incrementalParse(absRoot, s, classifier); err != nil {
+		s.Close()
+		return nil, err
+	}
+	if err := s.RecomputeImportance(); err != nil {
+		s.Close()
+		return nil, fmt.Errorf("computing importance: %w", err)
+	}
+
+	// Optional semantic-search tier. Configured via SAWMILL_EMBED_MODEL env;
+	// nil if unset — the store and graph tiers carry on regardless.
+	emb := EmbedderFromEnv()
+	var vecs, summaryVecs map[int64][]float32
+	if emb != nil {
+		ctx := context.Background()
+		if _, err := EmbedAll(ctx, s, emb); err != nil {
+			log.Printf("sawmill: embedding pass failed (semantic tier disabled this session): %v", err)
+		} else {
+			loaded, err := s.LoadEmbeddings(emb.ModelID())
+			if err != nil {
+				log.Printf("sawmill: loading vectors failed: %v", err)
+			} else {
+				vecs = loaded
+			}
+		}
+		// Summary vectors are populated by the summariser; load whatever's
+		// already on disk so previous sessions' work is searchable
+		// immediately.
+		if loaded, err := s.LoadSummaryEmbeddings(emb.ModelID()); err == nil {
+			summaryVecs = loaded
+		}
+	}
+
+	// Optional summariser tier. Disabled by default — only enabled when the
+	// user sets SAWMILL_SUMMARISE=1. Runs in the background so Load returns
+	// immediately and other tiers stay responsive while summaries trickle
+	// in.
+	summCfg := SummaryConfigFromEnv()
+
+	w, events, err := watcher.Watch(absRoot, classifier)
+	if err != nil {
+		s.Close()
+		return nil, fmt.Errorf("starting watcher: %w", err)
+	}
+
+	m := &CodebaseModel{
+		Root:        absRoot,
+		Store:       s,
+		LSP:         lspclient.NewPool(),
+		Cache:       forest.NewTreeCache(forest.DefaultCacheSize),
+		Scope:       classifier,
+		Embedder:    emb,
+		Vecs:        vecs,
+		SummaryVecs: summaryVecs,
+		w:           w,
+		events:      events,
+		reindex:     make(chan reindexReq),
+		done:        make(chan struct{}),
+		stopped:     make(chan struct{}),
+	}
+
+	// Open the git index if this directory is inside a git repo. Index HEAD in
+	// the background so startup is not blocked.
+	if ix, err := openGitIndex(absRoot); err == nil {
+		m.GitIndex = ix
+		go func() {
+			if err := ix.IndexHead(); err != nil {
+				log.Printf("sawmill: git index HEAD: %v", err)
+			}
+		}()
+	}
+
+	if summCfg.Enabled {
+		m.runSummariserBackground(summCfg)
+	}
+
+	go m.runManager()
+	return m, nil
+}
+
+// openGitIndex opens (or creates) the git index store for absRoot and returns
+// an Indexer. Returns an error if absRoot is not inside a git repo.
+func openGitIndex(absRoot string) (*gitindex.Indexer, error) {
+	repo, err := gitrepo.Open(absRoot)
+	if err != nil {
+		return nil, err
+	}
+	storeDir := paths.StoreDir(absRoot)
+	giPath := filepath.Join(storeDir, "gitindex.db")
+	giStore, err := gitindex.Open(giPath)
+	if err != nil {
+		return nil, err
+	}
+	return gitindex.NewIndexer(giStore, repo), nil
+}
+
+// LoadEphemeral loads without persistence (for testing or one-shot CLI use).
+// No watcher or manager goroutine — ForestSnapshot returns the forest directly.
+func LoadEphemeral(root string) (*CodebaseModel, error) {
+	absRoot, err := filepath.Abs(root)
+	if err != nil {
+		absRoot = root
+	}
+
+	s, err := store.OpenInMemory()
+	if err != nil {
+		return nil, err
+	}
+
+	classifier, err := scope.New(absRoot)
+	if err != nil {
+		s.Close()
+		return nil, fmt.Errorf("building scope classifier: %w", err)
+	}
+
+	f, err := forest.FromPathSkip(absRoot, classifier.ShouldSkipDir)
+	if err != nil {
+		s.Close()
+		return nil, err
+	}
+
+	for _, file := range f.Files {
+		fileScope := classifier.Classify(file.Path, false)
+		if fileScope == scope.Ignored {
+			continue
+		}
+		mode := index.FullMode
+		var stored []byte = file.OriginalSource
+		if fileScope == scope.Library {
+			mode = index.APIOnlyMode
+			stored = nil
+		}
+		ext := strings.TrimPrefix(filepath.Ext(file.Path), ".")
+		// Ephemeral models still need files rows so the symbols FK is satisfied.
+		// Use a zero mtime + empty hash; nothing depends on either for the
+		// in-memory case.
+		if err := s.UpsertFile(file.Path, ext, time.Time{}, "", stored, fileScope.String()); err != nil {
+			s.Close()
+			return nil, fmt.Errorf("upserting file %s: %w", file.Path, err)
+		}
+		symbols := index.ExtractSymbolsFromPartsMode(file.OriginalSource, file.Tree, file.Adapter, file.Path, mode)
+		records := symbolsToRecords(symbols, file.Path, file.OriginalSource)
+		if err := s.UpdateSymbols(file.Path, records); err != nil {
+			s.Close()
+			return nil, fmt.Errorf("indexing %s: %w", file.Path, err)
+		}
+		edges := index.ExtractEdgesFromParts(file.OriginalSource, file.Tree, file.Adapter, mode)
+		if err := s.UpdateRefs(file.Path, edgesToRecords(edges)); err != nil {
+			s.Close()
+			return nil, fmt.Errorf("indexing refs %s: %w", file.Path, err)
+		}
+	}
+
+	// One PageRank pass after batch indexing rather than per-file — same result,
+	// orders of magnitude less work on a fresh load.
+	if err := s.RecomputeImportance(); err != nil {
+		s.Close()
+		return nil, fmt.Errorf("computing importance: %w", err)
+	}
+
+	return &CodebaseModel{Root: absRoot, Store: s, LSP: lspclient.NewPool(), Cache: forest.NewTreeCache(forest.DefaultCacheSize), Scope: classifier, forest: f}, nil
+}
+
+// Close stops the manager goroutine, the file watcher, LSP clients, the git
+// index, and the store.
+func (m *CodebaseModel) Close() error {
+	if m.done != nil {
+		close(m.done)
+		<-m.stopped // wait for manager to exit
+	}
+	if m.LSP != nil {
+		m.LSP.Close()
+	}
+	if m.Cache != nil {
+		m.Cache.Clear()
+	}
+	if m.w != nil {
+		_ = m.w.Close()
+	}
+	if m.GitIndex != nil {
+		_ = m.GitIndex.Close()
+	}
+	return m.Store.Close()
+}
+
+// FileAccessors returns a FileAccessor for each tracked file, optionally
+// filtered by a path substring. These accessors load source from SQLite and
+// parse trees on demand via the cache.
+func (m *CodebaseModel) FileAccessors(pathFilter string) ([]*forest.FileAccessor, error) {
+	records, err := m.Store.TrackedFilesWithMeta()
+	if err != nil {
+		return nil, err
+	}
+
+	var accessors []*forest.FileAccessor
+	for _, rec := range records {
+		if pathFilter != "" && !strings.Contains(rec.Path, pathFilter) {
+			continue
+		}
+		adapter := adapters.ForExtension(rec.Language)
+		if adapter == nil {
+			continue
+		}
+		accessors = append(accessors, forest.NewFileAccessor(
+			rec.Path, rec.Language, rec.ContentHash, adapter, m.Store, m.Cache,
+		))
+	}
+	return accessors, nil
+}
+
+// ForestSnapshot builds a transient forest by parsing all tracked files on
+// demand. The returned trees are cached via the TreeCache for reuse. This
+// method exists for codegen/convention/invariant tools that need a full
+// Forest; most tool handlers should use FileAccessors + WithTree instead.
+//
+// For ephemeral models (no manager goroutine), returns the forest directly.
+func (m *CodebaseModel) ForestSnapshot() *forest.Forest {
+	if m.forest != nil {
+		// Ephemeral model — has an in-memory forest.
+		return m.forest
+	}
+
+	records, err := m.Store.TrackedFilesWithMeta()
+	if err != nil {
+		return &forest.Forest{}
+	}
+
+	var files []*forest.ParsedFile
+	for _, rec := range records {
+		adapter := adapters.ForExtension(rec.Language)
+		if adapter == nil {
+			continue
+		}
+		source, tree, err := m.Cache.GetOrParse(rec.Path, rec.ContentHash, func() ([]byte, *tree_sitter.Tree, error) {
+			src, err := m.Store.ReadSource(rec.Path)
+			if err != nil {
+				return nil, nil, err
+			}
+			t, err := forest.ParseSource(src, adapter)
+			if err != nil {
+				return nil, nil, err
+			}
+			if t == nil {
+				return nil, nil, fmt.Errorf("parsing %s: nil tree", rec.Path)
+			}
+			return src, t, nil
+		})
+		if err != nil {
+			continue
+		}
+		files = append(files, &forest.ParsedFile{
+			Path:           rec.Path,
+			OriginalSource: source,
+			Tree:           tree,
+			Adapter:        adapter,
+		})
+	}
+	return &forest.Forest{Files: files}
+}
+
+// NotifyChanged tells the manager to immediately re-parse the given paths.
+// Call this after applying changes to disk so the model reflects the new
+// content without waiting for the watcher's debounce delay.
+// reindexReq carries a post-apply re-parse request; done is closed when the
+// manager goroutine has re-parsed every path.
+type reindexReq struct {
+	paths []string
+	done  chan struct{}
+}
+
+// ReindexNow re-parses the given files and updates the store and cache,
+// returning only when the update is complete. Called after apply so that
+// subsequent previews in the same session see the just-written content
+// instead of racing the watcher's debounce. (The previous fire-and-forget
+// NotifyChanged left a window in which a preview captured stale source and
+// the next apply failed the ErrStaleContent pre-flight.)
+func (m *CodebaseModel) ReindexNow(changedPaths []string) {
+	if m.reindex == nil {
+		// Ephemeral model: no manager goroutine owns the state; update inline.
+		for _, p := range changedPaths {
+			m.reparse(p)
+		}
+		return
+	}
+	req := reindexReq{paths: changedPaths, done: make(chan struct{})}
+	select {
+	case m.reindex <- req:
+		select {
+		case <-req.done:
+		case <-m.stopped:
+		}
+	case <-m.stopped:
+	}
+}
+
+// FileCount returns the number of tracked files.
+func (m *CodebaseModel) FileCount() int {
+	n, _ := m.Store.FileCount()
+	return n
+}
+
+// FindSymbols finds symbols by name, using the persistent index.
+func (m *CodebaseModel) FindSymbols(name, kind string) ([]store.SymbolRecord, error) {
+	return m.Store.FindSymbols(name, kind)
+}
+
+// FindSymbolsInScopes is FindSymbols restricted to the given scopes.
+func (m *CodebaseModel) FindSymbolsInScopes(name, kind string, scopes []string) ([]store.SymbolRecord, error) {
+	return m.Store.FindSymbolsInScopes(name, kind, scopes)
+}
+
+// SearchCode delegates to the underlying store's FTS-backed search.
+func (m *CodebaseModel) SearchCode(query, kind, pathGlob string, limit int) ([]store.SearchHit, error) {
+	return m.Store.SearchCode(query, kind, pathGlob, limit)
+}
+
+// ExpandForward returns outgoing edges from the named symbol.
+func (m *CodebaseModel) ExpandForward(symbol, symbolKind, edgeKind string) ([]store.GraphEdge, error) {
+	return m.Store.ExpandForward(symbol, symbolKind, edgeKind)
+}
+
+// ExpandReverse returns incoming edges that point at the named symbol.
+func (m *CodebaseModel) ExpandReverse(symbol, symbolKind, edgeKind string) ([]store.GraphEdge, error) {
+	return m.Store.ExpandReverse(symbol, symbolKind, edgeKind)
+}
+
+// ExpandGraph picks between the syntactic (Tree-sitter) reference graph and
+// the semantic (LLM-extracted) knowledge graph. source must be one of
+// "syntactic" (default), "semantic", or "both". For "both" the syntactic
+// edges come first, then the semantic edges; the caller can read e.Kind to
+// tell them apart (kg edges use kinds "calls"/"reads"/"writes"/"throws"/
+// "returns"; syntactic edges use "call"/"type_use"/"import_use").
+func (m *CodebaseModel) ExpandGraph(symbol, symbolKind, edgeKind, direction, source string) ([]store.GraphEdge, error) {
+	if direction == "" {
+		direction = "forward"
+	}
+	if source == "" {
+		source = "syntactic"
+	}
+	var (
+		out []store.GraphEdge
+		err error
+	)
+	if source == "syntactic" || source == "both" {
+		var part []store.GraphEdge
+		if direction == "forward" {
+			part, err = m.Store.ExpandForward(symbol, symbolKind, edgeKind)
+		} else {
+			part, err = m.Store.ExpandReverse(symbol, symbolKind, edgeKind)
+		}
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, part...)
+	}
+	if source == "semantic" || source == "both" {
+		var part []store.GraphEdge
+		if direction == "forward" {
+			part, err = m.Store.ExpandKGForward(symbol, edgeKind)
+		} else {
+			part, err = m.Store.ExpandKGReverse(symbol, edgeKind)
+		}
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, part...)
+	}
+	return out, nil
+}
+
+// CentralSymbols returns the top-N most central symbols by PageRank.
+func (m *CodebaseModel) CentralSymbols(pathGlob, kind string, limit int) ([]store.CentralSymbol, error) {
+	return m.Store.CentralSymbols(pathGlob, kind, limit)
+}
+
+// --- Manager goroutine ---
+
+// runManager is the event loop that owns all mutable forest state. It
+// processes watcher events, post-apply notifications, and snapshot requests.
+func (m *CodebaseModel) runManager() {
+	defer close(m.stopped)
+	for {
+		select {
+		case ev, ok := <-m.events:
+			if !ok {
+				return
+			}
+			m.applyEvent(ev)
+		case req := <-m.reindex:
+			for _, p := range req.paths {
+				m.reparse(p)
+			}
+			close(req.done)
+		case <-m.done:
+			return
+		}
+	}
+}
+
+// reparse re-parses a single file and updates the store and cache.
+func (m *CodebaseModel) reparse(path string) {
+	if m.Cache != nil {
+		m.Cache.Evict(path)
+	}
+	m.parseAndIndexFile(path)
+}
+
+// applyEvent updates the store and cache for a single file event.
+func (m *CodebaseModel) applyEvent(ev watcher.FileEvent) {
+	switch ev.Kind {
+	case watcher.Removed:
+		if m.Cache != nil {
+			m.Cache.Evict(ev.Path)
+		}
+		_ = m.Store.RemoveFile(ev.Path)
+	case watcher.Created, watcher.Modified:
+		m.reparse(ev.Path)
+	}
+}
+
+// parseAndIndexFile re-parses a single file and updates the store.
+func (m *CodebaseModel) parseAndIndexFile(path string) {
+	ext := strings.TrimPrefix(filepath.Ext(path), ".")
+	if ext == "" {
+		return
+	}
+
+	adapter := adapters.ForExtension(ext)
+	if adapter == nil {
+		return
+	}
+
+	fileScope := scope.Owned
+	if m.Scope != nil {
+		fileScope = m.Scope.Classify(path, false)
+	}
+	if fileScope == scope.Ignored {
+		return
+	}
+
+	source, err := os.ReadFile(path)
+	if err != nil {
+		return
+	}
+
+	info, err := os.Stat(path)
+	if err != nil {
+		return
+	}
+	mtime := info.ModTime()
+	contentHash := hashBytes(source)
+
+	if !forest.ShouldParse(source) {
+		return
+	}
+
+	// Parse to extract symbols, then discard the tree.
+	tree, err := forest.ParseSource(source, adapter)
+	if err != nil || tree == nil {
+		return
+	}
+	defer tree.Close()
+
+	mode := index.FullMode
+	var stored []byte = source
+	if fileScope == scope.Library {
+		mode = index.APIOnlyMode
+		stored = nil // re-read from disk on demand
+	}
+
+	symbols := index.ExtractSymbolsFromPartsMode(source, tree, adapter, path, mode)
+	records := symbolsToRecords(symbols, path, source)
+	edges := index.ExtractEdgesFromParts(source, tree, adapter, mode)
+
+	_ = m.Store.UpsertFile(path, ext, mtime, contentHash, stored, fileScope.String())
+	_ = m.Store.UpdateSymbols(path, records)
+	_ = m.Store.UpdateRefs(path, edgesToRecords(edges))
+	_ = m.Store.RecomputeImportance()
+	if m.Embedder != nil {
+		if _, err := embedFiltered(context.Background(), m.Store, m.Embedder, path); err != nil {
+			log.Printf("sawmill: re-embedding %s: %v", path, err)
+		}
+		if loaded, err := m.Store.LoadEmbeddings(m.Embedder.ModelID()); err == nil {
+			m.vecsMu.Lock()
+			m.Vecs = loaded
+			m.vecsMu.Unlock()
+		}
+	}
+}
+
+// --- Static helpers ---
+
+// incrementalParse walks root, parses changed files, and populates the store.
+// Trees are parsed only to extract symbols, then discarded. Files are
+// classified via scope.Classifier; ignored dirs are skipped, library files
+// are indexed in API-only mode without source caching.
+func incrementalParse(root string, s *store.Store, classifier *scope.Classifier) error {
+	return filepath.WalkDir(root, func(path string, d os.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		if d.IsDir() {
+			if path != root && classifier.ShouldSkipDir(path) {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+
+		fileScope := classifier.Classify(path, false)
+		if fileScope == scope.Ignored {
+			return nil
+		}
+
+		ext := strings.TrimPrefix(filepath.Ext(path), ".")
+		if ext == "" {
+			return nil
+		}
+
+		adapter := adapters.ForExtension(ext)
+		if adapter == nil {
+			return nil
+		}
+
+		source, err := os.ReadFile(path)
+		if err != nil {
+			return fmt.Errorf("reading %s: %w", path, err)
+		}
+
+		info, err := d.Info()
+		if err != nil {
+			return fmt.Errorf("stat %s: %w", path, err)
+		}
+		mtime := info.ModTime()
+		contentHash := hashBytes(source)
+
+		storedHash, _ := s.CheckFile(path, mtime)
+		if storedHash == contentHash && storedHash != "" {
+			// File unchanged — source is already in the store.
+			return nil
+		}
+
+		if !forest.ShouldParse(source) {
+			return nil
+		}
+
+		// Parse to extract symbols, then discard.
+		tree, err := forest.ParseSource(source, adapter)
+		if err != nil || tree == nil {
+			return nil // skip unparseable files
+		}
+
+		mode := index.FullMode
+		var stored []byte = source
+		if fileScope == scope.Library {
+			mode = index.APIOnlyMode
+			stored = nil
+		}
+
+		symbols := index.ExtractSymbolsFromPartsMode(source, tree, adapter, path, mode)
+		edges := index.ExtractEdgesFromParts(source, tree, adapter, mode)
+		tree.Close()
+
+		records := symbolsToRecords(symbols, path, source)
+		_ = s.UpsertFile(path, ext, mtime, contentHash, stored, fileScope.String())
+		_ = s.UpdateSymbols(path, records)
+		_ = s.UpdateRefs(path, edgesToRecords(edges))
+
+		return nil
+	})
+	// PageRank is run by the caller after the full walk completes (see Load);
+	// doing it here would re-run on every file touched by an incremental pass.
+}
+
+func hashBytes(data []byte) string {
+	h := sha256.Sum256(data)
+	return hex.EncodeToString(h[:])
+}
+
+func edgesToRecords(edges []index.Edge) []store.EdgeRecord {
+	if len(edges) == 0 {
+		return nil
+	}
+	records := make([]store.EdgeRecord, len(edges))
+	for i, e := range edges {
+		records[i] = store.EdgeRecord{
+			Kind:      e.Kind,
+			DstName:   e.DstName,
+			StartByte: int(e.StartByte),
+			EndByte:   int(e.EndByte),
+			StartLine: e.StartLine,
+			StartCol:  e.StartCol,
+		}
+	}
+	return records
+}
+
+func symbolsToRecords(symbols []index.Symbol, filePath string, source []byte) []store.SymbolRecord {
+	records := make([]store.SymbolRecord, len(symbols))
+	for i, s := range symbols {
+		var body []byte
+		if int(s.EndByte) <= len(source) && s.EndByte > s.StartByte {
+			body = source[s.StartByte:s.EndByte]
+		}
+		records[i] = store.SymbolRecord{
+			Name:      s.Name,
+			Kind:      s.Kind,
+			FilePath:  filePath,
+			StartLine: s.StartLine,
+			StartCol:  s.StartCol,
+			EndLine:   s.EndLine,
+			EndCol:    s.EndCol,
+			StartByte: int(s.StartByte),
+			EndByte:   int(s.EndByte),
+			Signature: s.Signature,
+			Doc:       s.Doc,
+			Evidence:  index.EvidenceFor(s.Name, filePath, body),
+		}
+	}
+	return records
+}
+
+// --- Store delegates ---
+
+func (m *CodebaseModel) SaveRecipe(name, description string, params []string, steps []byte) error {
+	return m.Store.SaveRecipe(name, description, params, steps)
+}
+func (m *CodebaseModel) LoadRecipe(name string) (*store.Recipe, error) {
+	return m.Store.LoadRecipe(name)
+}
+func (m *CodebaseModel) ListRecipes() ([]store.Recipe, error) { return m.Store.ListRecipes() }
+func (m *CodebaseModel) SaveConvention(name, description, checkProgram string) error {
+	return m.Store.SaveConvention(name, description, checkProgram)
+}
+func (m *CodebaseModel) ListConventions() ([]store.Convention, error) {
+	return m.Store.ListConventions()
+}
+func (m *CodebaseModel) DeleteConvention(name string) (bool, error) {
+	return m.Store.DeleteConvention(name)
+}
+func (m *CodebaseModel) SaveInvariant(name, description, ruleJSON string) error {
+	return m.Store.SaveInvariant(name, description, ruleJSON)
+}
+func (m *CodebaseModel) ListInvariants() ([]store.Invariant, error) {
+	return m.Store.ListInvariants()
+}
+func (m *CodebaseModel) DeleteInvariant(name string) (bool, error) {
+	return m.Store.DeleteInvariant(name)
+}
+func (m *CodebaseModel) SaveEquivalence(name, description, leftPattern, rightPattern, preferredDirection string) error {
+	return m.Store.SaveEquivalence(name, description, leftPattern, rightPattern, preferredDirection)
+}
+func (m *CodebaseModel) ListEquivalences() ([]store.Equivalence, error) {
+	return m.Store.ListEquivalences()
+}
+func (m *CodebaseModel) LoadEquivalence(name string) (*store.Equivalence, error) {
+	return m.Store.LoadEquivalence(name)
+}
+func (m *CodebaseModel) DeleteEquivalence(name string) (bool, error) {
+	return m.Store.DeleteEquivalence(name)
+}
+func (m *CodebaseModel) SaveConcept(name, description string, aliases []string) error {
+	return m.Store.SaveConcept(name, description, aliases)
+}
+func (m *CodebaseModel) ListConcepts() ([]store.Concept, error) {
+	return m.Store.ListConcepts()
+}
+func (m *CodebaseModel) LoadConcept(name string) (*store.Concept, error) {
+	return m.Store.LoadConcept(name)
+}
+func (m *CodebaseModel) DeleteConcept(name string) (bool, error) {
+	return m.Store.DeleteConcept(name)
+}
+func (m *CodebaseModel) FindByConcept(aliases []string, scopes []string, limit int) ([]store.ConceptMatch, error) {
+	return m.Store.FindByConcept(aliases, scopes, limit)
+}
+func (m *CodebaseModel) SaveFix(name, description, diagnosticRegex, actionJSON, confidence string) error {
+	return m.Store.SaveFix(name, description, diagnosticRegex, actionJSON, confidence)
+}
+func (m *CodebaseModel) ListFixes() ([]store.Fix, error) {
+	return m.Store.ListFixes()
+}
+func (m *CodebaseModel) LoadFix(name string) (*store.Fix, error) {
+	return m.Store.LoadFix(name)
+}
+func (m *CodebaseModel) DeleteFix(name string) (bool, error) {
+	return m.Store.DeleteFix(name)
+}
+
+// MtimeForPath returns the modification time for the given path.
+func MtimeForPath(path string) time.Time {
+	info, err := os.Stat(path)
+	if err != nil {
+		return time.Time{}
+	}
+	return info.ModTime()
+}
+
+// Removed: Sync() — the manager goroutine drains events continuously.
+// Removed: ParseAndIndexFile() as public method — now internal to manager.
