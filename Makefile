@@ -1,4 +1,4 @@
-.PHONY: build test release-local bullseye
+.PHONY: build test release-local release-tap bullseye
 
 # The gate must depend only on this repo. A go.work anywhere up the directory
 # tree that does not list go/ makes every target here fail with "directory
@@ -17,6 +17,11 @@ test:
 
 release-local:
 	goreleaser release --snapshot --clean
+
+# Publish the formula to the Homebrew tap for an existing release. Run after
+# the release assets exist — tapper reads them to build the formula.
+release-tap:
+	./scripts/release-tap.sh $(TAG)
 
 bullseye:
 	@cd go && go build ./... && echo "✅ build"
